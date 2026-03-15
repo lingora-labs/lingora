@@ -16,12 +16,11 @@ import type {
   ArtifactPayload, AudioArtifact,
 } from '@/lib/contracts'
 
-export const runtime    = 'nodejs'
+export const runtime = 'nodejs'
 export const maxDuration = 30
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-// ─── helpers ─────────────────────────────────────
 function ok(body: ChatResponse, status = 200) {
   return NextResponse.json(body, {
     status,
@@ -33,14 +32,12 @@ function audioArtifact(url: string): AudioArtifact {
   return { type: 'audio', url, method: url.startsWith('data:') ? 'dataurl' : 's3' }
 }
 
-// Build a safe autoSchema prompt that doesn't look like a user message
 function buildAutoSchemaPrompt(state: Partial<SessionState>): string {
-  const topic    = state.topic    || 'conversación'
-  const level    = state.level    || 'A1'
-  const samples  = state.samples  ?? []
+  const topic = state.topic || 'conversación'
+  const level = state.level || 'A1'
+  const samples = state.samples ?? []
   const lastTask = state.lastTask || ''
 
-  // Infer theme from recent samples if available
   const recentContext = samples.slice(-3).join(' ').slice(0, 200)
   const themeHint = recentContext.length > 20 ? `Contexto reciente: "${recentContext}".` : ''
 
@@ -53,55 +50,71 @@ No debe parecer generado automáticamente en el contenido.
 ${lastTask ? `Última tarea del estudiante: ${lastTask}.` : ''}`
 }
 
-// ─── GET — health check ───────────────────────────
 export async function GET() {
   const rag = await getRagStats().catch(() => ({}))
   return NextResponse.json({
-    status: 'healthy', version: 'v10.2',
-    system: 'LINGORA', platform: 'vercel-nextjs',
-    timestamp: new Date().toISOString(), rag,
+    status: 'healthy',
+    version: 'v10.2',
+    system: 'LINGORA',
+    platform: 'vercel-nextjs',
+    timestamp: new Date().toISOString(),
+    rag,
     environment: {
-      openAIConfigured:  Boolean(process.env.OPENAI_API_KEY),
+      openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
       storageConfigured: Boolean(process.env.S3_BUCKET),
-      awsConfigured:     Boolean(process.env.AWS_ACCESS_KEY_ID),
-      ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true',
+      awsConfigured: Boolean(process.env.AWS_ACCESS_KEY_ID),
+      ttsEnabled: process.env.LINGORA_TTS_ENABLED === 'true',
     },
   })
 }
 
-// ─── POST ────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const body: MessagePayload = await req.json()
     const {
-      message, state = {} as Partial<SessionState>,
-      audio, files,
-      diagnostic = false, samples = [],
+      message,
+      state = {} as Partial<SessionState>,
+      audio,
+      files,
+      diagnostic = false,
+      samples = [],
       autoSchema = false,
-      ttsRequested = false, pronunciationTarget = null,
+      ttsRequested = false,
+      pronunciationTarget = null,
     } = body
 
-    // ── 0. System diagnostic ──────────────────────
     if ((message ?? '').trim() === '*1357*#') {
       const ragStats = await getRagStats().catch(() => ({ error: 'unavailable' }))
       return ok({
         message: 'LINGORA v10.2 · Diagnostico activo',
         diagnostic: {
-          system: 'LINGORA', version: 'v10.2', platform: 'vercel-nextjs',
-          status: 'operational', timestamp: new Date().toISOString(),
-          modules: { schema: true, image: true, audio: true, tts: true, pronunciation: true, rag: true, commercial: true, autoSchema: true },
+          system: 'LINGORA',
+          version: 'v10.2',
+          platform: 'vercel-nextjs',
+          status: 'operational',
+          timestamp: new Date().toISOString(),
+          modules: {
+            schema: true,
+            image: true,
+            audio: true,
+            tts: true,
+            pronunciation: true,
+            rag: true,
+            commercial: true,
+            autoSchema: true,
+          },
           environment: {
-            openAIConfigured:  Boolean(process.env.OPENAI_API_KEY),
+            openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
             storageConfigured: Boolean(process.env.S3_BUCKET),
-            awsConfigured:     Boolean(process.env.AWS_ACCESS_KEY_ID),
-            ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true',
+            awsConfigured: Boolean(process.env.AWS_ACCESS_KEY_ID),
+            ttsEnabled: process.env.LINGORA_TTS_ENABLED === 'true',
           },
           state: {
-            activeMentor:  state.mentor   ?? 'unknown',
-            level:         state.level    ?? 'A0',
-            tokens:        state.tokens   ?? 0,
-            lastTask:      state.lastTask ?? null,
-            lastArtifact:  state.lastArtifact ?? null,
+            activeMentor: state.mentor ?? 'unknown',
+            level: state.level ?? 'A0',
+            tokens: state.tokens ?? 0,
+            lastTask: state.lastTask ?? null,
+            lastArtifact: state.lastArtifact ?? null,
           },
           rag: ragStats,
           commercial: commercialDebug(state),
@@ -109,85 +122,108 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // ── 1. Level diagnostic ───────────────────────
     if (diagnostic) {
       const report = evaluateLevel(samples.length ? samples : (state.samples ?? []))
       return ok({ message: '', diagnostic: report, state })
     }
 
-    // ── 2. autoSchema (milestone reinforcement) ───
-    // This is explicitly governed — only fires when frontend requests it,
-    // uses a system-built prompt, never appears as user message.
     if (autoSchema) {
-      // Guard: don't generate if no meaningful context
       const tokenCount = state.tokens ?? 0
       const sampleCount = (state.samples ?? []).length
+
       if (tokenCount < 3 || sampleCount < 2) {
-        // Silently skip — not enough context for a meaningful schema
         return ok({ message: '', artifact: null, state })
       }
 
       const autoPrompt = buildAutoSchemaPrompt(state)
+
       try {
         const schemaContent = await generateSchemaContent({
-          topic:       autoPrompt,
-          level:       state.level ?? 'A1',
-          uiLanguage:  state.lang  ?? 'en',
+          topic: autoPrompt,
+          level: state.level ?? 'A1',
+          uiLanguage: state.lang ?? 'en',
         })
-        if (!schemaContent?.title) return ok({ message: '', artifact: null, state })
+
+        if (!schemaContent?.title) {
+          return ok({ message: '', artifact: null, state })
+        }
+
         const nextState: Partial<SessionState> = {
           ...state,
-          lastTask:     'schema',
+          lastTask: 'schema',
           lastArtifact: `schema:${schemaContent.title}`,
         }
+
         return ok({
-          message:  '📋 Refuerzo pedagógico:',
-          artifact: { type: 'schema', content: schemaContent, metadata: { timestamp: Date.now(), auto: true } },
-          state:    nextState,
+          message: '📋 Refuerzo pedagógico:',
+          artifact: {
+            type: 'schema',
+            content: schemaContent,
+            metadata: { timestamp: Date.now() },
+          },
+          state: nextState,
         })
       } catch {
-        // AutoSchema failure is silent — don't interrupt the conversation
         return ok({ message: '', artifact: null, state })
       }
     }
 
-    // ── 3. Audio input ────────────────────────────
     if (audio) {
       const tx = await transcribeAudio(audio)
+
       if (!tx.success) {
-        return ok({ message: `No se pudo transcribir el audio: ${tx.message ?? 'error desconocido'}`, state })
+        return ok({
+          message: `No se pudo transcribir el audio: ${tx.message ?? 'error desconocido'}`,
+          state,
+        })
       }
+
       const transcribed = tx.text
 
       if (pronunciationTarget) {
         const evalResult = await evaluatePronunciation(transcribed, pronunciationTarget, state.lang)
+
         if (evalResult.success) {
           return ok({
-            message:            evalResult.feedbackText ?? '',
-            transcription:      transcribed,
+            message: evalResult.feedbackText ?? '',
+            transcription: transcribed,
             pronunciationScore: evalResult.score ?? undefined,
-            artifact:           evalResult.audioFeedback ? audioArtifact(evalResult.audioFeedback.url) : null,
-            ttsAvailable:       evalResult.ttsAvailable,
+            artifact: evalResult.audioFeedback
+              ? audioArtifact(evalResult.audioFeedback.url)
+              : null,
+            ttsAvailable: evalResult.ttsAvailable,
             state,
           })
         }
-        return ok({ message: `"${transcribed}"\n\n${evalResult.message ?? 'No se pudo evaluar pronunciación.'}`, transcription: transcribed, state })
+
+        return ok({
+          message: `"${transcribed}"\n\n${evalResult.message ?? 'No se pudo evaluar pronunciación.'}`,
+          transcription: transcribed,
+          state,
+        })
       }
 
       const mentorText = await getMentorResponse(transcribed, state).catch(() => null)
       const responseText = mentorText ?? `🎤 "${transcribed}"`
       const wantsTts = ttsRequested || process.env.LINGORA_TTS_ENABLED === 'true'
       let ttsArt: ArtifactPayload | null = null
+
       if (wantsTts && mentorText) {
         const tts = await generateSpeech(mentorText, { voice: 'nova' })
         if (tts.success && tts.url) ttsArt = audioArtifact(tts.url)
       }
-      return ok({ message: responseText, transcription: transcribed, artifact: ttsArt, state })
+
+      return ok({
+        message: responseText,
+        transcription: transcribed,
+        artifact: ttsArt,
+        state,
+      })
     }
 
-    // ── 4. File / exercise upload ─────────────────
     if (files?.length) {
       console.log(`[ROUTER] intent=file-processing files=${files.length}`)
+
       try {
         const result = await processAttachment(files, state as Record<string, unknown>)
         const extracted = (result.extractedTexts ?? []).filter(Boolean)
@@ -195,16 +231,28 @@ export async function POST(req: NextRequest) {
 
         if (extracted.length > 0) {
           const textContent = extracted.join('\n\n').slice(0, 2500)
-          const isHonest = textContent.includes('[OCR not available') || textContent.includes('[No text detected') || textContent.includes('[Unsupported file type')
+          const isHonest =
+            textContent.includes('[OCR not available') ||
+            textContent.includes('[No text detected') ||
+            textContent.includes('[Unsupported file type')
+
           if (isHonest) {
             analysisMessage = `Archivo recibido: ${result.names.join(', ')}\n\n${textContent}`
           } else {
             const prompt = `El estudiante subió un archivo (${result.names.join(', ')}). Contenido extraído:\n\n${textContent}\n\nAnaliza el contenido: corrige errores si los hay, da feedback pedagógico concreto. Responde en el idioma del estudiante.`
             const mentorAnalysis = await getMentorResponse(prompt, state).catch(() => null)
-            analysisMessage = mentorAnalysis ?? `Archivo recibido: ${result.names.join(', ')}\n\n${textContent.slice(0, 500)}`
+            analysisMessage =
+              mentorAnalysis ??
+              `Archivo recibido: ${result.names.join(', ')}\n\n${textContent.slice(0, 500)}`
           }
         }
-        return ok({ message: analysisMessage, attachments: result.urls, extractedTexts: extracted, state: result.state as Partial<SessionState> })
+
+        return ok({
+          message: analysisMessage,
+          attachments: result.urls,
+          extractedTexts: extracted,
+          state: result.state as Partial<SessionState>,
+        })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[ROUTER] file-processing error:', msg)
@@ -212,23 +260,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 5. Text intent routing ────────────────────
     const intent = detectIntent(message ?? '')
     let nextState: Partial<SessionState> = { ...state }
 
-    // 5a. Pronunciation guidance
     if (intent.type === 'pronunciation') {
       console.log('[ROUTER] intent=pronunciation')
+
       try {
         const mentorText = await getMentorResponse(message ?? '', nextState)
         const tts = await generateSpeech(mentorText ?? message ?? '', { voice: 'nova', speed: 0.9 })
         nextState = { ...nextState, lastTask: 'pronunciation' }
+
         return ok({
-          message:      mentorText ?? 'Aquí está la guía de pronunciación.',
-          artifact:     tts.success && tts.url ? audioArtifact(tts.url) : null,
+          message: mentorText ?? 'Aquí está la guía de pronunciación.',
+          artifact: tts.success && tts.url ? audioArtifact(tts.url) : null,
           ttsAvailable: tts.success,
-          ttsError:     tts.success ? null : tts.message,
-          state:        nextState,
+          ttsError: tts.success ? null : tts.message,
+          state: nextState,
         })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -236,27 +284,35 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5b. Schema (explicit request)
     if (intent.type === 'schema') {
       console.log('[ROUTER] intent=schema tool=schema-generator')
+
       try {
         const schemaContent = await generateSchemaContent({
-          topic:       message ?? '',
-          level:       nextState.level ?? 'A1',
-          uiLanguage:  nextState.lang  ?? 'en',
+          topic: message ?? '',
+          level: nextState.level ?? 'A1',
+          uiLanguage: nextState.lang ?? 'en',
         })
+
         if (!schemaContent?.title) throw new Error('Estructura de schema inválida')
+
         nextState = {
           ...nextState,
-          tokens:       (nextState.tokens ?? 0) + 10,
-          lastTask:     'schema',
+          tokens: (nextState.tokens ?? 0) + 10,
+          lastTask: 'schema',
           lastArtifact: `schema:${schemaContent.title}`,
         }
+
         console.log(`[ROUTER] result=ok schema="${schemaContent.title}"`)
+
         return ok({
-          message:  'Schema listo:',
-          artifact: { type: 'schema', content: schemaContent, metadata: { timestamp: Date.now() } },
-          state:    nextState,
+          message: 'Schema listo:',
+          artifact: {
+            type: 'schema',
+            content: schemaContent,
+            metadata: { timestamp: Date.now() },
+          },
+          state: nextState,
         })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -265,53 +321,85 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5c. Image / illustration
     if (intent.type === 'illustration') {
       console.log('[ROUTER] intent=illustration tool=image-generator')
+
       try {
         const image = await generateImage(message ?? '')
+
         if (image.success && image.url) {
           nextState = { ...nextState, lastTask: 'illustration', lastArtifact: 'illustration' }
-          return ok({ message: 'Imagen lista:', artifact: { type: 'illustration', url: image.url }, state: nextState })
+          return ok({
+            message: 'Imagen lista:',
+            artifact: { type: 'illustration', url: image.url },
+            state: nextState,
+          })
         }
-        return ok({ message: `No se pudo generar la imagen: ${image.message ?? 'desconocido'}`, artifact: null, state: nextState })
+
+        return ok({
+          message: `No se pudo generar la imagen: ${image.message ?? 'desconocido'}`,
+          artifact: null,
+          state: nextState,
+        })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return ok({ message: `Error al generar imagen: ${msg}`, artifact: null, state: nextState })
       }
     }
 
-    // 5d. PDF
     if (intent.type === 'pdf') {
       console.log('[ROUTER] intent=pdf tool=pdf-generator')
+
       try {
         const contentRes = await openai.chat.completions.create({
           model: 'gpt-4o',
           messages: [
-            { role: 'system', content: 'Eres un asistente pedagógico de LINGORA. Genera contenido educativo estructurado en español sobre el tema pedido. Empieza con el título en la primera línea, luego secciones separadas por línea en blanco. Máximo 600 palabras. Texto limpio sin markdown.' },
+            {
+              role: 'system',
+              content: 'Eres un asistente pedagógico de LINGORA. Genera contenido educativo estructurado en español sobre el tema pedido. Empieza con el título en la primera línea, luego secciones separadas por línea en blanco. Máximo 600 palabras. Texto limpio sin markdown.',
+            },
             { role: 'user', content: message ?? '' },
           ],
-          temperature: 0.4, max_tokens: 800,
+          temperature: 0.4,
+          max_tokens: 800,
         })
+
         const pdfContent = contentRes.choices?.[0]?.message?.content ?? message ?? ''
-        const titleLine  = pdfContent.split('\n')[0].slice(0, 80).trim()
-        const pdf = await generatePDF({ title: titleLine || 'Material LINGORA', content: pdfContent, filename: `lingora-${Date.now()}` })
+        const titleLine = pdfContent.split('\n')[0].slice(0, 80).trim()
+        const pdf = await generatePDF({
+          title: titleLine || 'Material LINGORA',
+          content: pdfContent,
+          filename: `lingora-${Date.now()}`,
+        })
+
         if (pdf.success && pdf.url) {
           nextState = { ...nextState, lastTask: 'pdf', lastArtifact: `pdf:${titleLine}` }
-          return ok({ message: 'PDF listo:', artifact: { type: 'pdf', url: pdf.url }, state: nextState })
+          return ok({
+            message: 'PDF listo:',
+            artifact: { type: 'pdf', url: pdf.url },
+            state: nextState,
+          })
         }
-        return ok({ message: `No se pudo generar el PDF: ${pdf.message ?? 'desconocido'}`, artifact: null, state: nextState })
+
+        return ok({
+          message: `No se pudo generar el PDF: ${pdf.message ?? 'desconocido'}`,
+          artifact: null,
+          state: nextState,
+        })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return ok({ message: `Error al generar PDF: ${msg}`, artifact: null, state: nextState })
       }
     }
 
-    // 5e. Conversation (mentor + RAG + commercial engine)
     console.log('[ROUTER] intent=conversation tool=mentor')
 
     let ragContext = null
-    try { ragContext = await getRagContext(message ?? '') } catch { /* non-critical */ }
+    try {
+      ragContext = await getRagContext(message ?? '')
+    } catch {
+      // non-critical
+    }
 
     const messageWithContext = ragContext
       ? `${message}\n\n[Contexto de referencia — integrar naturalmente, no citar literalmente:]\n${ragContext.text}`
@@ -320,23 +408,23 @@ export async function POST(req: NextRequest) {
     const mentorResponse = await getMentorResponse(messageWithContext, nextState)
     let finalResponse = (mentorResponse ?? '').trim() || 'Hola. ¿En qué puedo ayudarte?'
 
-    // Commercial engine — non-critical
     try {
       const commercial = commercialEngine(message ?? '', nextState)
       if (commercial.trigger) finalResponse += `\n\n${commercial.trigger.message}`
-      if (commercial.state)   nextState = { ...nextState, ...commercial.state }
-    } catch { /* non-critical */ }
+      if (commercial.state) nextState = { ...nextState, ...commercial.state }
+    } catch {
+      // non-critical
+    }
 
-    // Optional TTS
     const wantsTts = ttsRequested || process.env.LINGORA_TTS_ENABLED === 'true'
     let ttsArtifact: ArtifactPayload | null = null
+
     if (wantsTts && finalResponse) {
       const tts = await generateSpeech(finalResponse, { voice: 'nova' })
       if (tts.success && tts.url) ttsArtifact = audioArtifact(tts.url)
     }
 
     return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState })
-
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[CHAT ROUTE] Fatal:', msg)
