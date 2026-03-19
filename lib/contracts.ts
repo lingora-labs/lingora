@@ -1,99 +1,130 @@
 // ================================================
-// LINGORA 10.0 — CONTRACTS
-// Single source of truth for all JSON contracts
-// between frontend and backend.
+// LINGORA 10.2 — CONTRACTS v1.1
+// Single source of truth for all JSON contracts.
 // ================================================
+
+// Note: tutorProtocol imports SessionState from here,
+// and contracts imports tutor types from tutorProtocol.
+// This is import type only — no runtime circular dependency.
+// Future refactor: move tutor types to lib/tutorTypes.ts.
+import type { TutorMode, TutorPhase, PedagogicalAction } from '@/lib/tutorProtocol'
 
 // ─── SESSION STATE ───────────────────────────────
 export interface SessionState {
-  lang: string | null
-  mentor: 'sarah' | 'alex' | 'nick' | null
-  topic: string | null
-  level: string
-  tokens: number
+  lang:    string | null
+  mentor:  'sarah' | 'alex' | 'nick' | null
+  topic:   string | null
+  level:   string
+  tokens:  number
   samples: string[]
   messages: ChatMessage[]
   sessionId: string
   commercialOffers: CommercialOffer[]
-  interestCount?: number
-  lastTask?: string | null
-  lastArtifact?: string | null
-  attachments?: AttachmentRecord[]
+  interestCount?:  number
+  lastTask?:       string | null     // legacy — keep in sync with lastAction during transition
+  lastArtifact?:   string | null
+  attachments?:    AttachmentRecord[]
+
+  // ── Tutor Protocol fields ──
+  tutorMode?:          TutorMode
+  tutorPhase?:         TutorPhase
+  lessonIndex?:        number
+  courseActive?:       boolean
+  lastAction?:         PedagogicalAction | null
+  awaitingQuizAnswer?: boolean        // true when quiz sent, waiting for user response
 }
 
-export const DEFAULT_SESSION: SessionState = {
-  lang: null,
-  mentor: null,
-  topic: null,
-  level: 'A0',
-  tokens: 0,
-  samples: [],
-  messages: [],
-  sessionId: '',
+export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
+  lang:             null,
+  mentor:           null,
+  topic:            null,
+  level:            'A0',
+  tokens:           0,
+  samples:          [],
+  messages:         [],
   commercialOffers: [],
-  interestCount: 0,
-  lastTask: null,
-  lastArtifact: null,
-  attachments: [],
+  interestCount:    0,
+  lastTask:         null,
+  lastArtifact:     null,
+  attachments:      [],
+  tutorMode:        undefined,
+  tutorPhase:       'idle',
+  lessonIndex:      0,
+  courseActive:     false,
+  lastAction:       null,
+  awaitingQuizAnswer: false,
 }
 
 // ─── MESSAGE ─────────────────────────────────────
 export interface ChatMessage {
-  sender: string
-  html: string
+  sender:     string
+  html:       string
   timestamp?: number
 }
 
 // ─── INCOMING PAYLOAD ────────────────────────────
 export interface MessagePayload {
-  message?: string
-  state?: Partial<SessionState>
-  audio?: AudioInput | null
-  files?: FileInput[] | null
-  diagnostic?: boolean
-  samples?: string[]
-  autoSchema?: boolean
-  ttsRequested?: boolean
+  message?:             string
+  state?:               Partial<SessionState>
+  audio?:               AudioInput | null
+  files?:               FileInput[] | null
+  diagnostic?:          boolean
+  samples?:             string[]
+  autoSchema?:          boolean
+  ttsRequested?:        boolean
   pronunciationTarget?: string | null
 }
 
-// ─── AUDIO ───────────────────────────────────────
+// ─── AUDIO INPUT ─────────────────────────────────
 export interface AudioInput {
-  data: string        // base64
-  format: string      // 'webm' | 'mp4' | 'ogg' | 'wav'
+  data:   string   // base64
+  format: string
 }
 
-// ─── FILE UPLOAD ─────────────────────────────────
+// ─── FILE INPUT ──────────────────────────────────
 export interface FileInput {
-  name: string
-  type: string        // MIME type
-  data: string        // base64
+  name:  string
+  type:  string
+  data:  string   // base64
   size?: number
 }
 
 // ─── ARTIFACTS ───────────────────────────────────
-export type ArtifactType = 'schema' | 'illustration' | 'pdf' | 'audio'
 
 export interface SchemaArtifact {
-  type: 'schema'
-  content: SchemaContent
-  metadata?: { timestamp: number }
+  type:      'schema'
+  content:   SchemaContent
+  metadata?: { timestamp: number; auto?: boolean }
 }
 
 export interface IllustrationArtifact {
   type: 'illustration'
-  url: string
+  url:  string
 }
 
 export interface PdfArtifact {
   type: 'pdf'
-  url: string         // S3 URL or data:application/pdf;base64,...
+  url:  string
 }
 
 export interface AudioArtifact {
-  type: 'audio'
-  url: string         // S3 URL or data:audio/mpeg;base64,...
+  type:   'audio'
+  url:    string
   method: 's3' | 'dataurl'
+}
+
+// QuizArtifact: standalone quiz (not embedded in schema)
+// Used when action === 'quiz' without a full schema
+export interface QuizArtifact {
+  type:    'quiz'
+  content: QuizContent
+}
+
+export interface QuizContent {
+  title:     string
+  topic:     string
+  level:     string
+  questions: QuizItem[]
 }
 
 export type ArtifactPayload =
@@ -101,37 +132,53 @@ export type ArtifactPayload =
   | IllustrationArtifact
   | PdfArtifact
   | AudioArtifact
+  | QuizArtifact
   | null
 
 // ─── SCHEMA CONTENT ──────────────────────────────
 export interface SchemaContent {
-  title: string
-  block?: string
-  objective?: string
-  keyConcepts?: string[]
-  subtopics?: SchemaSubtopic[]
+  title:           string
+  block?:          string
+  objective?:      string
+  keyConcepts?:    string[]
+  tableRows?:      SchemaTableRow[]
+  subtopics?:      SchemaSubtopic[]
+  examples?:       string[]
+  summary?:        string
   globalTakeaway?: string
-  quiz?: QuizItem[]
+  keyTakeaway?:    string
+  quiz?:           QuizItem[]
+}
+
+export interface SchemaTableRow {
+  left:        string
+  right:       string
+  label?:      string
+  value?:      string
+  persona?:    string
+  forma?:      string
+  term?:       string
+  definition?: string
 }
 
 export interface SchemaSubtopic {
-  title: string
-  content: string
+  title:        string
+  content:      string
   keyTakeaway?: string
 }
 
 export interface QuizItem {
   question: string
-  options: string[]
-  correct: number
+  options:  string[]
+  correct:  number
 }
 
 // ─── DIAGNOSTIC ──────────────────────────────────
 export interface DiagnosticState {
-  level: string
+  level:      string
   confidence: 'insufficient' | 'low' | 'medium' | 'high'
-  samples: number
-  score?: number
+  samples:    number
+  score?:     number
   nextLevel?: string
 }
 
@@ -139,39 +186,39 @@ export interface DiagnosticState {
 export interface CommercialOffer {
   timestamp: number
   sessionId: string | null
-  type: string
-  score: number
+  type:      string
+  score:     number
   interest?: boolean
 }
 
 export interface CommercialTrigger {
-  type: string
-  level: 'high' | 'medium'
+  type:    string
+  level:   'high' | 'medium'
   message: string
 }
 
 // ─── ATTACHMENT ──────────────────────────────────
 export interface AttachmentRecord {
-  name: string
-  type: string
-  size: number
-  url: string | null
-  extractedText: string
+  name:             string
+  type:             string
+  size:             number
+  url:              string | null
+  extractedText:    string
   extractionMethod: string
-  ocrAvailable: boolean | null
+  ocrAvailable:     boolean | null
 }
 
 // ─── API RESPONSE ────────────────────────────────
 export interface ChatResponse {
-  message: string
-  artifact?: ArtifactPayload
-  state?: Partial<SessionState>
-  transcription?: string
+  message:             string
+  artifact?:           ArtifactPayload
+  state?:              Partial<SessionState>
+  transcription?:      string
   pronunciationScore?: number
-  ttsAvailable?: boolean
-  ttsError?: string | null
-  attachments?: string[]
-  extractedTexts?: string[]
-  diagnostic?: unknown
-  error?: string
+  ttsAvailable?:       boolean
+  ttsError?:           string | null
+  attachments?:        string[]
+  extractedTexts?:     string[]
+  diagnostic?:         unknown
+  error?:              string
 }
