@@ -1,50 +1,78 @@
 // ================================================
-// LINGORA 10.0 — MENTOR ENGINE
+// LINGORA 10.2 — MENTOR ENGINE v1.1
+// NORTH_STAR removed — mentor is governed, not free.
+// tutorPhase and courseActive now in context.
 // ================================================
 
 import OpenAI from 'openai'
-import { getMentorProfile } from './profiles'
-import type { SessionState } from '@/lib/contracts'
+import { getMentorProfile }           from './profiles'
+import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
+import type { SessionState }          from '@/lib/contracts'
+import type { TutorMode }             from '@/lib/tutorProtocol'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 const FALLBACKS: Record<string, string> = {
-  es: 'Lo siento, no pude procesar tu mensaje. Intenta de nuevo.',
-  en: 'Sorry, I could not process your message right now. Please try again.',
-  no: 'Beklager, jeg kunne ikke behandle meldingen din. Proev igjen.',
-  fr: 'Desole, je nai pas pu traiter votre message. Reessayez.',
-  de: 'Entschuldigung, ich konnte Ihre Nachricht nicht verarbeiten. Versuchen Sie es erneut.',
-  it: 'Mi dispiace, non ho potuto elaborare il tuo messaggio. Riprova.',
-  pt: 'Desculpe, nao consegui processar sua mensagem. Tente novamente.',
+  es: 'No pude procesar tu mensaje. Intenta de nuevo.',
+  en: 'Could not process your message. Please try again.',
+  no: 'Kunne ikke behandle meldingen din. Prøv igjen.',
+  fr: 'Je n\'ai pas pu traiter votre message. Réessayez.',
+  de: 'Konnte Ihre Nachricht nicht verarbeiten. Versuchen Sie es erneut.',
+  it: 'Non ho potuto elaborare il tuo messaggio. Riprova.',
+  pt: 'Não consegui processar sua mensagem. Tente novamente.',
+  ar: 'لم أتمكن من معالجة رسالتك. يرجى المحاولة مرة أخرى.',
+  ja: 'メッセージを処理できませんでした。もう一度お試しください。',
+  zh: '无法处理您的消息。请重试。',
 }
 
-function buildSessionContext(state: Partial<SessionState>): string {
+function buildContext(state: Partial<SessionState>): string {
   const parts: string[] = []
-  if (state.level && state.level !== 'A0')  parts.push('- Nivel estimado: ' + state.level)
-  if ((state.tokens || 0) > 0)               parts.push('- Mensajes en sesion: ' + state.tokens)
-  if (state.lang)                            parts.push('- Idioma de interaccion: ' + state.lang)
-  if (state.topic)                           parts.push('- Topico seleccionado: ' + state.topic)
-  if (state.lastTask)                        parts.push('- Ultima tarea pedida: ' + state.lastTask)
-  if (state.lastArtifact)                    parts.push('- Ultimo artefacto generado: ' + state.lastArtifact)
-  if (state.samples && state.samples.length > 0) parts.push('- Muestras analizadas: ' + state.samples.length)
+
+  if (state.level && state.level !== 'A0')  parts.push(`Level: ${state.level}`)
+  if ((state.tokens ?? 0) > 0)              parts.push(`Exchanges: ${state.tokens}`)
+  if (state.topic)                          parts.push(`Topic: ${state.topic}`)
+  if (state.lang)                           parts.push(`Student language: ${state.lang}`)
+  if (state.lastAction)                     parts.push(`Last action: ${state.lastAction}`)
+  if (state.lessonIndex && state.lessonIndex > 0) parts.push(`Lesson index: ${state.lessonIndex}`)
+
+  // Tutor protocol state — critical for consistent behavior
+  if (state.tutorPhase)                     parts.push(`Current phase: ${state.tutorPhase}`)
+  if (state.courseActive !== undefined)     parts.push(`Course active: ${state.courseActive}`)
+  if (state.awaitingQuizAnswer)             parts.push(`Awaiting quiz answer: true`)
+  if ((state.samples ?? []).length > 0)     parts.push(`Student samples collected: ${state.samples!.length}`)
+
   return parts.length > 0
-    ? '\n\nContexto de sesion activa:\n' + parts.join('\n')
+    ? '\n\n[Session state: ' + parts.join(' · ') + ']'
     : ''
 }
 
-const NORTH_STAR = '\n\nUna regla que nunca se rompe: conservas todas las capacidades conversacionales de una IA de proposito general. No eres un sistema restringido. Eres un mentor con especialidad, no un bot con guion.'
-
 export async function getMentorResponse(
-  message: string,
-  state: Partial<SessionState> = {}
+  message:          string,
+  state:            Partial<SessionState> = {},
+  systemDirective?: string
 ): Promise<string> {
-  const profile    = getMentorProfile(state.mentor)
-  const context    = buildSessionContext(state)
-  const systemPrompt = profile.system + context + NORTH_STAR
+  const profile  = getMentorProfile(state.mentor)
+  const mode     = (state.tutorMode ?? 'conversational') as TutorMode
+  const context  = buildContext(state)
+  const modeInstructions = getModeInstruction(mode, state.topic ?? null)
+
+  // System prompt composition:
+  // 1. Mentor personality (who they are — from profiles.ts)
+  // 2. Mode instructions (how they behave in this context)
+  // 3. Action directive (what to do right now — from tutorProtocol)
+  // 4. Prohibitions (what to never do)
+  // 5. Session context (current state)
+  const systemPrompt = [
+    profile.system,
+    modeInstructions,
+    systemDirective ? `\n\n${systemDirective}` : '',
+    TUTOR_PROHIBITIONS,
+    context,
+  ].filter(Boolean).join('')
 
   try {
     const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Mentor timeout')), 12000)
+      setTimeout(() => reject(new Error('Mentor timeout')), 14000)
     )
     const completion = await Promise.race([
       openai.chat.completions.create({
@@ -53,17 +81,17 @@ export async function getMentorResponse(
           { role: 'system', content: systemPrompt },
           { role: 'user',   content: String(message || '') },
         ],
-        temperature: 0.82,
-        top_p:       0.9,
-        max_tokens:  600,
+        temperature: 0.7,    // Reduced from 0.82 for more consistent tutoring behavior
+        top_p:       0.88,
+        max_tokens:  650,
       }),
       timeout,
     ])
-    return (completion.choices?.[0]?.message?.content || '').trim()
+    return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.error('[MENTOR] Error:', msg)
-    const lang = state.lang || 'en'
-    return FALLBACKS[lang] || FALLBACKS.en
+    const lang = state.lang ?? 'en'
+    return FALLBACKS[lang] ?? FALLBACKS.en
   }
 }
