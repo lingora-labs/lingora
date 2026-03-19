@@ -22,7 +22,7 @@ type Lang = 'es' | 'en' | 'no' | 'fr' | 'de' | 'it' | 'pt' | 'ar' | 'ja' | 'zh'
 type Phase = 'onboarding' | 'splash' | 'chat'
 
 interface Artifact {
-  type: 'schema' | 'illustration' | 'pdf' | 'audio'
+  type: 'schema' | 'quiz' | 'illustration' | 'pdf' | 'audio'
   url?: string
   content?: Record<string, unknown>
   metadata?: Record<string, unknown>
@@ -33,6 +33,13 @@ interface SS {
   lang: Lang; mentor: MK; topic: TK; level: string; tokens: number
   samples: string[]; sessionId: string; commercialOffers: unknown[]
   lastTask: string | null; lastArtifact: string | null
+  // Tutor protocol fields — optional, sent back from route.ts
+  tutorMode?:          string
+  tutorPhase?:         string
+  lessonIndex?:        number
+  courseActive?:       boolean
+  lastAction?:         string | null
+  awaitingQuizAnswer?: boolean
 }
 interface TableRow { left: string; right: string }
 interface QuizQ    { question: string; options: string[]; correct: number }
@@ -203,7 +210,7 @@ function TableBlock({ rows }: { rows: TableRow[] }) {
   )
 }
 
-function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
+function QuizBlock({ quiz, deferCorrection = false }: { quiz: QuizQ[]; deferCorrection?: boolean }) {
   const [ans, setAns] = useState<Record<number, number|null>>({})
   if (!quiz.length) return null
   return (
@@ -215,13 +222,25 @@ function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
             <div style={{ fontSize:14, fontWeight:700, color:'#fff', marginBottom:10, lineHeight:1.5 }}>{qi+1}. {q.question}</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {q.options.map((opt, oi) => {
-                const isOk = oi === q.correct; const isSel = oi === sel
+                const isSel = oi === sel
                 let bg='transparent', bc='var(--border)', col='var(--silver)'
-                if (done && isOk)  { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
-                if (done && isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
+                if (done && deferCorrection) {
+                  // Backend quiz (parseQuizFromText): neutral blue for selected, defer scoring to mentor response
+                  if (isSel) { bg='rgba(56,189,248,.10)'; bc='#38bdf8'; col='#38bdf8' }
+                } else if (done) {
+                  // Schema quiz: local scoring is valid (schema generator produces real correct index)
+                  const isOk = oi === q.correct
+                  if (isOk)           { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
+                  if (isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
+                }
                 return <button key={oi} disabled={done} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', padding:'9px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
               })}
             </div>
+            {done && deferCorrection && (
+              <div style={{ marginTop:8, fontSize:12, color:'#38bdf8', fontWeight:600 }}>
+                Seleccionada · escribe tu respuesta al tutor para continuar
+              </div>
+            )}
           </div>
         )
       })}
@@ -310,6 +329,20 @@ function SchemaBlock({ content }: { content: Record<string, unknown> }) {
 
 function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'schema' && a.content) return <SchemaBlock content={a.content} />
+  if (a.type === 'quiz' && a.content) {
+    const qc = a.content as { title: string; questions: Array<{ question: string; options: string[]; correct: number }> }
+    return (
+      <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
+          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
+        </div>
+        <div style={{ padding:14 }}>
+          <QuizBlock quiz={qc.questions} deferCorrection={true} />
+        </div>
+      </div>
+    )
+  }
   if (a.type === 'illustration' && a.url) return (
     <div style={{ marginTop:8 }}>
       <img src={a.url} alt="LINGORA visual" style={{ maxWidth:'100%', borderRadius:14, display:'block', border:'1px solid var(--border)' }} />
@@ -431,7 +464,8 @@ export default function BetaPage() {
       if (data.diagnostic) { addMsg({ sender:'ln', text:'```\n'+JSON.stringify(data.diagnostic,null,2)+'\n```' }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
-      setSession(s => { const n = {...s, tokens: (s.tokens||0)+1 }; sessionRef.current = n; return n })
+      // Token count comes from server state — do NOT increment here
+      // route.ts is the authoritative source to avoid double counting
       addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
