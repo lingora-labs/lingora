@@ -416,7 +416,7 @@ export async function POST(req: NextRequest) {
     // all return 'conversation', which would miss the fast-path entirely.
     // Checking isTableRequest() directly guarantees the fast-path fires correctly.
     const messageIsTable = isTableRequest(message ?? '')
-    if (messageIsTable || intent.type === 'table') {
+    if (messageIsTable) {
       console.log('[ROUTER] fast-path=table')
       try {
         const tableContent = await generateTableContent(message ?? '', enrichedState)
