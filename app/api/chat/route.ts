@@ -19,6 +19,7 @@ import {
 import type {
   MessagePayload, ChatResponse, SessionState,
   ArtifactPayload, AudioArtifact, QuizArtifact, QuizItem,
+  TableArtifact, TableContent,
 } from '@/lib/contracts'
 
 export const runtime     = 'nodejs'
@@ -41,6 +42,7 @@ function audioArtifact(url: string): AudioArtifact {
 function intentToAction(intentType: string): PedagogicalAction | null {
   const map: Partial<Record<string, PedagogicalAction>> = {
     schema:        'schema',
+    table:         'schema',    // table intent → schema action type, but routed separately below
     illustration:  'illustration',
     pdf:           'pdf',
     pronunciation: 'pronunciation',
@@ -92,7 +94,70 @@ function parseQuizFromText(text: string, topic: string, level: string): QuizArti
   }
 }
 
-// Build auto-schema prompt in Spanish, internal — never shown as user message
+// ─── Table generator (fast path — bypasses full protocol) ────
+// JSON-coercive prompt: model MUST return columns + rows, nothing else.
+// Used when user asks for simple comparison/conjugation table.
+async function generateTableContent(
+  message: string,
+  state:   Partial<SessionState>
+): Promise<TableContent | null> {
+  const level = state.level ?? 'A1'
+  const topic = state.topic ?? 'Spanish'
+
+  const prompt = `You are a Spanish language data extractor for LINGORA.
+The student (level ${level}, topic: ${topic}) asked: "${message}"
+
+Return ONLY valid JSON. No markdown. No explanations. No preamble.
+Shape:
+{
+  "title": "short descriptive title",
+  "subtitle": "optional context line",
+  "columns": ["Column1", "Column2", "Column3"],
+  "rows": [
+    ["cell", "cell", "cell"],
+    ["cell", "cell", "cell"]
+  ],
+  "tone": "comparison" | "conjugation" | "vocabulary" | "exam"
+}
+
+Rules:
+- columns: 2-4 headers maximum
+- rows: 3-8 rows maximum
+- cells: concise (1-5 words each)
+- include emojis in cells where natural (✅ ❌ 🟢 🔴 etc.)
+- tone: pick the most appropriate one
+- If the request is a verb conjugation, tone = "conjugation", columns = ["Persona", "Forma", "Ejemplo"]
+- If comparison (ser vs estar, por vs para), tone = "comparison", columns = ["Criterio", "SER", "ESTAR"] etc.
+- If vocabulary, tone = "vocabulary", columns = ["Palabra", "Significado", "Ejemplo"]`
+
+  try {
+    const res = await openai.chat.completions.create({
+      model:           'gpt-4o',
+      messages:        [{ role: 'user', content: prompt }],
+      temperature:     0.2,
+      max_tokens:      600,
+      response_format: { type: 'json_object' },
+    })
+    const raw = res.choices?.[0]?.message?.content ?? ''
+    const parsed = JSON.parse(raw) as TableContent
+    if (!parsed.columns?.length || !parsed.rows?.length) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+// Detect if this is a simple table request (fast path — no protocol needed)
+function isTableRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'tabla', 'table', 'cuadro', 'cuadrito', 'cuadro simple', 'cuadro pequeño',
+    'compárame', 'comparame', 'compara', 'diferencias entre', 'diferencia entre',
+    'resumen en tabla', 'resume en tabla', 'en tabla', 'en un cuadro',
+    'conjugación de', 'conjugacion de', 'conjuga el verbo', 'conjuga ',
+    'vocabulario de', 'lista de', 'comparison', 'versus', ' vs ',
+  ].some(p => m.includes(p))
+}
 function buildAutoSchemaPrompt(state: Partial<SessionState>): string {
   const topic   = state.topic    ?? 'conversación'
   const level   = state.level    ?? 'A1'
@@ -120,7 +185,7 @@ export async function GET() {
       openAIConfigured:  Boolean(process.env.OPENAI_API_KEY),
       storageConfigured: Boolean(process.env.S3_BUCKET),
       awsConfigured:     Boolean(process.env.AWS_ACCESS_KEY_ID),
-      ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true',
+      ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true' || Boolean(process.env.OPENAI_API_KEY),
     },
   })
 }
@@ -157,7 +222,7 @@ export async function POST(req: NextRequest) {
             openAIConfigured:  Boolean(process.env.OPENAI_API_KEY),
             storageConfigured: Boolean(process.env.S3_BUCKET),
             awsConfigured:     Boolean(process.env.AWS_ACCESS_KEY_ID),
-            ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true',
+            ttsEnabled:        process.env.LINGORA_TTS_ENABLED === 'true' || Boolean(process.env.OPENAI_API_KEY),
           },
           state: {
             activeMentor:       state.mentor       ?? 'unknown',
@@ -264,7 +329,9 @@ export async function POST(req: NextRequest) {
         samples:       [...(enrichedState.samples ?? []), transcribed],
       }
 
-      const wantsTts = ttsRequested || process.env.LINGORA_TTS_ENABLED === 'true'
+      const wantsTts = ttsRequested ||
+                       process.env.LINGORA_TTS_ENABLED === 'true' ||
+                       Boolean(process.env.OPENAI_API_KEY)
       let ttsArt: ArtifactPayload | null = null
       if (wantsTts && mentorText) {
         const tts = await generateSpeech(mentorText, { voice: 'nova' })
@@ -275,6 +342,44 @@ export async function POST(req: NextRequest) {
 
     // ── 4. File upload ────────────────────────────
     if (files?.length) {
+      // Vision fast-path: if the first file is an image, use OpenAI vision directly
+      const firstFile = files[0]
+      const isImage   = firstFile?.type?.startsWith('image/')
+
+      if (isImage && firstFile.data) {
+        console.log('[ROUTER] intent=vision file=' + firstFile.name)
+        try {
+          const userText  = (message ?? '').trim()
+          const prompt    = userText
+            ? userText
+            : 'Analyze this image in the context of Spanish language learning. Describe what you see, identify any Spanish text or educational content, and provide relevant pedagogical feedback.'
+
+          const visionRes = await openai.chat.completions.create({
+            model:      'gpt-4o',
+            max_tokens: 800,
+            messages:   [{
+              role:    'user',
+              content: [
+                { type: 'text',      text: prompt },
+                { type: 'image_url', image_url: { url: `data:${firstFile.type};base64,${firstFile.data}`, detail: 'auto' } },
+              ],
+            }],
+          })
+
+          const visionText = visionRes.choices?.[0]?.message?.content ?? ''
+          const nextState: Partial<SessionState> = {
+            ...enrichedState,
+            lastTask:   'vision',
+            lastAction: 'conversation' as PedagogicalAction,
+            tokens:     (enrichedState.tokens ?? 0) + 1,
+          }
+          return ok({ message: visionText || 'He analizado la imagen.', state: nextState })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error('[ROUTER] vision error:', msg)
+          // Fall through to normal attachment processing
+        }
+      }
       try {
         const result    = await processAttachment(files, enrichedState as Record<string, unknown>)
         const extracted = (result.extractedTexts ?? []).filter(Boolean)
@@ -303,6 +408,39 @@ export async function POST(req: NextRequest) {
     // ── 5. Text — protocol-governed routing ───────
     const intent   = detectIntent(message ?? '')
     const explicit = intentToAction(intent.type)
+
+    // ── 5-FAST. Table fast path ───────────────────
+    // Bypass full protocol for simple table requests.
+    // isTableRequest() runs BEFORE using intent result —
+    // because detectIntent() has no 'table' type: 'tabla', 'compara', 'conjugación'
+    // all return 'conversation', which would miss the fast-path entirely.
+    // Checking isTableRequest() directly guarantees the fast-path fires correctly.
+    const messageIsTable = isTableRequest(message ?? '')
+    if (messageIsTable || intent.type === 'table') {
+      console.log('[ROUTER] fast-path=table')
+      try {
+        const tableContent = await generateTableContent(message ?? '', enrichedState)
+        if (tableContent) {
+          const tableArtifact: TableArtifact = { type: 'table', content: tableContent }
+          const nextState: Partial<SessionState> = {
+            ...enrichedState,
+            lastTask:    'table',
+            lastAction:  'schema',   // treat as schema for protocol continuity
+            tutorPhase:  'lesson',
+            tokens:      (enrichedState.tokens ?? 0) + 1,
+            courseActive: true,
+          }
+          console.log(`[ROUTER] table ok title="${tableContent.title}"`)
+          return ok({ message: tableContent.title ?? 'Tabla lista:', artifact: tableArtifact, state: nextState })
+        }
+        // If table generation failed, fall through to schema
+        console.log('[ROUTER] table generation failed, falling through to schema')
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[ROUTER] table error:', msg)
+        // Fall through to full schema
+      }
+    }
 
     const {
       action, systemDirective, nextPhase,
@@ -483,8 +621,11 @@ export async function POST(req: NextRequest) {
       if (commercial.state)   nextState = { ...nextState, ...commercial.state }
     } catch { /* non-critical */ }
 
-    // Optional TTS
-    const wantsTts = ttsRequested || process.env.LINGORA_TTS_ENABLED === 'true'
+    // Optional TTS — enabled by env var, request flag, or by default if OPENAI is configured
+    // generateSpeech() already falls back to data:audio/mpeg;base64 when S3 is unavailable
+    const wantsTts = ttsRequested ||
+                     process.env.LINGORA_TTS_ENABLED === 'true' ||
+                     Boolean(process.env.OPENAI_API_KEY)
     let ttsArtifact: ArtifactPayload | null = null
     if (wantsTts && finalResponse) {
       const tts = await generateSpeech(finalResponse, { voice: 'nova' })
@@ -503,4 +644,3 @@ export async function POST(req: NextRequest) {
     return ok({ message: 'Error interno. Por favor intenta de nuevo.', error: msg }, 500)
   }
 }
-
