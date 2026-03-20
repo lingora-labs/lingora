@@ -127,12 +127,28 @@ export interface QuizContent {
   questions: QuizItem[]
 }
 
+// TableArtifact: fast visual table — bypasses full protocol pipeline
+// Used for simple comparisons, conjugation grids, vocabulary tables
+export interface TableArtifact {
+  type:    'table'
+  content: TableContent
+}
+
+export interface TableContent {
+  title?:    string
+  subtitle?: string
+  columns:   string[]
+  rows:      string[][]
+  tone?:     'comparison' | 'conjugation' | 'vocabulary' | 'exam'
+}
+
 export type ArtifactPayload =
   | SchemaArtifact
   | IllustrationArtifact
   | PdfArtifact
   | AudioArtifact
   | QuizArtifact
+  | TableArtifact
   | null
 
 // ─── SCHEMA CONTENT ──────────────────────────────
@@ -222,3 +238,4 @@ export interface ChatResponse {
   diagnostic?:         unknown
   error?:              string
 }
+
