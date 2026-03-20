@@ -391,15 +391,42 @@ function doExportTxt(msgs: Msg[]) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'})); a.download = `lingora-${ts}.txt`; a.click()
 }
 
-function doExportPdf(msgs: Msg[], ss_: SS) {
-  const ts = new Date().toLocaleString()
-  const rows = msgs.map(m => {
-    const who = m.sender === 'user' ? 'You' : m.sender.charAt(0).toUpperCase() + m.sender.slice(1)
-    const bg = m.sender === 'user' ? '#e0fdf4' : '#f1f5f9'
-    return `<div style="margin:8px 0;padding:10px 14px;border-radius:10px;background:${bg};font-size:13px;line-height:1.6"><strong>${who}:</strong><br>${m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`
-  }).join('')
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>LINGORA</title><style>body{font-family:sans-serif;max-width:680px;margin:0 auto;padding:20px}h1{font-size:20px;color:#0d1828}p.meta{font-size:11px;color:#888;margin-bottom:16px;border-bottom:1px solid #eee;padding-bottom:10px}@media print{body{padding:10px}}</style></head><body><h1>LINGORA · Chat Export</h1><p class="meta">${ts} · Nivel: ${ss_.level} · Tokens: ${ss_.tokens} · Mentor: ${ss_.mentor}</p>${rows}</body></html>`
-  const w = window.open('','_blank'); if (!w) return; w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { w.print(); w.close() }, 400)
+// PDF export via backend — real document, not window.print()
+async function doExportPdfBackend(msgs: Msg[], ss: SS) {
+  if (!msgs.length) return
+  const lines = msgs
+    .map(m => ({
+      sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
+      text:   (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    }))
+    .filter(l => l.text.length > 0)
+
+  // Prefix with 'pdf' to guarantee detectIntent → pdf branch in route.ts
+  const transcript = lines.map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
+  const exportMessage = `pdf: Genera el documento PDF de esta sesión de tutoría LINGORA.\nMentor: ${ss.mentor} · Nivel: ${ss.level} · Tema: ${ss.topic}\n\n${transcript}`
+
+  try {
+    const res = await fetch('/api/chat', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        message:    exportMessage,
+        exportPdf:  true,   // explicit flag for future route handling
+        state:      { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic },
+      }),
+    })
+    const data = await res.json()
+    if (data.artifact?.type === 'pdf' && data.artifact?.url) {
+      const a = document.createElement('a')
+      a.href = data.artifact.url
+      a.download = `lingora-session-${Date.now()}.pdf`
+      a.click()
+      return
+    }
+    doExportTxt(msgs)  // fallback: clean TXT if PDF generation fails
+  } catch {
+    doExportTxt(msgs)
+  }
 }
 
 // ─── Main ─────────────────────────────────────────
@@ -415,6 +442,12 @@ export default function BetaPage() {
   const [loading,    setLoading]    = useState(false)
   const [recording,  setRecording]  = useState(false)
   const [showExport, setShowExport] = useState(false)
+
+  // Unified composer state — pending items wait for explicit send
+  const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob | null>(null)
+  const [pendingAudioUrl,  setPendingAudioUrl]  = useState<string | null>(null)
+  const [pendingFiles,     setPendingFiles]      = useState<Array<{ name: string; type: string; data: string; size: number }>>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [session, setSession] = useState<SS>({
     lang: 'en', mentor: 'sarah', topic: 'conversation',
@@ -473,13 +506,52 @@ export default function BetaPage() {
     } finally { setLoading(false) }
   }, [addMsg])
 
-  const sendText = useCallback(async () => {
-    const msg = input.trim(); if (!msg || loading) return
+  // ── Unified send: text + pending audio + pending files ──
+  const sendComposer = useCallback(async () => {
+    const msg        = input.trim()
+    const hasText    = msg.length > 0
+    const hasAudio   = pendingAudioBlob !== null
+    const hasFiles   = pendingFiles.length > 0
+    if (!hasText && !hasAudio && !hasFiles) return
+    if (loading) return
+
     setInput(''); if (taRef.current) taRef.current.style.height = 'auto'
-    addMsg({ sender:'user', text: msg })
-    setSession(s => { const n = {...s, samples:[...s.samples,msg]}; sessionRef.current = n; return n })
-    await callAPI({ message: msg })
-  }, [input, loading, addMsg, callAPI])
+
+    // Build display label and samples
+    if (hasText) {
+      addMsg({ sender:'user', text: msg })
+      setSession(s => { const n = {...s, samples:[...s.samples,msg]}; sessionRef.current = n; return n })
+    }
+
+    // Assemble payload — audio, files, and/or text can coexist
+    const payload: Record<string, unknown> = {}
+    if (hasText)  payload.message = msg
+
+    if (hasAudio && pendingAudioBlob) {
+      if (!hasText) addMsg({ sender:'user', text:'🎤 Audio enviado' })
+      const b64 = await new Promise<string>(res => {
+        const r = new FileReader()
+        r.onload = () => res((r.result as string).split(',')[1] || '')
+        r.readAsDataURL(pendingAudioBlob)
+      })
+      payload.audio = { data: b64, format: 'webm' }
+    }
+
+    if (hasFiles) {
+      if (!hasText && !hasAudio) addMsg({ sender:'user', text:`📎 ${pendingFiles.map(f=>f.name).join(', ')}` })
+      payload.files = pendingFiles
+    }
+
+    // Clear pending state before API call
+    setPendingAudioBlob(null)
+    if (pendingAudioUrl) { URL.revokeObjectURL(pendingAudioUrl); setPendingAudioUrl(null) }
+    setPendingFiles([])
+
+    await callAPI(payload)
+  }, [input, loading, pendingAudioBlob, pendingAudioUrl, pendingFiles, addMsg, callAPI])
+
+  // Legacy alias — onKeyDown still calls sendText → sendComposer
+  const sendText = sendComposer
 
   // Splash + start chat
   const startChat = useCallback((m: MK, t: TK, l: Lang) => {
@@ -501,31 +573,43 @@ export default function BetaPage() {
     }, 3600)
   }, [])
 
-  // Voice
+  // Voice: Record → Preview → Send (via sendComposer)
   const toggleRec = useCallback(async () => {
-    if (recording) { mrRef.current?.stop(); setRecording(false); return }
+    if (recording) {
+      mrRef.current?.stop()  // triggers onstop → sets pendingAudioBlob
+      setRecording(false)
+      return
+    }
+    // Clear any previous pending audio before new recording
+    if (pendingAudioUrl) { URL.revokeObjectURL(pendingAudioUrl); setPendingAudioUrl(null) }
+    setPendingAudioBlob(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       chunksRef.current = []
       const rec = new MediaRecorder(stream)
       rec.ondataavailable = e => chunksRef.current.push(e.data)
-      rec.onstop = async () => {
+      rec.onstop = () => {
         stream.getTracks().forEach(t => t.stop())
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-        const b64 = await new Promise<string>(res => { const r = new FileReader(); r.onload = () => res((r.result as string).split(',')[1]||''); r.readAsDataURL(blob) })
-        addMsg({ sender:'user', text:'🎤 Audio enviado' })
-        await callAPI({ audio: { data: b64, format: 'webm' } })
+        const url  = URL.createObjectURL(blob)
+        setPendingAudioBlob(blob)   // stage — not sent yet
+        setPendingAudioUrl(url)     // for preview player
       }
       rec.start(); mrRef.current = rec; setRecording(true)
     } catch (e) { addMsg({ sender:'ln', text:`Micrófono no disponible: ${e instanceof Error ? e.message : String(e)}` }) }
-  }, [recording, addMsg, callAPI])
+  }, [recording, pendingAudioUrl, addMsg])
 
+  // File: select → stage preview (not auto-send)
   const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return
+    const file = e.target.files?.[0]; if (!file) return
     const r = new FileReader()
-    r.onload = async () => { const b64 = (r.result as string).split(',')[1]||''; addMsg({ sender:'user', text:`📎 ${f.name}` }); await callAPI({ files: [{ name:f.name, type:f.type, data:b64, size:f.size }] }) }
-    r.readAsDataURL(f); e.target.value = ''
-  }, [addMsg, callAPI])
+    r.onload = () => {
+      const b64 = (r.result as string).split(',')[1] || ''
+      setPendingFiles(prev => [...prev, { name: file.name, type: file.type, data: b64, size: file.size }])
+    }
+    r.readAsDataURL(file)
+    e.target.value = ''
+  }, [])
 
   // ─── Render ──────────────────────────────────────
   return (
@@ -670,13 +754,32 @@ export default function BetaPage() {
                 {mm.name}
                 <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:999, background:mm.bg, color:mm.color, border:`1px solid ${mm.color}33` }}>{mm.code}</span>
               </div>
-              <div style={{ fontSize:11, color:'var(--muted)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                {copy.tn[TOPIC_KEYS.indexOf(topic)]} · LINGORA
-              </div>
+              {/* Lesson progress bar */}
+              {(() => {
+                const tok    = session.tokens ?? 0
+                const lesson = (session.lessonIndex ?? 0) + 1
+                const inLesson = tok % 10
+                const pct    = Math.min(100, Math.round((inLesson / 10) * 100))
+                const phase  = session.tutorPhase ?? 'guide'
+                return (
+                  <div style={{ marginTop:4 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+                      <span style={{ fontSize:10, color:'var(--muted)' }}>Lección {lesson} · {inLesson}/10</span>
+                      <span style={{ fontSize:10, color:'var(--dim)', marginLeft:'auto' }}>{phase}</span>
+                    </div>
+                    <div style={{ height:3, borderRadius:99, background:'rgba(255,255,255,.08)', overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${mm.color},var(--teal))`, borderRadius:99, transition:'width .4s ease' }} />
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
-            <div style={{ display:'flex', gap:5, alignItems:'center', flexWrap:'wrap' }}>
-              <Badge>{session.level}</Badge>
-              <Badge t="gold">{session.tokens}</Badge>
+            <div style={{ display:'flex', gap:5, alignItems:'center', flexShrink:0 }}>
+              {/* Level badge with phase indicator */}
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:1 }}>
+                <span style={{ fontSize:12, fontWeight:800, color:'var(--teal)', lineHeight:1 }}>{session.level}</span>
+                <span style={{ fontSize:9, color:'var(--dim)', letterSpacing:'.04em' }}>nivel</span>
+              </div>
 
               {/* Export dropdown */}
               <div style={{ position:'relative' }}>
@@ -685,12 +788,12 @@ export default function BetaPage() {
                   <div style={{ position:'absolute', top:'115%', right:0, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:12, padding:'5px 0', zIndex:50, minWidth:160, boxShadow:'0 8px 24px rgba(0,0,0,.45)' }}
                     onMouseLeave={() => setShowExport(false)}>
                     <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer', fontWeight:600 }}>📄 Exportar TXT</button>
-                    <button onClick={() => { doExportPdf(msgs, session); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer', fontWeight:600 }}>🖨️ Exportar PDF</button>
+                    <button onClick={() => { void doExportPdfBackend(msgs, session); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer', fontWeight:600 }}>🖨️ Exportar PDF</button>
                   </div>
                 )}
               </div>
 
-              <button onClick={() => { setMsgs([]); setSession(s => ({...s,tokens:0,level:'A0',samples:[],lastTask:null,lastArtifact:null})); setPhase('onboarding') }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>↺</button>
+              <button onClick={() => { setMsgs([]); setSession(s => ({...s,tokens:0,level:'A0',samples:[],lastTask:null,lastArtifact:null,tutorPhase:'idle',lessonIndex:0,courseActive:false,lastAction:null,awaitingQuizAnswer:false})); setPhase('onboarding') }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>↺</button>
             </div>
           </div>
 
@@ -704,25 +807,71 @@ export default function BetaPage() {
           {/* Hint */}
           <div style={{ textAlign:'center', fontSize:11, color:'var(--dim)', padding:'3px 0', flexShrink:0 }}>{copy.hint}</div>
 
-          {/* Input bar */}
-          <div style={{ padding:'9px 12px 13px', borderTop:'1px solid var(--border)', display:'flex', alignItems:'flex-end', gap:8, background:'rgba(8,17,32,.9)', backdropFilter:'blur(10px)', flexShrink:0 }}>
-            <button onClick={toggleRec} title={recording?'Detener grabación':'Grabar audio'} style={{ width:38, height:38, borderRadius:'50%', border:`1px solid ${recording?'var(--coral)':'var(--border)'}`, background: recording?'rgba(255,107,107,.1)':'transparent', color: recording?'var(--coral)':'var(--muted)', fontSize:15, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all .2s' }}>🎤</button>
-            <label title="Adjuntar archivo" style={{ width:38, height:38, borderRadius:'50%', border:'1px solid var(--border)', background:'transparent', color:'var(--muted)', fontSize:15, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-              📎<input type="file" accept="image/*,application/pdf,text/*" onChange={handleFile} style={{ display:'none' }} />
-            </label>
-            <textarea ref={taRef} value={input}
-              onChange={e => { setInput(e.target.value); e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,120)+'px' }}
-              onKeyDown={e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') { e.preventDefault(); void sendText() } }}
-              placeholder={copy.ph} rows={1}
-              style={{ flex:1, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:14, padding:'10px 14px', fontSize:14, color:'var(--silver)', resize:'none', maxHeight:120, lineHeight:1.5, fontFamily:'inherit', transition:'border-color .2s' }}
-              onFocus={e => e.target.style.borderColor='rgba(0,201,167,.4)'}
-              onBlur={e => e.target.style.borderColor='var(--border)'}
-            />
-            <button onClick={() => void sendText()} disabled={loading || !input.trim()} title="Enviar" style={{ width:38, height:38, borderRadius:'50%', background: loading||!input.trim()?'var(--navy3)':'var(--teal)', color: loading||!input.trim()?'var(--muted)':'var(--navy)', border:'none', fontSize:16, cursor: loading||!input.trim()?'default':'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all .2s' }}>▶</button>
+          {/* Composer: preview area + input bar */}
+          <div style={{ borderTop:'1px solid var(--border)', background:'rgba(8,17,32,.9)', backdropFilter:'blur(10px)', flexShrink:0 }}>
+
+            {/* Pending items preview — shown only when something is staged */}
+            {(pendingAudioUrl || pendingFiles.length > 0) && (
+              <div style={{ padding:'8px 12px 0', display:'flex', flexDirection:'column', gap:6 }}>
+                {/* Audio preview player */}
+                {pendingAudioUrl && (
+                  <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:10, background:'rgba(0,201,167,.08)', border:'1px solid rgba(0,201,167,.2)' }}>
+                    <span style={{ fontSize:13 }}>🎤</span>
+                    <audio controls src={pendingAudioUrl} style={{ flex:1, height:28, minWidth:0 }} />
+                    <button onClick={() => { URL.revokeObjectURL(pendingAudioUrl!); setPendingAudioUrl(null); setPendingAudioBlob(null) }}
+                      style={{ width:22, height:22, borderRadius:'50%', border:'none', background:'rgba(255,107,107,.2)', color:'var(--coral)', fontSize:12, cursor:'pointer', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
+                  </div>
+                )}
+                {/* File chips */}
+                {pendingFiles.length > 0 && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
+                    {pendingFiles.map((f, i) => (
+                      <div key={i} style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:999, background:'rgba(255,255,255,.06)', border:'1px solid var(--border)', fontSize:12, color:'var(--silver)' }}>
+                        <span>📎</span>
+                        <span style={{ maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{f.name}</span>
+                        <button onClick={() => setPendingFiles(prev => prev.filter((_,j) => j !== i))}
+                          style={{ border:'none', background:'none', color:'var(--muted)', cursor:'pointer', fontSize:12, padding:0, lineHeight:1 }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Input row */}
+            <div style={{ padding:'9px 12px 13px', display:'flex', alignItems:'flex-end', gap:8 }}>
+              {/* Mic button */}
+              <button onClick={toggleRec} title={recording ? 'Detener grabación' : 'Grabar audio'}
+                style={{ width:38, height:38, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', fontSize:15, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all .2s' }}>
+                {recording ? '⏹' : '🎤'}
+              </button>
+              {/* Attach button */}
+              <label title="Adjuntar archivo"
+                style={{ width:38, height:38, borderRadius:'50%', border:'1px solid var(--border)', background:'transparent', color:'var(--muted)', fontSize:15, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                📎
+                <input ref={fileInputRef} type="file" accept="image/*,application/pdf,text/*" onChange={handleFile} style={{ display:'none' }} />
+              </label>
+              {/* Text input */}
+              <textarea ref={taRef} value={input}
+                onChange={e => { setInput(e.target.value); e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,120)+'px' }}
+                onKeyDown={e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') { e.preventDefault(); void sendComposer() } }}
+                placeholder={copy.ph} rows={1}
+                style={{ flex:1, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:14, padding:'10px 14px', fontSize:14, color:'var(--silver)', resize:'none', maxHeight:120, lineHeight:1.5, fontFamily:'inherit', transition:'border-color .2s' }}
+                onFocus={e => (e.target.style.borderColor = 'rgba(0,201,167,.4)')}
+                onBlur={e  => (e.target.style.borderColor = 'var(--border)')}
+              />
+              {/* Unified send button — handles text + audio + files */}
+              <button
+                onClick={() => void sendComposer()}
+                disabled={loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0)}
+                title="Enviar"
+                style={{ width:38, height:38, borderRadius:'50%', border:'none', fontSize:16, cursor: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'default' : 'pointer', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all .2s' }}>
+                ▶
+              </button>
+            </div>
           </div>
         </div>
       )}
     </>
   )
 }
-
