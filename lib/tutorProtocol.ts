@@ -49,48 +49,48 @@ const SEQUENCE: Record<TutorMode, TutorPhase[]> = {
 
 // ─── Mode resolver ────────────────────────────────
 export function resolveTutorMode(
-  topic: string | null,
+  topic:  string | null,
   mentor: string | null
 ): TutorMode {
-  const t = topic ?? 'conversation'
+  const t = topic  ?? 'conversation'
   const m = mentor ?? 'sarah'
 
-  if (t === 'leveltest') return 'diagnostic'
+  if (t === 'leveltest')  return 'diagnostic'
   if (m === 'alex' || t === 'conversation' || t === 'travel') return 'conversational'
-  if (m === 'nick' || t === 'business') return 'professional'
+  if (m === 'nick' || t === 'business')  return 'professional'
   return 'structured'
 }
 
 // ─── Core resolver ────────────────────────────────
 export function resolvePedagogicalAction(params: {
-  message: string
-  state: Partial<SessionState>
+  message:  string
+  state:    Partial<SessionState>
   explicit: PedagogicalAction | null
 }): {
-  action: PedagogicalAction
-  mode: TutorMode
+  action:          PedagogicalAction
+  mode:            TutorMode
   systemDirective: string
-  nextPhase: TutorPhase
+  nextPhase:       TutorPhase
   nextLessonIndex: number
   nextCourseActive: boolean
 } {
-  const { state, explicit } = params
+  const { message, state, explicit } = params
 
   // Explicit artifact requests always win
   if (explicit && explicit !== 'conversation') {
     const mode = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
     return {
-      action: explicit,
+      action:           explicit,
       mode,
-      systemDirective: buildDirective(explicit, state),
-      nextPhase: phaseFromAction(explicit),
-      nextLessonIndex: state.lessonIndex ?? 0,
+      systemDirective:  buildDirective(explicit, state),
+      nextPhase:        phaseFromAction(explicit),
+      nextLessonIndex:  state.lessonIndex ?? 0,
       nextCourseActive: state.courseActive ?? false,
     }
   }
 
-  const mode = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
-  const tokens = state.tokens ?? 0
+  const mode    = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
+  const tokens  = state.tokens ?? 0
 
   // FIX: use lastAction (protocol field), not lastTask (legacy field)
   const lastAct = (state.lastAction ?? null) as PedagogicalAction | null
@@ -100,32 +100,34 @@ export function resolvePedagogicalAction(params: {
   if (awaitingAnswer) {
     // User is responding to a quiz — this is feedback
     return {
-      action: 'feedback',
+      action:           'feedback',
       mode,
-      systemDirective: buildDirective('feedback', state),
-      nextPhase: 'feedback',
-      nextLessonIndex: state.lessonIndex ?? 0,
+      systemDirective:  buildDirective('feedback', state),
+      nextPhase:        'feedback',
+      nextLessonIndex:  state.lessonIndex ?? 0,
       nextCourseActive: state.courseActive ?? false,
     }
   }
 
-  const currentPhase = derivePhase(lastAct, tokens)
-  const nextPhase = advancePhase(currentPhase, mode, tokens, awaitingAnswer)
-  const action = actionFromPhase(nextPhase, mode)
+  const currentPhase = derivePhase(lastAct, tokens, mode)
+  const nextPhase    = advancePhase(currentPhase, mode, tokens, awaitingAnswer)
+  const action       = actionFromPhase(nextPhase, mode)
 
-  // Advance lessonIndex only when feedback is given — stable signal
+  // Advance lessonIndex only when feedback is given — this is the stable signal
+  // that a full guide→lesson→schema→quiz→feedback cycle has completed.
+  // Do not advance on quiz alone: awaitingQuizAnswer may not be synced yet.
   const completingCycle = currentPhase === 'feedback'
-  const nextLessonIndex = completingCycle
+  const nextLessonIndex  = completingCycle
     ? (state.lessonIndex ?? 0) + 1
     : (state.lessonIndex ?? 0)
 
-  // Course is active from the moment the protocol is engaged
+  // Course is active from the moment the protocol is engaged — no delay
   const nextCourseActive = true
 
   return {
     action,
     mode,
-    systemDirective: buildDirective(action, state),
+    systemDirective:  buildDirective(action, state),
     nextPhase,
     nextLessonIndex,
     nextCourseActive,
@@ -135,58 +137,60 @@ export function resolvePedagogicalAction(params: {
 // ─── Phase derivation ─────────────────────────────
 function derivePhase(
   lastAction: PedagogicalAction | null,
-  tokens: number
+  tokens:     number,
+  mode:       TutorMode
 ): TutorPhase {
   if (!lastAction || tokens === 0) return 'idle'
   const map: Partial<Record<PedagogicalAction, TutorPhase>> = {
-    guide: 'guide',
-    lesson: 'lesson',
-    schema: 'schema',
-    quiz: 'quiz',
-    feedback: 'feedback',
-    conversation: 'conversation',
+    guide:         'guide',
+    lesson:        'lesson',
+    schema:        'schema',
+    quiz:          'quiz',
+    feedback:      'feedback',
+    conversation:  'conversation',
+    // Artifact actions: do NOT reset to idle — preserve current sequence position.
+    // illustration/pdf/pronunciation are interruptions, not phase transitions.
+    // We treat them as staying in 'lesson' so the sequence continues correctly.
+    illustration:  'lesson',
+    pdf:           'lesson',
+    pronunciation: 'lesson',
   }
-  return map[lastAction] ?? 'idle'
+  return map[lastAction] ?? 'lesson'  // unknown actions: assume lesson, not idle
 }
 
 function advancePhase(
-  current: TutorPhase,
-  mode: TutorMode,
-  tokens: number,
+  current:        TutorPhase,
+  mode:           TutorMode,
+  tokens:         number,
   awaitingAnswer: boolean
 ): TutorPhase {
   const seq = SEQUENCE[mode]
 
   if (tokens === 0 || current === 'idle') return 'guide'
 
-  // Guard: stay in quiz until answered
+  // Guard: stuck in quiz until answered
   if (current === 'quiz' && awaitingAnswer) return 'quiz'
 
   const idx = seq.indexOf(current)
   if (idx === -1) return seq[0]
 
   const nextIdx = (idx + 1) % seq.length
-  const next = seq[nextIdx]
-
-  // After completing a full cycle, skip guide and restart from lesson/conversation
+  const next    = seq[nextIdx]
+  // After completing a full cycle, skip guide and restart from lesson
   if (next === 'guide' && tokens > 2) return seq[1] ?? seq[0]
   return next
 }
 
 function phaseFromAction(action: PedagogicalAction): TutorPhase {
   const map: Partial<Record<PedagogicalAction, TutorPhase>> = {
-    guide: 'guide',
-    lesson: 'lesson',
-    schema: 'schema',
-    quiz: 'quiz',
-    feedback: 'feedback',
-    conversation: 'conversation',
+    guide: 'guide', lesson: 'lesson', schema: 'schema',
+    quiz: 'quiz', feedback: 'feedback', conversation: 'conversation',
   }
   return map[action] ?? 'idle'
 }
 
 function actionFromPhase(phase: TutorPhase, mode: TutorMode): PedagogicalAction {
-  if (phase === 'idle') return 'guide'
+  if (phase === 'idle')   return 'guide'
   if (phase === 'lesson' && mode === 'conversational') return 'conversation'
   return phase as PedagogicalAction
 }
@@ -194,20 +198,21 @@ function actionFromPhase(phase: TutorPhase, mode: TutorMode): PedagogicalAction 
 // ─── Directive builder ────────────────────────────
 function buildDirective(
   action: PedagogicalAction,
-  state: Partial<SessionState>
+  state:  Partial<SessionState>
 ): string {
-  const topic = state.topic ?? 'Spanish'
-  const level = state.level ?? 'A1'
-  const lang = state.lang ?? 'en'
-  const mentor = state.mentor ?? 'sarah'
-  const tokens = state.tokens ?? 0
-  const lesson = state.lessonIndex ?? 0
+  const topic   = state.topic    ?? 'Spanish'
+  const level   = state.level    ?? 'A1'
+  const lang    = state.lang     ?? 'en'
+  const mentor  = state.mentor   ?? 'sarah'
+  const tokens  = state.tokens   ?? 0
+  const lesson  = state.lessonIndex ?? 0
 
   const base = `TUTOR DIRECTIVE — You are a structured language tutor, not a general assistant.
 Topic: ${topic}. CEFR Level: ${level}. Student language: ${lang}. Mentor persona: ${mentor}.
 Session exchanges: ${tokens}. Lesson: ${lesson + 1}. Respond in student language (${lang}) unless content must be in Spanish.`
 
   const directives: Record<PedagogicalAction, string> = {
+
     guide: `${base}
 
 ACTION: GUIDE
@@ -296,45 +301,37 @@ Your role: confirm in 2 sentences what the PDF covers and how the student should
 // ─── Mode instruction ─────────────────────────────
 export function getModeInstruction(mode: TutorMode, topic: string | null): string {
   const map: Record<TutorMode, string> = {
-    structured: `
-
-MODE: STRUCTURED TUTORING (${topic ?? 'Spanish'})
+    structured: `\n\nMODE: STRUCTURED TUTORING (${topic ?? 'Spanish'})
 Follow the pedagogical sequence: guide → lesson → schema → quiz → feedback.
 Do not skip steps. Do not blend phases in one response.
 If the student goes off-topic, redirect once, then continue the sequence.
 Tone: professional, warm, university-tutor level. Never chatbot-casual.`,
 
-    conversational: `
-
-MODE: CONVERSATIONAL IMMERSION (${topic ?? 'Spanish'})
+    conversational: `\n\nMODE: CONVERSATIONAL IMMERSION (${topic ?? 'Spanish'})
 Prioritize natural conversation over explicit teaching.
 Grammar correction is inline and brief — never interrupt the flow for more than one sentence.
 Introduce vocabulary naturally through the conversation, never as a standalone list.
 Cultural anecdotes and real-world context are valued over grammar explanation.`,
 
-    professional: `
-
-MODE: PROFESSIONAL SPANISH (${topic ?? 'Spanish'})
+    professional: `\n\nMODE: PROFESSIONAL SPANISH (${topic ?? 'Spanish'})
 Every interaction is grounded in a realistic workplace scenario.
 Use formal register. Correct informal language immediately but constructively.
 Structure: situation → relevant vocabulary → practice → correction.
 Example contexts: job interview, board meeting, email draft, salary negotiation.`,
 
-    diagnostic: `
-
-MODE: LEVEL DIAGNOSTIC
+    diagnostic: `\n\nMODE: LEVEL DIAGNOSTIC
 Goal: assess the student's CEFR level accurately over 8-10 exchanges.
 Ask progressively harder questions. Start at A2, escalate if responses are strong.
 Do not reveal the assessment during the conversation.
 Cover: grammar usage, vocabulary range, comprehension, and spontaneous production quality.
 At the end, provide a clear CEFR estimate with brief justification.`,
   }
-
   return map[mode] ?? ''
 }
 
 // ─── Prohibitions ─────────────────────────────────
 export const TUTOR_PROHIBITIONS = `
+
 PROHIBITED BEHAVIORS (absolute — never do these):
 — Do not ask "What would you like to learn?" when topic is already set.
 — Do not ask "How can I help you?" in an active tutoring session.
