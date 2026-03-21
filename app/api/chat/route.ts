@@ -53,44 +53,71 @@ function intentToAction(intentType: string): PedagogicalAction | null {
 // Extract quiz questions from mentor text response.
 // Handles: A) / A. / 1) / 1. / - / * format options, multi-line,
 // markdown bold, and text before/after the question block.
-function parseQuizFromText(text: string, topic: string, level: string): QuizArtifact | null {
-  if (!text || text.length < 20) return null
+// ─── Quiz generator (JSON-coercive) ──────────────
+// Forces GPT-4o to return structured quiz JSON with correct answer indices.
+// No regex parsing — the model produces a contract-compliant artifact directly.
+async function generateQuizContent(
+  message: string,
+  state: Partial<SessionState>
+): Promise<QuizArtifact | null> {
+  const level = state.level ?? 'A1'
+  const topic = state.topic ?? 'Spanish'
+  const lang  = state.lang  ?? 'en'
 
-  // Step 1: Find the question — last sentence ending in ?
-  // (mentor may include intro text before the actual question)
-  const sentences = text.split(/\n+/).map(s => s.trim()).filter(Boolean)
-  const questionLine = [...sentences].reverse().find(s => s.endsWith('?'))
-    ?? sentences.find(s => s.includes('?'))
-  if (!questionLine) return null
-  const question = questionLine.replace(/^\d+[.)]\s*/, '').replace(/^\*+/, '').trim()
+  const prompt = `You are a Spanish language quiz designer for LINGORA.
+Student level: ${level}. Topic: ${topic}. Interface language: ${lang}.
 
-  // Step 2: Find options — support A) A. 1) 1. - * formats
-  // Also handles bold markdown: **A)** text
-  const optionPattern = /(?:^|\n)\s*(?:\*{0,2}[A-D1-4][).:]?\*{0,2}[\s.)-]+)([^\n]{3,100})/gm
-  const matches = [...text.matchAll(optionPattern)]
+The student said: "${message}"
 
-  // Fallback: try line-by-line if regex didn't find enough
-  let options: string[] = matches.map(m => m[1].replace(/\*+/g, '').trim()).filter(Boolean)
+Return ONLY valid JSON. No markdown. No preamble. No explanation.
+Shape:
+{
+  "title": "short quiz title",
+  "questions": [
+    {
+      "question": "Clear question in Spanish or ${lang}?",
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct": 0,
+      "explanation": "Brief explanation of why the correct answer is right."
+    }
+  ]
+}
 
-  if (options.length < 2) {
-    // Fallback: look for lines that start with letter/number indicators
-    options = sentences
-      .filter(s => /^[\*]*[A-D1-4][\s\).\-:]/.test(s))
-      .map(s => s.replace(/^[\*]*[A-D1-4][\s\).\-:]+/, '').replace(/\*+/g, '').trim())
-      .filter(s => s.length > 2)
-  }
+Rules:
+- 1 question only (for now)
+- options: exactly 4 items
+- correct: 0-based index of the correct option (0=A, 1=B, 2=C, 3=D)
+- question must end with ?
+- options must be meaningfully different
+- explanation: 1 sentence max, in the user's interface language
+- difficulty: appropriate for ${level} level`
 
-  if (options.length < 2) return null  // Need at least 2 options to be a real quiz
+  try {
+    const res = await openai.chat.completions.create({
+      model:           'gpt-4o',
+      messages:        [{ role: 'user', content: prompt }],
+      temperature:     0.4,
+      max_tokens:      400,
+      response_format: { type: 'json_object' },
+    })
+    const raw    = res.choices?.[0]?.message?.content ?? ''
+    const parsed = JSON.parse(raw) as { title: string; questions: QuizItem[] }
 
-  const questions: QuizItem[] = [{
-    question,
-    options: options.slice(0, 4),  // Max 4 options
-    correct: 0,  // Placeholder — route sets awaitingQuizAnswer; correct answer revealed in feedback
-  }]
+    if (!parsed.questions?.length) return null
+    const q = parsed.questions[0]
+    if (!q.question || !q.options?.length || typeof q.correct !== 'number') return null
 
-  return {
-    type:    'quiz',
-    content: { title: `Quiz: ${topic}`, topic, level, questions },
+    return {
+      type:    'quiz',
+      content: {
+        title:     parsed.title ?? `Quiz: ${topic}`,
+        topic,
+        level,
+        questions: [{ ...q, options: q.options.slice(0, 4) }],
+      },
+    }
+  } catch {
+    return null
   }
 }
 
@@ -544,19 +571,25 @@ export async function POST(req: NextRequest) {
     // Returns a QuizArtifact. Sets awaitingQuizAnswer = true.
     if (action === 'quiz') {
       try {
-        // Get quiz question from mentor (structured text output)
-        const quizText = await getMentorResponse(message ?? '', nextState, systemDirective)
+        // Generate structured quiz — JSON-coercive, correct answer is real index
+        // Philosophy: autocorrection in frontend (immediate feedback, self-scoring)
+        // awaitingQuizAnswer = false — quiz is standalone, protocol advances normally
+        const quizArtifact = await generateQuizContent(message ?? '', nextState)
 
-        // Try to parse a structured quiz from the text
-        const quizArtifact = parseQuizFromText(
-          quizText ?? '',
-          nextState.topic  ?? 'Spanish',
-          nextState.level  ?? 'A1'
-        )
+        nextState = {
+          ...nextState,
+          // Option A: autocorrected quiz counts as feedback-complete.
+          // lastAction='feedback' tells the protocol the quiz cycle is closed.
+          // Next turn: advancePhase('feedback') → skips guide → goes to 'lesson'.
+          // awaitingQuizAnswer=false because frontend shows correct answer immediately.
+          lastAction:         'feedback' as PedagogicalAction,
+          lastTask:           'feedback',
+          tutorPhase:         'feedback',
+          awaitingQuizAnswer: false,
+          tokens:             (nextState.tokens ?? 0) + 1,
+        }
 
         if (quizArtifact) {
-          // Set awaitingQuizAnswer flag — protocol won't advance until feedback
-          nextState = { ...nextState, awaitingQuizAnswer: true, tokens: (nextState.tokens ?? 0) + 1 }
           return ok({
             message:  quizArtifact.content.title + ':',
             artifact: quizArtifact,
@@ -564,9 +597,11 @@ export async function POST(req: NextRequest) {
           })
         }
 
-        // Fallback: return as text if parsing fails (model may include extra context)
-        nextState = { ...nextState, awaitingQuizAnswer: true, tokens: (nextState.tokens ?? 0) + 1 }
-        return ok({ message: quizText ?? 'Quiz:', artifact: null, state: nextState })
+        // Fallback: generateQuizContent failed — ask mentor for a quiz question as text
+        const fallbackText = await getMentorResponse(
+          message ?? '', nextState, systemDirective
+        ).catch(() => null)
+        return ok({ message: fallbackText ?? 'Pregunta de práctica:', artifact: null, state: nextState })
 
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
