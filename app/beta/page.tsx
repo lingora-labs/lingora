@@ -22,13 +22,20 @@ type Lang = 'es' | 'en' | 'no' | 'fr' | 'de' | 'it' | 'pt' | 'ar' | 'ja' | 'zh'
 type Phase = 'onboarding' | 'splash' | 'chat'
 
 interface Artifact {
-  type: 'schema' | 'quiz' | 'table' | 'illustration' | 'pdf' | 'audio'
+  type: 'schema' | 'quiz' | 'table' | 'table_matrix' | 'schema_pro' |
+        'illustration' | 'pdf' | 'pdf_chat' | 'audio' |
+        'pronunciation_report' | 'simulacro_result' | 'audio_transcript'
   url?: string
   content?: Record<string, unknown>
   metadata?: Record<string, unknown>
 }
 
-interface Msg { id: string; sender: 'user' | MK | 'ln'; text: string; artifact?: Artifact | null; score?: number }
+interface Msg {
+  id: string; sender: 'user' | MK | 'ln'; text: string
+  artifact?: Artifact | null; score?: number
+  audioUrl?: string   // post-send audio playback URL
+  imageUrl?: string   // inline image from user upload
+}
 interface SS {
   lang: Lang; mentor: MK; topic: TK; level: string; tokens: number
   samples: string[]; sessionId: string; commercialOffers: unknown[]
@@ -429,9 +436,163 @@ function TableArtifactBlock({ content }: { content: Record<string, unknown> }) {
   )
 }
 
+// ─── MatrixTableBlock: rich cells with tone/icon/bold ─
+function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
+  type RCell = { text: string; icon?: string; tone?: string; bold?: boolean; align?: string }
+  const c = content as { title?: string; subtitle?: string; layout?: string; columns: Array<{key:string;label:string;width?:string}>; rows: RCell[][] }
+  if (!c.columns?.length || !c.rows?.length) return null
+
+  const toneStyle: Record<string, { color: string; bg: string }> = {
+    ok:      { color: '#00c9a7', bg: 'rgba(0,201,167,.1)' },
+    warn:    { color: '#f5c842', bg: 'rgba(245,200,66,.1)' },
+    danger:  { color: '#ff6b6b', bg: 'rgba(255,107,107,.1)' },
+    info:    { color: '#38bdf8', bg: 'rgba(56,189,248,.1)' },
+    neutral: { color: 'var(--silver)', bg: 'transparent' },
+  }
+
+  return (
+    <div style={{ marginTop:10, width:'100%', maxWidth:620, borderRadius:16, overflow:'hidden', border:'1px solid var(--border)', background:'rgba(255,255,255,.02)' }}>
+      {(c.title || c.subtitle) && (
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.03)' }}>
+          {c.title    && <div style={{ fontSize:14, fontWeight:800, color:'#fff' }}>{c.title}</div>}
+          {c.subtitle && <div style={{ fontSize:12, color:'var(--muted)', marginTop:2 }}>{c.subtitle}</div>}
+        </div>
+      )}
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+          <thead>
+            <tr style={{ background:'rgba(255,255,255,.04)' }}>
+              {c.columns.map((col, i) => (
+                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700, color:'var(--teal)', fontSize:11, letterSpacing:'.06em', textTransform:'uppercase', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap', width: col.width }}>
+                  {col.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {c.rows.map((row, ri) => (
+              <tr key={ri} style={{ borderBottom: ri < c.rows.length-1 ? '1px solid rgba(255,255,255,.04)' : 'none', background: ri%2===0?'transparent':'rgba(255,255,255,.015)' }}>
+                {row.map((cell, ci) => {
+                  const ts = toneStyle[cell.tone ?? 'neutral'] ?? toneStyle.neutral
+                  return (
+                    <td key={ci} style={{ padding:'9px 12px', color: ts.color, background: ts.bg || 'transparent', fontWeight: cell.bold ? 700 : ci===0 ? 600 : 400, verticalAlign:'top', textAlign: (cell.align as 'left'|'center'|'right') ?? 'left' }}>
+                      {cell.icon && <span style={{ marginRight:5 }}>{cell.icon}</span>}
+                      {cell.text}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── SchemaProBlock: block-based visual schema ────────
+function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
+  type Block = Record<string, unknown>
+  const c = content as { title: string; subtitle?: string; level?: string; blocks: Block[] }
+  if (!c.blocks?.length) return null
+
+  const toneColor: Record<string, string> = {
+    ok: 'var(--teal)', warn: 'var(--gold)', info: '#38bdf8', highlight: '#c4b5fd', neutral: 'var(--muted)',
+  }
+
+  const renderBlock = (b: Block, i: number) => {
+    switch (b.type) {
+      case 'concept':
+        return (
+          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
+            <div style={{ fontSize:13, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>{b.title as string}</div>
+            <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }}>{b.body as string}</div>
+          </div>
+        )
+      case 'bullets':
+        return (
+          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
+            <div style={{ fontSize:13, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>{b.title as string}</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+              {(b.items as string[]).map((item, ii) => (
+                <div key={ii} style={{ display:'flex', gap:8, alignItems:'flex-start', fontSize:14, color:'var(--silver)' }}>
+                  <span style={{ color:'var(--teal)', flexShrink:0, marginTop:1 }}>›</span>
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      case 'highlight':
+        return (
+          <div key={i} style={{ background:'linear-gradient(180deg,rgba(0,201,167,.09),rgba(0,201,167,.04))', border:'1px solid rgba(0,201,167,.22)', borderRadius:14, padding:14 }}>
+            {b.label && <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label as string}</div>}
+            <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>
+              🧠 {b.text as string}
+            </div>
+          </div>
+        )
+      case 'comparison':
+        return (
+          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, overflow:'hidden' }}>
+            {b.label && <div style={{ padding:'7px 12px', background:'rgba(255,255,255,.03)', fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', borderBottom:'1px solid var(--border)' }}>{b.label as string}</div>}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr' }}>
+              <div style={{ padding:12, borderRight:'1px solid var(--border)' }}>
+                <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', marginBottom:5, textTransform:'uppercase' }}>A</div>
+                <div style={{ fontSize:14, color:'var(--silver)' }}>{b.left as string}</div>
+              </div>
+              <div style={{ padding:12 }}>
+                <div style={{ fontSize:11, fontWeight:800, color:'#c4b5fd', marginBottom:5, textTransform:'uppercase' }}>B</div>
+                <div style={{ fontSize:14, color:'var(--silver)' }}>{b.right as string}</div>
+              </div>
+            </div>
+          </div>
+        )
+      case 'flow':
+        return (
+          <div key={i} style={{ display:'flex', flexDirection:'column', gap:0 }}>
+            {(b.steps as string[]).map((step, si) => (
+              <div key={si} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                  <div style={{ width:26, height:26, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'var(--teal)' }}>{si+1}</div>
+                  {si < (b.steps as string[]).length-1 && <div style={{ width:1, height:16, background:'rgba(0,201,167,.2)', margin:'2px 0' }} />}
+                </div>
+                <div style={{ paddingTop:4, fontSize:14, color:'var(--silver)', lineHeight:1.5, paddingBottom:si < (b.steps as string[]).length-1 ? 4 : 0 }}>{step}</div>
+              </div>
+            ))}
+          </div>
+        )
+      case 'table':
+        return (
+          <TableArtifactBlock key={i} content={{ columns: b.columns as string[], rows: b.rows as string[][], tone: 'vocabulary' }} />
+        )
+      default: return null
+    }
+  }
+
+  return (
+    <div style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:20, overflow:'hidden', background:'linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018))', border:'1px solid var(--border)', boxShadow:'0 12px 36px rgba(0,0,0,.22)' }}>
+      <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.02)', display:'flex', alignItems:'center', gap:8 }}>
+        <span style={{ fontSize:10, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Schema Pro</span>
+        {c.level && <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.2)', color:'var(--teal)', marginLeft:'auto' }}>{c.level}</span>}
+      </div>
+      <div style={{ padding:16, display:'flex', flexDirection:'column', gap:12 }}>
+        <div>
+          <div style={{ fontSize:20, fontWeight:800, color:'#fff', lineHeight:1.2, fontFamily:'"DM Serif Display",serif' }}>{c.title}</div>
+          {c.subtitle && <div style={{ fontSize:13, color:'var(--muted)', marginTop:4 }}>{c.subtitle}</div>}
+        </div>
+        {c.blocks.map((b, i) => renderBlock(b as Block, i))}
+      </div>
+    </div>
+  )
+}
+
+
 function ArtifactRender({ a }: { a: Artifact }) {
-  if (a.type === 'schema' && a.content) return <SchemaBlock content={a.content} />
-  if (a.type === 'table'  && a.content) return <TableArtifactBlock content={a.content} />
+  if (a.type === 'schema'       && a.content) return <SchemaBlock content={a.content} />
+  if (a.type === 'schema_pro'   && a.content) return <SchemaProBlock content={a.content} />
+  if (a.type === 'table'        && a.content) return <TableArtifactBlock content={a.content} />
+  if (a.type === 'table_matrix' && a.content) return <MatrixTableBlock content={a.content} />
   if (a.type === 'quiz' && a.content) {
     const qc = a.content as { title: string; questions: Array<{ question: string; options: string[]; correct: number }> }
     return (
@@ -455,12 +616,77 @@ function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'pdf' && a.url) return (
     <a href={a.url} download="lingora.pdf" target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📄 Descargar PDF</a>
   )
+  if (a.type === 'pdf_chat' && a.url) return (
+    <a href={a.url} download={`lingora-chat-${Date.now()}.pdf`} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📋 Descargar historial PDF</a>
+  )
   if (a.type === 'audio' && a.url) return (
     <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:4 }}>
       <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', letterSpacing:'.06em', textTransform:'uppercase' }}>🔊 Respuesta de audio</div>
       <audio controls autoPlay src={a.url} style={{ width:'100%', borderRadius:10, outline:'none', accentColor:'var(--teal)' }} />
     </div>
   )
+
+  // ── Simulacro Result ──────────────────────────────
+  if (a.type === 'simulacro_result' && a.content) {
+    const r = a.content as { score: number; total: number; feedback: string; recommendation: string; retry?: boolean }
+    const pct = Math.round((r.score / (r.total || 10)) * 100)
+    const color = pct >= 80 ? 'var(--teal)' : pct >= 60 ? 'var(--gold)' : 'var(--coral)'
+    return (
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:`1px solid ${color}33`, background:`${color}0a` }}>
+        <div style={{ padding:'12px 16px', borderBottom:`1px solid ${color}22`, display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ fontSize:28, fontWeight:800, color, lineHeight:1 }}>{r.score}<span style={{ fontSize:14, color:'var(--muted)' }}>/{r.total}</span></div>
+          <div style={{ flex:1 }}>
+            <div style={{ height:6, borderRadius:99, background:'rgba(255,255,255,.08)', overflow:'hidden' }}>
+              <div style={{ height:'100%', width:`${pct}%`, background:color, borderRadius:99, transition:'width .6s ease' }} />
+            </div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginTop:3 }}>{pct}% correcto</div>
+          </div>
+        </div>
+        <div style={{ padding:'12px 16px', display:'flex', flexDirection:'column', gap:8 }}>
+          <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
+          {r.recommendation && (
+            <div style={{ fontSize:12, color:color, fontWeight:700, display:'flex', gap:6, alignItems:'flex-start' }}>
+              <span>💡</span><span>{r.recommendation}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Pronunciation Report ──────────────────────────
+  if (a.type === 'pronunciation_report' && a.content) {
+    const r = a.content as { transcribed: string; score: number; feedback: string; correction?: string; target?: string }
+    const scoreColor = r.score >= 8 ? 'var(--teal)' : r.score >= 5 ? 'var(--gold)' : 'var(--coral)'
+    return (
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, border:'1px solid var(--border)', background:'rgba(255,255,255,.02)', overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.08em' }}>Pronunciación</span>
+          <span style={{ marginLeft:'auto', fontSize:18, fontWeight:800, color:scoreColor }}>{r.score}<span style={{ fontSize:11, color:'var(--muted)' }}>/10</span></span>
+        </div>
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          {r.target && <div style={{ fontSize:12, color:'var(--muted)' }}>Frase objetivo: <em style={{ color:'var(--silver)' }}>{r.target}</em></div>}
+          <div style={{ fontSize:12, color:'var(--muted)' }}>Lo que se detectó: <em style={{ color:'var(--silver)' }}>{r.transcribed}</em></div>
+          <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
+          {r.correction && <div style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>✓ {r.correction}</div>}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Audio Transcript ──────────────────────────────
+  if (a.type === 'audio_transcript' && a.content) {
+    const r = a.content as { text: string; language?: string; url?: string }
+    return (
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:14, border:'1px solid var(--border)', background:'rgba(255,255,255,.02)', padding:'12px 14px' }}>
+        <div style={{ fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 }}>
+          🎤 Transcripción{r.language ? ` · ${r.language}` : ''}
+        </div>
+        <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65, fontStyle:'italic' }}>"{r.text}"</div>
+        {r.url && <audio controls src={r.url} style={{ marginTop:8, width:'100%', height:28, borderRadius:8 }} />}
+      </div>
+    )
+  }
   return null
 }
 
@@ -472,8 +698,23 @@ function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
         {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:6, maxWidth:'100%' }}>
-        <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
-          dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+        {msg.text && (
+          <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
+            dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+        )}
+        {/* Inline image — shown when user sends an image file */}
+        {msg.imageUrl && (
+          <div style={{ marginTop:4, borderRadius:12, overflow:'hidden', maxWidth:280, border:'1px solid var(--border)' }}>
+            <img src={msg.imageUrl} alt="Adjunto" style={{ width:'100%', display:'block', borderRadius:12 }} />
+          </div>
+        )}
+        {/* Audio playback — shown when user sends audio */}
+        {msg.audioUrl && (
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:10, background:'rgba(0,201,167,.06)', border:'1px solid rgba(0,201,167,.15)', maxWidth:280 }}>
+            <span style={{ fontSize:12 }}>🎤</span>
+            <audio controls src={msg.audioUrl} style={{ flex:1, height:24, minWidth:0 }} />
+          </div>
+        )}
         {msg.artifact && <ArtifactRender a={msg.artifact} />}
         {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
       </div>
@@ -636,7 +877,8 @@ export default function BetaPage() {
     if (hasText)  payload.message = msg
 
     if (hasAudio && pendingAudioBlob) {
-      if (!hasText) addMsg({ sender:'user', text:'🎤 Audio enviado' })
+      if (!hasText) addMsg({ sender:'user', text:'🎤 Audio enviado', audioUrl: pendingAudioUrl ?? undefined })
+      else setMsgs(prev => prev.map(m => m.id === prev[prev.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m))
       const b64 = await new Promise<string>(res => {
         const r = new FileReader()
         r.onload = () => res((r.result as string).split(',')[1] || '')
@@ -646,13 +888,22 @@ export default function BetaPage() {
     }
 
     if (hasFiles) {
-      if (!hasText && !hasAudio) addMsg({ sender:'user', text:`📎 ${pendingFiles.map(f=>f.name).join(', ')}` })
+      const imageFile = pendingFiles.find(f => f.type.startsWith('image/'))
+      const imageUrl  = imageFile ? `data:${imageFile.type};base64,${imageFile.data}` : undefined
+      if (!hasText && !hasAudio) addMsg({ sender:'user', text:`📎 ${pendingFiles.map(f=>f.name).join(', ')}`, imageUrl })
+      else if (imageUrl) {
+        // Attach imageUrl to the already-added text message
+        setMsgs(prev => prev.map((m, i) => i === prev.length-1 ? { ...m, imageUrl } : m))
+      }
       payload.files = pendingFiles
     }
 
     // Clear pending state before API call
+    // IMPORTANT: do NOT revoke pendingAudioUrl here if it was attached to a message.
+    // The objectURL lives in the message bubble until the session ends.
+    // Only clear the React state pointer — the URL itself stays alive for playback.
     setPendingAudioBlob(null)
-    if (pendingAudioUrl) { URL.revokeObjectURL(pendingAudioUrl); setPendingAudioUrl(null) }
+    setPendingAudioUrl(null)   // clear pointer — but don't revoke if used in message
     setPendingFiles([])
 
     await callAPI(payload)
