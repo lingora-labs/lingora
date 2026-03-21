@@ -13,7 +13,7 @@
 // ─ Voice input, file upload, quiz interactivo
 // ================================================
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
 
 // ─── Types ───────────────────────────────────────
 type MK = 'sarah' | 'alex' | 'nick'
@@ -235,21 +235,14 @@ function fmt(t: string): string {
 }
 
 // ─── Design tokens ────────────────────────────────
-const C = {
-  navy:   '#080f1f', navy2: '#0d1828', navy3: '#132035',
-  teal:   '#00c9a7', coral: '#ff6b6b', gold:  '#f5c842',
-  silver: 'rgba(255,255,255,.88)', muted: 'rgba(255,255,255,.50)',
-  dim:    'rgba(255,255,255,.22)', border: 'rgba(255,255,255,.08)',
-  card:   'rgba(255,255,255,.04)',
-}
 
 // ─── Sub-components ───────────────────────────────
-function Badge({ children, t = 'd' }: { children: React.ReactNode; t?: 'd'|'teal'|'gold'|'purple'|'coral' }) {
+function Badge({ children, t = 'd' }: { children: ReactNode; t?: 'd'|'teal'|'gold'|'purple'|'coral' }) {
   const s = { d:{ color:'var(--muted)',bg:'var(--card)',br:'1px solid var(--border)'}, teal:{color:'var(--teal)',bg:'rgba(0,201,167,.1)',br:'1px solid rgba(0,201,167,.22)'}, gold:{color:'var(--gold)',bg:'rgba(245,200,66,.1)',br:'1px solid rgba(245,200,66,.22)'}, purple:{color:'#c4b5fd',bg:'rgba(124,58,237,.14)',br:'1px solid rgba(124,58,237,.24)'}, coral:{color:'var(--coral)',bg:'rgba(255,107,107,.1)',br:'1px solid rgba(255,107,107,.22)'} }[t]
   return <span style={{ fontSize:11, padding:'4px 10px', borderRadius:999, fontWeight:700, color:s.color, background:s.bg, border:s.br }}>{children}</span>
 }
 
-function SL({ children }: { children: React.ReactNode }) {
+function SL({ children }: { children: ReactNode }) {
   return <div style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--muted)', marginBottom:10 }}>{children}</div>
 }
 
@@ -503,14 +496,8 @@ type SBComparison = { type: 'comparison'; left: string;  right: string; label?: 
 type SBTable      = { type: 'table';      columns: string[]; rows: string[][] }
 type SBlock = SBConcept | SBBullets | SBHighlight | SBFlow | SBComparison | SBTable
 
-interface SchemaProData {
-  title:     string
-  subtitle?: string
-  level?:    string
-  blocks:    SBlock[]
-}
 
-function renderSBlock(b: SBlock, i: number): React.ReactNode {
+function renderSBlock(b: SBlock, i: number): ReactNode {
   switch (b.type) {
     case 'concept':
       return (
@@ -902,6 +889,27 @@ export default function BetaPage() {
     const payload: Record<string, unknown> = {}
     if (hasText)  payload.message = msg
 
+    // pronunciationTarget: only sent when user is explicitly requesting pronunciation eval
+    // NOT on every audio — that would hijack normal voice conversation
+    // Explicit signals: message contains evaluation keywords, OR session is in pronunciation phase
+    if (hasAudio) {
+      const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno', 'corrige mi pronunciación']
+      const inPronMode   = sessionRef.current.tutorPhase === 'pronunciation' || sessionRef.current.lastAction === 'pronunciation'
+      const userWantsEval = evalKeywords.some(k => msg.toLowerCase().includes(k))
+
+      if ((inPronMode || userWantsEval) && msgs.length > 0) {
+        const lastMentorMsg = [...msgs].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln' && m.text?.length > 10)
+        if (lastMentorMsg?.text) {
+          const rawTarget     = lastMentorMsg.text.replace(/<[^>]+>/g, '').trim()
+          const firstSentence = rawTarget.split(/[.!?]/)[0]?.trim()
+          const target        = firstSentence && firstSentence.length > 5 && firstSentence.length < 120
+            ? firstSentence
+            : rawTarget.slice(0, 120)
+          if (target.length > 5) payload.pronunciationTarget = target
+        }
+      }
+    }
+
     if (hasAudio && pendingAudioBlob) {
       if (!hasText) addMsg({ sender:'user', text:'🎤 Audio enviado', audioUrl: pendingAudioUrl ?? undefined })
       else setMsgs(prev => prev.map(m => m.id === prev[prev.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m))
@@ -935,8 +943,6 @@ export default function BetaPage() {
     await callAPI(payload)
   }, [input, loading, pendingAudioBlob, pendingAudioUrl, pendingFiles, addMsg, callAPI])
 
-  // Legacy alias — onKeyDown still calls sendText → sendComposer
-  const sendText = sendComposer
 
   // Splash + start chat
   const startChat = useCallback((m: MK, t: TK, l: Lang) => {
@@ -985,7 +991,7 @@ export default function BetaPage() {
   }, [recording, pendingAudioUrl, addMsg])
 
   // File: select → stage preview (not auto-send)
-  const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     const r = new FileReader()
     r.onload = () => {
@@ -1260,3 +1266,4 @@ export default function BetaPage() {
     </>
   )
 }
+
