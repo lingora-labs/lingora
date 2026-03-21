@@ -442,7 +442,7 @@ async function runFastPaths(
 
   if (isLevelRequest(text)) {
     console.log('[ROUTER] fast-path=level (audio)')
-    const report = await evaluateLevel(state as Record<string, unknown>)
+    const report = evaluateLevel(state.samples ?? [])
     return ok({ message: '', diagnostic: report, state })
   }
 
@@ -874,7 +874,7 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
     // ── 5-FAST-E. Level assessment override ───────
     if (messageIsLevel) {
       console.log('[ROUTER] explicit-level-assessment')
-      const report = await evaluateLevel(enrichedState as Record<string, unknown>)
+      const report = evaluateLevel(enrichedState.samples ?? [])
       return ok({ message: '', diagnostic: report, state: enrichedState })
     }
 
