@@ -184,9 +184,10 @@ export interface SchemaSubtopic {
 }
 
 export interface QuizItem {
-  question: string
-  options:  string[]
-  correct:  number
+  question:     string
+  options:      string[]
+  correct:      number
+  explanation?: string   // real explanation from gpt-4o, shown after answer selection
 }
 
 // ─── DIAGNOSTIC ──────────────────────────────────
