@@ -491,97 +491,123 @@ function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
 }
 
 // ─── SchemaProBlock: block-based visual schema ────────
-function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
-  type Block = Record<string, unknown>
-  const c = content as { title: string; subtitle?: string; level?: string; blocks: Block[] }
-  if (!c.blocks?.length) return null
+// Uses SchemaBlock discriminated union from contracts.ts — NO unknown casts
 
-  const toneColor: Record<string, string> = {
-    ok: 'var(--teal)', warn: 'var(--gold)', info: '#38bdf8', highlight: '#c4b5fd', neutral: 'var(--muted)',
-  }
+// Import-compatible type mirror (contracts.ts types not importable in 'use client' without re-export)
+// These mirror SchemaBlock exactly — kept in sync with contracts.ts
+type SBConcept    = { type: 'concept';    title: string; body: string; tone?: string }
+type SBBullets    = { type: 'bullets';    title: string; items: string[] }
+type SBHighlight  = { type: 'highlight';  text: string;  tone?: string; label?: string }
+type SBFlow       = { type: 'flow';       steps: string[] }
+type SBComparison = { type: 'comparison'; left: string;  right: string; label?: string }
+type SBTable      = { type: 'table';      columns: string[]; rows: string[][] }
+type SBlock = SBConcept | SBBullets | SBHighlight | SBFlow | SBComparison | SBTable
 
-  const renderBlock = (b: Block, i: number) => {
-    switch (b.type) {
-      case 'concept':
-        return (
-          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
-            <div style={{ fontSize:13, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>{b.title as string}</div>
-            <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }}>{b.body as string}</div>
-          </div>
-        )
-      case 'bullets':
-        return (
-          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
-            <div style={{ fontSize:13, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>{b.title as string}</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-              {(b.items as string[]).map((item, ii) => (
-                <div key={ii} style={{ display:'flex', gap:8, alignItems:'flex-start', fontSize:14, color:'var(--silver)' }}>
-                  <span style={{ color:'var(--teal)', flexShrink:0, marginTop:1 }}>›</span>
-                  <span>{item}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      case 'highlight':
-        return (
-          <div key={i} style={{ background:'linear-gradient(180deg,rgba(0,201,167,.09),rgba(0,201,167,.04))', border:'1px solid rgba(0,201,167,.22)', borderRadius:14, padding:14 }}>
-            {b.label && <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label as string}</div>}
-            <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>
-              🧠 {b.text as string}
-            </div>
-          </div>
-        )
-      case 'comparison':
-        return (
-          <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, overflow:'hidden' }}>
-            {b.label && <div style={{ padding:'7px 12px', background:'rgba(255,255,255,.03)', fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', borderBottom:'1px solid var(--border)' }}>{b.label as string}</div>}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr' }}>
-              <div style={{ padding:12, borderRight:'1px solid var(--border)' }}>
-                <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', marginBottom:5, textTransform:'uppercase' }}>A</div>
-                <div style={{ fontSize:14, color:'var(--silver)' }}>{b.left as string}</div>
-              </div>
-              <div style={{ padding:12 }}>
-                <div style={{ fontSize:11, fontWeight:800, color:'#c4b5fd', marginBottom:5, textTransform:'uppercase' }}>B</div>
-                <div style={{ fontSize:14, color:'var(--silver)' }}>{b.right as string}</div>
-              </div>
-            </div>
-          </div>
-        )
-      case 'flow':
-        return (
-          <div key={i} style={{ display:'flex', flexDirection:'column', gap:0 }}>
-            {(b.steps as string[]).map((step, si) => (
-              <div key={si} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-                  <div style={{ width:26, height:26, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'var(--teal)' }}>{si+1}</div>
-                  {si < (b.steps as string[]).length-1 && <div style={{ width:1, height:16, background:'rgba(0,201,167,.2)', margin:'2px 0' }} />}
-                </div>
-                <div style={{ paddingTop:4, fontSize:14, color:'var(--silver)', lineHeight:1.5, paddingBottom:si < (b.steps as string[]).length-1 ? 4 : 0 }}>{step}</div>
+interface SchemaProData {
+  title:     string
+  subtitle?: string
+  level?:    string
+  blocks:    SBlock[]
+}
+
+function renderSBlock(b: SBlock, i: number): React.ReactNode {
+  switch (b.type) {
+    case 'concept':
+      return (
+        <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>{b.title}</div>
+          <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }}>{b.body}</div>
+        </div>
+      )
+    case 'bullets':
+      return (
+        <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>{b.title}</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+            {b.items.map((item, ii) => (
+              <div key={ii} style={{ display:'flex', gap:8, alignItems:'flex-start', fontSize:14, color:'var(--silver)' }}>
+                <span style={{ color:'var(--teal)', flexShrink:0, marginTop:1 }}>›</span>
+                <span>{item}</span>
               </div>
             ))}
           </div>
-        )
-      case 'table':
-        return (
-          <TableArtifactBlock key={i} content={{ columns: b.columns as string[], rows: b.rows as string[][], tone: 'vocabulary' }} />
-        )
-      default: return null
-    }
+        </div>
+      )
+    case 'highlight':
+      return (
+        <div key={i} style={{ background:'linear-gradient(180deg,rgba(0,201,167,.09),rgba(0,201,167,.04))', border:'1px solid rgba(0,201,167,.22)', borderRadius:14, padding:14 }}>
+          {b.label && <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label}</div>}
+          <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>
+            🧠 {b.text}
+          </div>
+        </div>
+      )
+    case 'comparison':
+      return (
+        <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, overflow:'hidden' }}>
+          {b.label && <div style={{ padding:'7px 12px', background:'rgba(255,255,255,.03)', fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.06em', borderBottom:'1px solid var(--border)' }}>{b.label}</div>}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr' }}>
+            <div style={{ padding:12, borderRight:'1px solid var(--border)' }}>
+              <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', marginBottom:5, textTransform:'uppercase' }}>A</div>
+              <div style={{ fontSize:14, color:'var(--silver)' }}>{b.left}</div>
+            </div>
+            <div style={{ padding:12 }}>
+              <div style={{ fontSize:11, fontWeight:800, color:'#c4b5fd', marginBottom:5, textTransform:'uppercase' }}>B</div>
+              <div style={{ fontSize:14, color:'var(--silver)' }}>{b.right}</div>
+            </div>
+          </div>
+        </div>
+      )
+    case 'flow':
+      return (
+        <div key={i} style={{ display:'flex', flexDirection:'column', gap:0 }}>
+          {b.steps.map((step, si) => (
+            <div key={si} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                <div style={{ width:26, height:26, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'var(--teal)' }}>{si+1}</div>
+                {si < b.steps.length-1 && <div style={{ width:1, height:16, background:'rgba(0,201,167,.2)', margin:'2px 0' }} />}
+              </div>
+              <div style={{ paddingTop:4, fontSize:14, color:'var(--silver)', lineHeight:1.5, paddingBottom:si < b.steps.length-1 ? 4 : 0 }}>{step}</div>
+            </div>
+          ))}
+        </div>
+      )
+    case 'table':
+      return <TableArtifactBlock key={i} content={{ columns: b.columns, rows: b.rows, tone: 'vocabulary' }} />
+    default:
+      return null
   }
+}
+
+function isValidSBlock(raw: unknown): raw is SBlock {
+  if (!raw || typeof raw !== 'object') return false
+  const b = raw as Record<string, unknown>
+  return typeof b.type === 'string' &&
+    ['concept','bullets','highlight','flow','comparison','table'].includes(b.type)
+}
+
+function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
+  const rawBlocks = Array.isArray(content.blocks) ? content.blocks : []
+  const blocks    = rawBlocks.filter(isValidSBlock)
+
+  if (!blocks.length) return null
+
+  const title    = typeof content.title    === 'string' ? content.title    : 'Schema'
+  const subtitle = typeof content.subtitle === 'string' ? content.subtitle : undefined
+  const level    = typeof content.level    === 'string' ? content.level    : undefined
 
   return (
     <div style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:20, overflow:'hidden', background:'linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018))', border:'1px solid var(--border)', boxShadow:'0 12px 36px rgba(0,0,0,.22)' }}>
       <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.02)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:10, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Schema Pro</span>
-        {c.level && <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.2)', color:'var(--teal)', marginLeft:'auto' }}>{c.level}</span>}
+        {level && <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.2)', color:'var(--teal)', marginLeft:'auto' }}>{level}</span>}
       </div>
       <div style={{ padding:16, display:'flex', flexDirection:'column', gap:12 }}>
         <div>
-          <div style={{ fontSize:20, fontWeight:800, color:'#fff', lineHeight:1.2, fontFamily:'"DM Serif Display",serif' }}>{c.title}</div>
-          {c.subtitle && <div style={{ fontSize:13, color:'var(--muted)', marginTop:4 }}>{c.subtitle}</div>}
+          <div style={{ fontSize:20, fontWeight:800, color:'#fff', lineHeight:1.2, fontFamily:'"DM Serif Display",serif' }}>{title}</div>
+          {subtitle && <div style={{ fontSize:13, color:'var(--muted)', marginTop:4 }}>{subtitle}</div>}
         </div>
-        {c.blocks.map((b, i) => renderBlock(b as Block, i))}
+        {blocks.map((b, i) => renderSBlock(b, i))}
       </div>
     </div>
   )
