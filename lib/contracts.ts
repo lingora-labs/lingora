@@ -141,6 +141,83 @@ export interface TableContent {
   rows:      string[][]
   tone?:     'comparison' | 'conjugation' | 'vocabulary' | 'exam'
 }
+// ─── Rich Table (table_matrix) ─────────────────────
+// Superset of TableArtifact — supports cell-level semantics
+export interface RichCell {
+  text:    string
+  icon?:   string
+  tone?:   'ok' | 'warn' | 'danger' | 'info' | 'neutral'
+  bold?:   boolean
+  align?:  'left' | 'center' | 'right'
+}
+
+export interface TableMatrixContent {
+  title?:    string
+  subtitle?: string
+  layout?:   'audit' | 'comparison' | 'study' | 'report'
+  columns:   { key: string; label: string; width?: string }[]
+  rows:      RichCell[][]
+}
+
+export interface TableMatrixArtifact {
+  type:    'table_matrix'
+  content: TableMatrixContent
+}
+
+// ─── Schema Pro (schema_pro) ───────────────────────
+export type SchemaBlock =
+  | { type: 'concept';    title: string; body: string; tone?: string }
+  | { type: 'bullets';    title: string; items: string[] }
+  | { type: 'highlight';  text: string;  tone?: string; label?: string }
+  | { type: 'flow';       steps: string[] }
+  | { type: 'comparison'; left: string;  right: string; label?: string }
+  | { type: 'table';      columns: string[]; rows: string[][] }
+
+export interface SchemaProContent {
+  title:     string
+  subtitle?: string
+  level?:    string
+  blocks:    SchemaBlock[]
+}
+
+export interface SchemaProArtifact {
+  type:    'schema_pro'
+  content: SchemaProContent
+}
+
+// ─── Pronunciation Report ─────────────────────────
+export interface PronunciationReport {
+  type:        'pronunciation_report'
+  target?:     string
+  transcribed: string
+  score:       number
+  feedback:    string
+  correction?: string
+}
+
+// ─── Simulacro Result ─────────────────────────────
+export interface SimulacroResult {
+  type:           'simulacro_result'
+  score:          number
+  total:          number
+  feedback:       string
+  recommendation: string
+  retry?:         boolean
+}
+
+// ─── Audio Transcript ─────────────────────────────
+export interface AudioTranscript {
+  type:      'audio_transcript'
+  text:      string
+  language?: string
+  url?:      string
+}
+
+// ─── PDF Chat Export ──────────────────────────────
+export interface PDFChat {
+  type: 'pdf_chat'
+  url:  string
+}
 
 export type ArtifactPayload =
   | SchemaArtifact
@@ -149,6 +226,12 @@ export type ArtifactPayload =
   | AudioArtifact
   | QuizArtifact
   | TableArtifact
+  | TableMatrixArtifact
+  | SchemaProArtifact
+  | PronunciationReport
+  | SimulacroResult
+  | AudioTranscript
+  | PDFChat
   | null
 
 // ─── SCHEMA CONTENT ──────────────────────────────
@@ -239,4 +322,3 @@ export interface ChatResponse {
   diagnostic?:         unknown
   error?:              string
 }
-
