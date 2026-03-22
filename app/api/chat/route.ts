@@ -1,8 +1,8 @@
-// =====================================================
+// ================================================
 // FILE: app/api/chat/route.ts
 // LINGORA 10.2 — ROUTER (VALID)
 // Full replacement — typed and build-safe
-// =====================================================
+// ================================================
 
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
@@ -20,6 +20,8 @@ import { processAttachment }                   from '@/server/tools/attachment-p
 import {
   resolvePedagogicalAction,
   resolveTutorMode,
+  modeToTutorMode,
+  nextStage,
   type PedagogicalAction,
 } from '@/lib/tutorProtocol'
 import type {
@@ -28,7 +30,7 @@ import type {
   TableArtifact, TableContent,
   TableMatrixArtifact, TableMatrixContent,
   SchemaProArtifact, SchemaProContent,
-  PronunciationReport,
+  RoadmapBlock, PdfAssignment, SubmissionFeedback,
 } from '@/lib/contracts'
 
 export const runtime     = 'nodejs'
@@ -157,9 +159,9 @@ Shape:
 }
 
 Rules:
-- columns: 2-4 headers maximum
-- rows: 3-8 rows maximum
-- cells: concise (1-5 words each)
+- columns: 2-6 headers (use as many as the content needs)
+- rows: as many rows as needed — do not truncate
+- cells: concise (1-8 words each)
 - include emojis in cells where natural (✅ ❌ 🟢 🔴 etc.)
 - tone: pick the most appropriate one
 - If the request is a verb conjugation, tone = "conjugation", columns = ["Persona", "Forma", "Ejemplo"]
@@ -171,7 +173,7 @@ Rules:
       model:           'gpt-4o',
       messages:        [{ role: 'user', content: prompt }],
       temperature:     0.2,
-      max_tokens:      600,
+      max_tokens:      1200,
       response_format: { type: 'json_object' },
     })
     const raw = res.choices?.[0]?.message?.content ?? ''
@@ -198,6 +200,47 @@ function isTableRequest(message: string): boolean {
     'cuadro de', 'tabla de',
   ].some(p => m.includes(p))
 }
+// Detect COMPLEX content requests — must bypass simple table generator
+// and go directly to mentor with rich-content directive.
+// Complex = multi-tense, includes errors, explanations, long input.
+function isComplexTableRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return (
+    m.includes('todos los tiempos') ||
+    m.includes('conjugación completa') ||
+    m.includes('conjugacion completa') ||
+    m.includes('errores comun') ||
+    m.includes('error comun') ||
+    m.includes('todas las personas') ||
+    m.includes('todas la persona') ||
+    m.includes('explicado para') ||
+    m.includes('explicación para') ||
+    m.includes('explicacion para') ||
+    m.includes('explica para') ||
+    m.includes('completo') ||
+    m.includes('completa') ||
+    (m.includes('presente') && m.includes('pasado')) ||
+    (m.includes('present') && m.includes('past')) ||
+    m.length > 100
+  )
+}
+
+// Rich-content directive for complex requests routed to mentor
+// Produces DeepSeek-quality output: multiple tables, full conjugations,
+// errors, explanations — no row/column caps, no simplification.
+const RICH_CONTENT_DIRECTIVE = `You are an elite Spanish language content generator.
+
+RULES:
+- Follow the user request EXACTLY — do not change topic or simplify
+- Use rich markdown: ## headers, **bold**, tables, bullet points
+- Tables must be COMPLETE — include all persons, all tenses requested
+- Include multiple tables if the request covers multiple topics
+- Include real common mistakes with incorrect/correct examples
+- If explaining for English speakers, add contrastive English notes
+- No length limit — produce as much as needed to fully answer
+- Structure: title → conjugation table(s) → errors table → key notes
+
+This is content generation, not conversation. Produce the full material.`
 // ── Detect matrix request (rich table with cell semantics) ──
 function isMatrixRequest(message: string): boolean {
   const m = message.toLowerCase()
@@ -449,6 +492,61 @@ async function runFastPaths(
   return null  // no fast-path matched — caller proceeds to normal flow
 }
 
+// ─── STRUCTURED_COURSE_DIRECTIVE ─────────────────
+// Mode 2: guided Cervantes-based course sequence.
+// One action per message. Tutor drives. User follows.
+const STRUCTURED_COURSE_DIRECTIVE = `You are executing a guided Spanish course session (LINGORA Structured Mode).
+
+CURRENT SEQUENCE (follow strictly, one step per message):
+1. SCHEMA — Produce a complete structured schema for the topic. Include: main rule, 80/20 key, conjugation/vocabulary table, common errors, examples.
+2. EXAMPLES — Give 3 guided examples using the student's real context (profession, origin, goals). Ask student to produce one example themselves.
+3. QUIZ — Generate a DELE/CCSE format quiz: 1 reading comprehension text + 3 multiple choice questions. Real exam format.
+4. SCORE — After student answers, give: score (X/3), specific corrections, one-sentence reinforcement.
+5. NEXT — Ask: "Ready for the next block?" and briefly name the next topic.
+
+RULES:
+- ONE step per message. Never combine steps.
+- Adapt all examples to the student's actual level and professional context.
+- Use the student's interface language for instructions.
+- Spanish for examples and exercises.
+- Never explain what you are going to do. Just do it.`
+
+// ─── PDF_COURSE_DIRECTIVE ─────────────────────────
+// Mode 3: course material generation + submission evaluation.
+const PDF_COURSE_DIRECTIVE = `You are generating a formal Spanish course module (LINGORA PDF Course Mode).
+
+When generating course content:
+- Produce complete theory: explanation, 80/20 rule, full table
+- Include 4-6 exercises: fill-in, multiple choice, production
+- Add submission instructions: "Write your answers and send them as a message or file"
+- Structure: ## Title / ### Theory / ### Exercises / ### Submission instructions
+
+When evaluating a student submission:
+- Read carefully what they sent
+- Give score (X/total)
+- List specific corrections with explanation
+- Give one encouragement sentence
+- Say: "Module complete. Ready for the next one?"
+
+RULES:
+- If PDF download is not available, deliver full content in chat
+- Never simulate a PDF that cannot be downloaded
+- Be honest about technical limitations`
+
+// ─── FREE_CONVERSATION_DIRECTIVE ─────────────────
+// Mode 4: natural conversation, opportunistic correction.
+const FREE_CONVERSATION_DIRECTIVE = `You are having a natural Spanish conversation with the student (LINGORA Free Mode).
+
+RULES:
+- Respond naturally. No forced structure.
+- Correct errors only when they are clear and recurring — weave correction into the conversation, do not interrupt
+- Introduce useful vocabulary or structures naturally when relevant
+- If the student asks a question, answer it fully
+- Insert a table or schema only when it clearly helps the current topic
+- Never force a learning sequence
+- Match the student's energy and pace`
+
+
 function buildAutoSchemaPrompt(state: Partial<SessionState>): string {
   const topic   = state.topic    ?? 'conversación'
   const level   = state.level    ?? 'A1'
@@ -494,8 +592,99 @@ export async function POST(req: NextRequest) {
     } = body
 
     // Resolve mode and enrich state for this request
-    const tutorMode     = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
+    const tutorMode     = state.activeMode
+      ? modeToTutorMode(state.activeMode as 'interact'|'structured'|'pdf_course'|'free', state.topic ?? null, state.mentor ?? null)
+      : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
     const enrichedState: Partial<SessionState> = { ...state, tutorMode }
+
+    // ── M. Mode-aware routing setup ──────────────
+    // Read activeMode from state, select appropriate directive.
+    // Roadmap: if this is the very first chat message (tokens=0) in a mode,
+    // return roadmap response immediately before any other processing.
+    const activeMode = enrichedState.activeMode ?? 'interact'
+
+    // Select system directive based on active mode
+    function getModeDirective(): string {
+      switch (activeMode) {
+        case 'structured':  return STRUCTURED_COURSE_DIRECTIVE
+        case 'pdf_course':  return PDF_COURSE_DIRECTIVE
+        case 'free':        return FREE_CONVERSATION_DIRECTIVE
+        default:            return RICH_CONTENT_DIRECTIVE  // 'interact'
+      }
+    }
+
+    // Roadmap: first message in structured/pdf_course mode
+    // Triggered when tokens=0 and activeMode is a guided mode
+    // Roadmap fires when: (a) first message in session, OR (b) explicit mode-start signal
+    // Using tokens===0 as primary signal + explicit flag as fallback
+    const isFirstMessage = (enrichedState.tokens ?? 0) === 0 || enrichedState.learningStage === undefined
+    const isGuidedMode   = activeMode === 'structured' || activeMode === 'pdf_course'
+
+    if (isFirstMessage && isGuidedMode && message && message.trim().length > 0) {
+      const mentor = enrichedState.mentor ?? 'sarah'
+      const topic  = enrichedState.topic  ?? 'español general'
+      const level  = enrichedState.level  ?? 'A1'
+      const lang   = enrichedState.lang   ?? 'en'
+
+      const roadmapPrompt = activeMode === 'structured'
+        ? `The student has chosen: mentor=${mentor}, topic=${topic}, level=${level}, mode=Structured Course.
+Generate a concise roadmap message in the student's language (${lang}).
+Format exactly:
+"Has elegido [mentor] · [topic] · [level] · Curso estructurado.
+
+Ruta de hoy:
+1. Esquema completo del tema
+2. Ejemplos guiados con tu contexto
+3. Simulacro formato DELE/CCSE
+4. Puntuación y siguiente bloque
+
+Empezamos. [Ask: what specific aspect of the topic do you want to cover first, OR propose one if the topic is specific enough]"
+Respond in ${lang}. Keep it under 120 words. No preamble.`
+        : `The student has chosen: mentor=${mentor}, topic=${topic}, level=${level}, mode=PDF Course.
+Generate a concise roadmap in the student's language (${lang}).
+Format:
+"Has elegido [mentor] · [topic] · [level] · Curso PDF.
+
+Cómo funciona:
+1. Te envío el módulo completo con teoría y ejercicios
+2. Haces los ejercicios y me los devuelves
+3. Los corrijo y te doy tu puntuación
+4. Pasamos al siguiente módulo
+
+[Ask: ready to receive Module 1?]"
+Respond in ${lang}. Under 120 words. No preamble.`
+
+      try {
+        const roadmapText = await getMentorResponse(roadmapPrompt, enrichedState)
+        const roadmapNextState: Partial<SessionState> = {
+          ...enrichedState,
+          tokens:        1,
+          learningStage: 'schema',
+          currentModule: 1,
+          courseActive:  true,
+          // Seed protocol so next turn enters at schema, not guide.
+          // derivePhase() reads lastAction — 'guide' maps to TutorPhase 'guide'.
+          // advancePhase('guide', 'structured', 1) → next in SEQUENCE = 'lesson'.
+          // 'lesson' in pdf_course/structured triggers the module content path.
+          lastAction:  'guide' as PedagogicalAction,
+          tutorPhase:  'guide',
+        }
+        const roadmapArtifact: RoadmapBlock = {
+          type:    'roadmap',
+          content: {
+            mode:   activeMode as 'interact' | 'structured' | 'pdf_course' | 'free',
+            mentor: enrichedState.mentor ?? 'sarah',
+            topic:  enrichedState.topic ?? 'español',
+            level:  enrichedState.level ?? 'A1',
+            steps:  activeMode === 'structured'
+              ? ['Esquema completo', 'Ejemplos guiados', 'Simulacro DELE/CCSE', 'Puntuación', 'Siguiente bloque']
+              : ['Teoría + ejercicios', 'Entrega por adjunto', 'Corrección y puntuación', 'Siguiente módulo'],
+            first: activeMode === 'structured' ? 'Empezamos con el esquema completo.' : 'Generando el primer módulo PDF.',
+          },
+        }
+        return ok({ message: roadmapText ?? '', artifact: roadmapArtifact as unknown as ArtifactPayload, state: roadmapNextState })
+      } catch { /* fall through to normal flow */ }
+    }
 
     // ── 0. Diagnostic trigger ─────────────────────
     if ((message ?? '').trim() === '*1357*#') {
@@ -693,6 +882,71 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
       return ok({ message: responseText, transcription: transcribed, artifact: ttsArt, state: audioNextState })
     }
 
+    // ── 3b. PDF Course submission intercept ─────────
+    // When activeMode is pdf_course and files are present,
+    // treat as student submission. Extract file content first, then evaluate.
+    if (activeMode === 'pdf_course' && files?.length) {
+      const moduleNum = enrichedState.currentModule ?? 1
+      try {
+        // Extract readable content from the submitted files
+        const submissionTexts: string[] = []
+        for (const f of files) {
+          if (f.data) {
+            if (f.type?.startsWith('text/') || f.type?.includes('json')) {
+              // Decode base64 text directly
+              const decoded = Buffer.from(f.data, 'base64').toString('utf-8').slice(0, 2000)
+              submissionTexts.push(`[${f.name}]: ${decoded}`)
+            } else if (f.type?.startsWith('image/')) {
+              // Image: use vision to extract text/content
+              const visionRes = await openai.chat.completions.create({
+                model: 'gpt-4o', max_tokens: 400,
+                messages: [{ role: 'user', content: [
+                  { type: 'text', text: 'This is a student exercise submission. Extract all written text and answers you can see. Return only the content, no commentary.' },
+                  { type: 'image_url', image_url: { url: `data:${f.type};base64,${f.data}`, detail: 'auto' } },
+                ]}],
+              }).catch(() => null)
+              const extracted = visionRes?.choices?.[0]?.message?.content ?? ''
+              if (extracted) submissionTexts.push(`[${f.name} — extracted]: ${extracted}`)
+            }
+          }
+        }
+        const submissionContent = submissionTexts.join('\n\n') || (message ?? 'Sin contenido legible')
+        const evalPrompt = `Eres el tutor de LINGORA evaluando la entrega del estudiante para el módulo ${moduleNum}.
+Contenido entregado:
+${submissionContent}
+${message ? `Comentario del estudiante: "${message}"` : ''}
+
+Evalúa con estas secciones exactas:
+1. PUNTUACIÓN: X/10 (basada en corrección, completitud y calidad)
+2. CORRECCIONES: lista los errores específicos (máximo 5)
+3. FEEDBACK: observación principal de refuerzo (1-2 frases)
+4. SIGUIENTE: pregunta si está listo para el módulo ${moduleNum + 1}
+
+Sé específico. Corrige errores reales. No improvises si el contenido no es legible.`
+
+        const evalText = await getMentorResponse(evalPrompt, enrichedState, PDF_COURSE_DIRECTIVE)
+
+        // Parse score from response (look for "X/10" pattern)
+        const scoreMatch = (evalText ?? '').match(/(\d+)\s*\/\s*10/)
+        const parsedScore = scoreMatch ? parseInt(scoreMatch[1]) : null
+
+        const feedbackContent = {
+          score:          parsedScore ?? 0,
+          corrections:    [],  // parsed from evalText by frontend if needed
+          feedback:       evalText ?? '',
+          nextAssignment: `Módulo ${moduleNum + 1}`,
+        }
+        const subArtifact: SubmissionFeedback = { type: 'submission_feedback', content: feedbackContent }
+        const subNextState: Partial<SessionState> = {
+          ...enrichedState,
+          currentModule:  moduleNum + 1,
+          learningStage:  'schema',
+          tokens:         (enrichedState.tokens ?? 0) + 1,
+        }
+        return ok({ message: '', artifact: subArtifact as unknown as ArtifactPayload, state: subNextState })
+      } catch { /* fall through to generic file handler */ }
+    }
+
     // ── 4. File upload ────────────────────────────
     if (files?.length) {
       // Vision fast-path: if the first file is an image, use OpenAI vision directly
@@ -811,7 +1065,8 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
     }
 
     // ── 5-FAST-C. Simple table ─────────────────────
-    if (messageIsTable) {
+    // Complex requests skip the capped generator and go to mentor with rich directive
+    if (messageIsTable && !isComplexTableRequest(message ?? '')) {
       console.log('[ROUTER] fast-path=table')
       try {
         const tableContent = await generateTableContent(message ?? '', enrichedState)
@@ -837,6 +1092,25 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
       }
     }
 
+    // ── 5-FAST-C2. Rich content (complex table/content requests) ──────
+    // Routes to mentor with uncapped directive — produces DeepSeek-quality output.
+    // Triggered when: multi-tense, errors requested, explanations, long input.
+    const messageIsComplex = isComplexTableRequest(message ?? '') && isTableRequest(message ?? '')
+    if (messageIsComplex) {
+      console.log('[ROUTER] fast-path=rich-content')
+      try {
+        const richResponse = await getMentorResponse(message ?? '', enrichedState, RICH_CONTENT_DIRECTIVE)
+        if (richResponse && richResponse.trim().length > 50) {
+          const richNextState: Partial<SessionState> = {
+            ...enrichedState,
+            lastTask:   'lesson', lastAction: 'lesson' as PedagogicalAction,
+            tutorPhase: 'lesson', tokens: (enrichedState.tokens ?? 0) + 1, courseActive: true,
+          }
+          return ok({ message: richResponse, artifact: null, state: richNextState })
+        }
+      } catch { /* fall through to protocol */ }
+    }
+
     const {
       action, systemDirective, nextPhase,
       nextLessonIndex, nextCourseActive,
@@ -853,6 +1127,7 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
       lastTask:      action,   // keep legacy field in sync during transition
       lessonIndex:   nextLessonIndex,
       courseActive:  nextCourseActive,
+      activeMode,              // preserve mode across all turns
     }
     // ── 5-FAST-D. Explicit quiz override ──────────
     // User explicitly asked for quiz/simulacro — override protocol phase
@@ -1027,18 +1302,51 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
 
     // ── 5h. LESSON — explicit branch ──────────────
     if (action === 'lesson') {
+      // pdf_course mode: generate PdfAssignment instead of plain lesson
+      // Integrated here so action=lesson cannot skip this in pdf_course mode
+      if (activeMode === 'pdf_course') {
+        const moduleNum = enrichedState.currentModule ?? 1
+        try {
+          const moduleContent = await getMentorResponse(
+            message ?? `Genera el modulo ${moduleNum} del curso PDF. Teoria completa, tabla de vocabulario o conjugacion, 4-6 ejercicios con instrucciones de entrega.`,
+            enrichedState, PDF_COURSE_DIRECTIVE
+          )
+          const pdfArt: PdfAssignment = {
+            type: 'pdf_assignment',
+            content: {
+              title:        `Modulo ${moduleNum}`,
+              instructions: 'Realiza los ejercicios y envialos como mensaje o archivo adjunto.',
+              exercises:    [],
+            },
+          }
+          nextState = { ...nextState, pdfCourseActive: true, currentModule: moduleNum, learningStage: 'schema', tokens: (nextState.tokens ?? 0) + 1 }
+          return ok({ message: moduleContent ?? '', artifact: pdfArt as unknown as ArtifactPayload, state: nextState })
+        } catch { /* fall through to normal lesson on error */ }
+      }
+
       let ragContext = null
       try { ragContext = await getRagContext(message ?? '') } catch { /* non-critical */ }
       const msg = ragContext
         ? `${message}\n\n[Contexto de referencia — integrar naturalmente:]\n${ragContext.text}`
         : (message ?? '')
-      const lessonText = await getMentorResponse(msg, nextState, systemDirective)
-      nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1 }
+      const lessonText = await getMentorResponse(msg, nextState, activeMode === 'structured' ? STRUCTURED_COURSE_DIRECTIVE : activeMode === 'pdf_course' ? PDF_COURSE_DIRECTIVE : systemDirective)
+      const lessonStage = (activeMode === 'structured' || activeMode === 'pdf_course') && enrichedState.learningStage
+        ? nextStage(enrichedState.learningStage as 'diagnosis'|'schema'|'examples'|'quiz'|'score'|'next')
+        : enrichedState.learningStage
+      nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1, ...(lessonStage ? { learningStage: lessonStage } : {}) }
       return ok({ message: lessonText ?? '', artifact: null, state: nextState })
     }
 
+
+
     // ── 5i. CONVERSATION (default + free practice) ─
     // Also handles cases where protocol resolves to conversation mode
+    // In guided modes, override the system directive with mode-specific one
+    const modeDirective = getModeDirective()
+    const effectiveDirective = (activeMode !== 'interact' && modeDirective !== RICH_CONTENT_DIRECTIVE)
+      ? modeDirective
+      : systemDirective
+
     let ragContext = null
     try { ragContext = await getRagContext(message ?? '') } catch { /* non-critical */ }
 
@@ -1051,7 +1359,7 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
       await new Promise(r => setTimeout(r, 1200))
     }
 
-    const mentorResponse = await getMentorResponse(msgWithContext, nextState, systemDirective)
+    const mentorResponse = await getMentorResponse(msgWithContext, nextState, effectiveDirective)
     let finalResponse    = (mentorResponse ?? '').trim() || 'How can I help you?'
 
     // Commercial engine — non-critical
@@ -1074,7 +1382,15 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
 
     // Token increment: route is the authoritative source.
     // page.tsx must NOT increment tokens — it should reflect state.tokens from response.
-    nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1 }
+    // In structured/pdf mode: advance learningStage after each interaction
+    const advancedStage = (activeMode === 'structured' || activeMode === 'pdf_course') && enrichedState.learningStage
+      ? nextStage(enrichedState.learningStage as Parameters<typeof nextStage>[0])
+      : enrichedState.learningStage
+    nextState = {
+      ...nextState,
+      tokens: (nextState.tokens ?? 0) + 1,
+      ...(advancedStage ? { learningStage: advancedStage } : {}),
+    }
 
     return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState })
 
