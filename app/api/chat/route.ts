@@ -1333,7 +1333,7 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     if (isTranscribeRequest(message ?? '') && !audio && !files?.length) {
       const txGuide: Record<string, string> = {
         es: '🎤 Para transcribir, envía el audio usando el botón de micrófono o sube el archivo de audio. Lo convertiré a texto limpio.',
-        en: '🎤 To transcribe, send the audio using the microphone button or upload the audio file. I'll convert it to clean text.',
+        en: "🎤 To transcribe, send the audio using the microphone button or upload the audio file. I'll convert it to clean text.",
         no: '🎤 For å transkribere, send lyden med mikrofon-knappen eller last opp lydfilen. Jeg konverterer den til ren tekst.',
       }
       const lang = enrichedState.lang ?? 'en'
