@@ -13,18 +13,19 @@
 // ─ Voice input, file upload, quiz interactivo
 // ================================================
 
-import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
 
 // ─── Types ───────────────────────────────────────
 type MK = 'sarah' | 'alex' | 'nick'
 type TK = 'conversation' | 'structured' | 'cervantes' | 'business' | 'travel' | 'course' | 'leveltest'
 type Lang = 'es' | 'en' | 'no' | 'fr' | 'de' | 'it' | 'pt' | 'ar' | 'ja' | 'zh'
-type Phase = 'onboarding' | 'splash' | 'chat'
+type Phase = 'onboarding' | 'splash' | 'mode' | 'chat'
 
 interface Artifact {
   type: 'schema' | 'quiz' | 'table' | 'table_matrix' | 'schema_pro' |
         'illustration' | 'pdf' | 'pdf_chat' | 'audio' |
-        'pronunciation_report' | 'simulacro_result' | 'audio_transcript'
+        'pronunciation_report' | 'simulacro_result' | 'audio_transcript' |
+        'roadmap' | 'score_report' | 'lesson_module' | 'pdf_assignment' | 'submission_feedback'
   url?: string
   content?: Record<string, unknown>
   metadata?: Record<string, unknown>
@@ -36,6 +37,8 @@ interface Msg {
   audioUrl?: string   // post-send audio playback URL
   imageUrl?: string   // inline image from user upload
 }
+type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
+
 interface SS {
   lang: Lang; mentor: MK; topic: TK; level: string; tokens: number
   samples: string[]; sessionId: string; commercialOffers: unknown[]
@@ -47,6 +50,12 @@ interface SS {
   courseActive?:       boolean
   lastAction?:         string | null
   awaitingQuizAnswer?: boolean
+  // Sprint 2.3 guided modes
+  activeMode?:     ActiveMode
+  learningStage?:  string
+  currentModule?:  number
+  score?:          number
+  pdfCourseActive?: boolean
 }
 interface TableRow { left: string; right: string }
 interface QuizQ    { question: string; options: string[]; correct: number; explanation?: string }
@@ -601,6 +610,56 @@ function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
 }
 
 
+// ─── CopyBlock ────────────────────────────────────
+// Wraps any structured content with a copy-to-clipboard button.
+// Auto-triggers on: markdown tables, code blocks, lists 3+ items, conjugations.
+// Never needs to be requested — appears automatically.
+function CopyBlock({ text, children }: { text: string; children: React.ReactNode }) {
+  const [copied, setCopied] = React.useState(false)
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    }).catch(() => {})
+  }
+  return (
+    <div style={{ position:'relative', width:'100%' }}>
+      {children}
+      <button
+        onClick={copy}
+        title="Copiar"
+        style={{
+          position:'absolute', top:6, right:6,
+          padding:'3px 8px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)',
+          background:'rgba(0,201,167,.08)', color:'var(--teal)',
+          fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4,
+          transition:'all .15s', opacity: copied ? 1 : 0.7,
+        }}
+      >
+        {copied ? '✓ Copiado' : '⎘ Copiar'}
+      </button>
+    </div>
+  )
+}
+
+// Determines if a message deserves a copy block
+// Criteria: markdown tables, conjugations, structured lists (3+ items), exercises
+function isCopyable(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    text.includes('|---') ||                          // markdown table
+    (text.match(/^\|/m) !== null && text.includes('|')) || // table rows
+    (text.match(/^#{1,3} /m) !== null && text.length > 200) || // headers + content
+    (text.match(/^\d+\. /gm) ?? []).length >= 3 ||   // ordered list 3+
+    (text.match(/^- /gm) ?? []).length >= 3 ||        // bullet list 3+
+    t.includes('yo ') && t.includes('tú ') ||         // conjugation pattern
+    t.includes('conjugac') ||
+    t.includes('vocabulario') ||
+    text.length > 400                                  // long content always copyable
+  )
+}
+
+
 function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'schema'       && a.content) return <SchemaBlock content={a.content} />
   if (a.type === 'schema_pro'   && a.content) return <SchemaProBlock content={a.content} />
@@ -700,6 +759,128 @@ function ArtifactRender({ a }: { a: Artifact }) {
       </div>
     )
   }
+
+  // ── Roadmap ───────────────────────────────────────
+  if (a.type === 'roadmap' && a.content) {
+    const r = a.content as { mode: string; mentor: string; topic: string; level: string; steps: string[]; first: string }
+    const modeEmoji: Record<string, string> = { interact:'🧠', structured:'🎓', pdf_course:'📄', free:'💬' }
+    const modeLabel: Record<string, string> = { interact:'Interacción inteligente', structured:'Curso estructurado', pdf_course:'Curso PDF', free:'Conversación libre' }
+    return (
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:16 }}>{modeEmoji[r.mode] ?? '🎓'}</span>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{modeLabel[r.mode] ?? r.mode}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>{r.mentor?.toUpperCase()} · {r.topic} · {r.level}</div>
+          </div>
+        </div>
+        <div style={{ padding:'12px 14px' }}>
+          <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>Ruta de hoy</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+            {(r.steps ?? []).map((step: string, i: number) => (
+              <div key={i} style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color:'var(--silver)' }}>
+                <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'var(--teal)', flexShrink:0 }}>{i+1}</span>
+                {step}
+              </div>
+            ))}
+          </div>
+          {r.first && <div style={{ marginTop:10, fontSize:13, color:'var(--teal)', fontWeight:700 }}>→ {r.first}</div>}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Score Report ──────────────────────────────────
+  if (a.type === 'score_report' && a.content) {
+    const r = a.content as { score: number; total: number; feedback: string; recommendation: string; nextStep: string }
+    const pct = Math.round(((r.score ?? 0) / Math.max(r.total ?? 10, 1)) * 100)
+    const col = pct >= 80 ? 'var(--teal)' : pct >= 60 ? 'var(--gold)' : 'var(--coral)'
+    return (
+      <div style={{ marginTop:10, maxWidth:440, borderRadius:16, overflow:'hidden', border:`1px solid ${col}33`, background:`${col}0a` }}>
+        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${col}22`, display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ fontSize:26, fontWeight:800, color:col, lineHeight:1 }}>{r.score}<span style={{ fontSize:13, color:'var(--muted)', fontWeight:400 }}>/{r.total}</span></div>
+          <div style={{ flex:1 }}>
+            <div style={{ height:5, borderRadius:99, background:'rgba(255,255,255,.08)' }}>
+              <div style={{ height:'100%', width:`${pct}%`, background:col, borderRadius:99, transition:'width .6s' }} />
+            </div>
+            <div style={{ fontSize:11, color:'var(--muted)', marginTop:3 }}>{pct}%</div>
+          </div>
+        </div>
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
+          {r.recommendation && <div style={{ fontSize:12, color:col, fontWeight:700 }}>💡 {r.recommendation}</div>}
+          {r.nextStep && <div style={{ fontSize:12, color:'var(--muted)' }}>→ {r.nextStep}</div>}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Lesson Module ─────────────────────────────────
+  if (a.type === 'lesson_module' && a.content) {
+    const r = a.content as { module: number; title: string; stage: string }
+    const stageLabel: Record<string, string> = { diagnosis:'Diagnóstico', schema:'Esquema', examples:'Ejemplos', quiz:'Simulacro', score:'Puntuación', next:'Siguiente' }
+    return (
+      <div style={{ marginTop:6, padding:'8px 12px', borderRadius:10, border:'1px solid rgba(0,201,167,.2)', background:'rgba(0,201,167,.05)', display:'flex', alignItems:'center', gap:10 }}>
+        <span style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em' }}>Módulo {r.module}</span>
+        <span style={{ fontSize:11, color:'var(--muted)' }}>·</span>
+        <span style={{ fontSize:11, color:'var(--muted)' }}>{r.title}</span>
+        <span style={{ marginLeft:'auto', fontSize:11, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', color:'var(--teal)', fontWeight:700 }}>{stageLabel[r.stage] ?? r.stage}</span>
+      </div>
+    )
+  }
+
+  // ── PDF Assignment ────────────────────────────────
+  if (a.type === 'pdf_assignment' && a.content) {
+    const r = a.content as { title: string; instructions: string; url?: string; exercises?: string[] }
+    return (
+      <div style={{ marginTop:10, maxWidth:460, borderRadius:16, overflow:'hidden', border:'1px solid rgba(245,200,66,.25)', background:'rgba(245,200,66,.05)' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(245,200,66,.15)', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:14 }}>📄</span>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{r.title}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>Tarea para entregar</div>
+          </div>
+          {r.url && <a href={r.url} download style={{ marginLeft:'auto', fontSize:11, padding:'4px 10px', borderRadius:8, background:'rgba(245,200,66,.15)', color:'var(--gold)', fontWeight:700, textDecoration:'none' }}>↓ PDF</a>}
+        </div>
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          <div style={{ fontSize:13, color:'var(--silver)' }}>{r.instructions}</div>
+          {(r.exercises ?? []).length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              {(r.exercises ?? []).map((ex: string, i: number) => (
+                <div key={i} style={{ fontSize:12, color:'var(--muted)' }}>• {ex}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Submission Feedback ───────────────────────────
+  if (a.type === 'submission_feedback' && a.content) {
+    const r = a.content as { score: number; corrections: string[]; feedback: string; nextAssignment: string }
+    const col = (r.score ?? 0) >= 8 ? 'var(--teal)' : (r.score ?? 0) >= 5 ? 'var(--gold)' : 'var(--coral)'
+    return (
+      <div style={{ marginTop:10, maxWidth:460, borderRadius:16, overflow:'hidden', border:`1px solid ${col}33`, background:`${col}0a` }}>
+        <div style={{ padding:'10px 14px', borderBottom:`1px solid ${col}22`, display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:11, fontWeight:800, color:col, textTransform:'uppercase', letterSpacing:'.06em' }}>Corrección</span>
+          <span style={{ marginLeft:'auto', fontSize:18, fontWeight:800, color:col }}>{r.score}<span style={{ fontSize:11, fontWeight:400, color:'var(--muted)' }}>/10</span></span>
+        </div>
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          {(r.corrections ?? []).length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              {(r.corrections ?? []).map((c: string, i: number) => (
+                <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>✗ {c}</div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
+          {r.nextAssignment && <div style={{ fontSize:12, color:col, fontWeight:700 }}>→ {r.nextAssignment}</div>}
+        </div>
+      </div>
+    )
+  }
+
   return null
 }
 
@@ -712,8 +893,15 @@ function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:6, maxWidth:'100%' }}>
         {msg.text && (
-          <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
-            dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+          !isUser && isCopyable(msg.text) ? (
+            <CopyBlock text={msg.text}>
+              <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
+                dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+            </CopyBlock>
+          ) : (
+            <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
+              dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+          )
         )}
         {/* Inline image — shown when user sends an image file */}
         {msg.imageUrl && (
@@ -804,6 +992,7 @@ export default function BetaPage() {
   const [loading,    setLoading]    = useState(false)
   const [recording,  setRecording]  = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [activeMode, setActiveMode] = useState<ActiveMode>('interact')
 
   // Unified composer state — pending items wait for explicit send
   const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob | null>(null)
@@ -838,7 +1027,7 @@ export default function BetaPage() {
 
   // Persist
   useEffect(() => {
-    try { const sv = localStorage.getItem('lng1010'); if (sv) { const p = JSON.parse(sv) as Partial<SS>; setSession(s => ({...s,...p,sessionId:'s'+Math.random().toString(36).slice(2)})); if (p.lang) setLang(p.lang); if (p.mentor) setMentor(p.mentor as MK); if (p.topic) setTopic(p.topic as TK) } } catch {}
+    try { const sv = localStorage.getItem('lng1010'); if (sv) { const p = JSON.parse(sv) as Partial<SS>; setSession(s => ({...s,...p,sessionId:'s'+Math.random().toString(36).slice(2)})); if (p.lang) setLang(p.lang); if (p.mentor) setMentor(p.mentor as MK); if (p.topic) setTopic(p.topic as TK); if (p.activeMode) setActiveMode(p.activeMode as ActiveMode) } } catch {}
   }, [])
   useEffect(() => { try { localStorage.setItem('lng1010', JSON.stringify(session)) } catch {} }, [session])
 
@@ -852,10 +1041,10 @@ export default function BetaPage() {
     try {
       const ctrl = new AbortController()
       const to = setTimeout(() => ctrl.abort(), 25000)
-      const res = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ...payload, ttsRequested: true, state: { ...sessionRef.current, mentor: mentorRef.current, lang: langRef.current, topic: topicRef.current, activeMentor: mentorRef.current, topicSystemPrompt: TSYS[topicRef.current] } }), signal: ctrl.signal })
+      const res = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ...payload, ttsRequested: true, state: { ...sessionRef.current, mentor: mentorRef.current, lang: langRef.current, topic: topicRef.current, activeMentor: mentorRef.current, topicSystemPrompt: TSYS[topicRef.current], activeMode: sessionRef.current.activeMode } }), signal: ctrl.signal })
       clearTimeout(to)
       const data = await res.json()
-      if (data.state) setSession(s => { const n = {...s,...data.state,samples:s.samples,sessionId:s.sessionId}; sessionRef.current = n; return n })
+      if (data.state) setSession(s => { const n = {...s,...data.state,samples:[...(s.samples??[]),...((data.state?.samples??[]).filter((x:string)=>!(s.samples??[]).includes(x)))],sessionId:s.sessionId}; sessionRef.current = n; return n })
       if (data.diagnostic) { addMsg({ sender:'ln', text:'```\n'+JSON.stringify(data.diagnostic,null,2)+'\n```' }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
@@ -956,13 +1145,52 @@ export default function BetaPage() {
 
     // 1800ms: reveal mentor
     setTimeout(() => { setSplashRev(true) }, 1800)
-    // 3600ms: enter chat
+    // 3600ms: enter mode chooser
+    // Greeting fires after mode selection (with roadmap), not here
     setTimeout(() => {
-      setPhase('chat')
-      const greeting = GREETINGS[m][l] ?? GREETINGS[m].en ?? GREETINGS[m].es ?? ''
-      setMsgs([{ id:'init', sender:m, text: greeting }])
+      setPhase('mode')
     }, 3600)
   }, [])
+
+  // Mode chooser — fires after splash, before chat
+  const selectMode = useCallback((mode: ActiveMode) => {
+    setActiveMode(mode)
+    // Update session with chosen mode
+    setSession(s => {
+      const n = { ...s, activeMode: mode }
+      sessionRef.current = n
+      return n
+    })
+    // Transition to chat — first message triggers roadmap via route.ts
+    setPhase('chat')
+    // First message to route.ts: special mode-start signal
+    // This triggers the roadmap response in route.ts (isFirstMessage + isGuidedMode)
+    const m   = mentorRef.current
+    const l   = langRef.current
+    const modeLabels: Record<ActiveMode, string> = {
+      interact:   '🧠 Interacción inteligente',
+      structured: '🎓 Curso estructurado',
+      pdf_course: '📄 Curso PDF',
+      free:       '💬 Conversación libre',
+    }
+    if (mode === 'structured' || mode === 'pdf_course') {
+      // Send a silent "start" message to trigger roadmap from route.ts
+      // Show a brief greeting while roadmap loads
+      setMsgs([{ id:'init', sender:m, text:`${modeLabels[mode]} activado. Preparando tu ruta...` }])
+      // Trigger roadmap call
+      setTimeout(() => {
+        const topicLabel = topicRef.current
+        callAPI({ message: `Modo seleccionado: ${modeLabels[mode]}. Tema: ${topicLabel}. Nivel: ${sessionRef.current.level ?? 'A1'}. Por favor muestra la hoja de ruta.`, activeMode: mode })
+      }, 400)
+    } else {
+      // Modes that start conversationally — show greeting directly
+      const greeting = GREETINGS[m][l] ?? GREETINGS[m].en ?? GREETINGS[m].es ?? ''
+      const modeNote = mode === 'free'
+        ? ''
+        : '\n\n_Modo interacción inteligente activo — respondo con tablas y esquemas cuando el contenido lo merece._'
+      setMsgs([{ id:'init', sender:m, text: greeting + (mode !== 'free' ? modeNote : '') }])
+    }
+  }, [callAPI])
 
   // Voice: Record → Preview → Send (via sendComposer)
   const toggleRec = useCallback(async () => {
@@ -1024,6 +1252,53 @@ export default function BetaPage() {
         ::-webkit-scrollbar { width:5px } ::-webkit-scrollbar-thumb { background:var(--border); border-radius:999px }
         textarea:focus, button:focus, input:focus, select:focus { outline:none }
       `}</style>
+
+            {/* ── MODE CHOOSER ────────────────────────────── */}
+      {phase === 'mode' && (
+        <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ width:42, height:42, borderRadius:'50%', background:mm.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#fff' }}>
+              {mm.code}
+            </div>
+            <div>
+              <div style={{ fontSize:16, fontWeight:800, color:'#fff' }}>{mm.name}</div>
+              <div style={{ fontSize:12, color:'var(--muted)' }}>{mm.spec}</div>
+            </div>
+          </div>
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:20, fontWeight:800, color:'#fff', marginBottom:6 }}>¿Cómo quieres aprender?</div>
+            <div style={{ fontSize:13, color:'var(--muted)' }}>Elige el modo. El tutor se adapta desde el primer mensaje.</div>
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:10, width:'100%', maxWidth:420 }}>
+            {([
+              { key:'interact'   as ActiveMode, emoji:'🧠', title:'Interacción inteligente', desc:'Respuestas ricas con tablas y esquemas. Estilo DeepSeek.' },
+              { key:'structured' as ActiveMode, emoji:'🎓', title:'Curso estructurado',       desc:'Esquema → ejemplos → simulacro → puntuación. Guiado por el tutor.' },
+              { key:'pdf_course' as ActiveMode, emoji:'📄', title:'Curso PDF con entregas',   desc:'Material descargable. Entregas y corrección por el tutor.' },
+              { key:'free'       as ActiveMode, emoji:'💬', title:'Conversación libre',       desc:'Habla con naturalidad. Correcciones oportunistas.' },
+            ] as Array<{key:ActiveMode;emoji:string;title:string;desc:string}>).map(({ key, emoji, title, desc }) => (
+              <button
+                key={key}
+                onClick={() => selectMode(key)}
+                style={{
+                  display:'flex', alignItems:'center', gap:14, padding:'14px 16px',
+                  borderRadius:16,
+                  border: activeMode === key ? '1px solid rgba(0,201,167,.4)' : '1px solid var(--border)',
+                  background: activeMode === key ? 'rgba(0,201,167,.1)' : 'rgba(255,255,255,.02)',
+                  cursor:'pointer', textAlign:'left', transition:'all .15s', width:'100%',
+                }}
+              >
+                <span style={{ fontSize:22, flexShrink:0 }}>{emoji}</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:14, fontWeight:700, color:'#fff', marginBottom:2 }}>{title}</div>
+                  <div style={{ fontSize:12, color:'var(--muted)', lineHeight:1.5 }}>{desc}</div>
+                </div>
+                <span style={{ fontSize:16, color:'var(--muted)', flexShrink:0 }}>›</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
 
       {/* ── ONBOARDING ─────────────────────────────── */}
       {phase === 'onboarding' && (
@@ -1184,7 +1459,7 @@ export default function BetaPage() {
                 )}
               </div>
 
-              <button onClick={() => { setMsgs([]); setSession(s => ({...s,tokens:0,level:'A0',samples:[],lastTask:null,lastArtifact:null,tutorPhase:'idle',lessonIndex:0,courseActive:false,lastAction:null,awaitingQuizAnswer:false})); setPhase('onboarding') }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>↺</button>
+              <button onClick={() => { setMsgs([]); setSession(s => ({...s,tokens:0,level:'A0',samples:[],lastTask:null,lastArtifact:null,tutorPhase:'idle',lessonIndex:0,courseActive:false,lastAction:null,awaitingQuizAnswer:false,activeMode:undefined,learningStage:undefined,currentModule:undefined,score:undefined,pdfCourseActive:false})); setActiveMode('interact'); setPhase('onboarding') }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>↺</button>
             </div>
           </div>
 
@@ -1266,4 +1541,3 @@ export default function BetaPage() {
     </>
   )
 }
-
