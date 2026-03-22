@@ -31,6 +31,7 @@ import type {
   TableMatrixArtifact, TableMatrixContent,
   SchemaProArtifact, SchemaProContent,
   RoadmapBlock, PdfAssignment, SubmissionFeedback,
+  CurriculumPlan, CurriculumModule, ModuleMastery, ErrorMemory, EngagementState, RequestedOperation,
 } from '@/lib/contracts'
 
 export const runtime     = 'nodejs'
@@ -162,7 +163,10 @@ Rules:
 - columns: 2-6 headers (use as many as the content needs)
 - rows: as many rows as needed — do not truncate
 - cells: concise (1-8 words each)
-- include emojis in cells where natural (✅ ❌ 🟢 🔴 etc.)
+- EMOJI SEMANTICS (mandatory when applicable): ✅ correct/good, ❌ error/wrong, ⚠️ caution, 💡 note/tip, 🧠 rule, 🗣️ natural use, 📌 context, 🔁 contrast, 🎯 key focus
+- if there is an "error" or "mistake" column: that column MUST use ❌ in header or cells
+- if there is a "correct" or "corrección" column: use ✅
+- if there is a "rule" or "regla" column: use 🧠
 - tone: pick the most appropriate one
 - If the request is a verb conjugation, tone = "conjugation", columns = ["Persona", "Forma", "Ejemplo"]
 - If comparison (ser vs estar, por vs para), tone = "comparison", columns = ["Criterio", "SER", "ESTAR"] etc.
@@ -229,6 +233,7 @@ function isComplexTableRequest(message: string): boolean {
 // Produces DeepSeek-quality output: multiple tables, full conjugations,
 // errors, explanations — no row/column caps, no simplification.
 const RICH_CONTENT_DIRECTIVE = `You are an elite Spanish language content generator.
+LANGUAGE RULE: Always respond in the student's interface language for instructions and explanations. Use Spanish for examples, conjugations, and exercises. Do not switch languages arbitrarily.
 
 RULES:
 - Follow the user request EXACTLY — do not change topic or simplify
@@ -346,35 +351,38 @@ async function generateSchemaPro(
   const topic = state.topic ?? 'Spanish'
   const lang  = state.lang  ?? 'en'
 
-  const prompt = `You are a Spanish language educational designer for LINGORA.
-Student level: ${level}. Topic: ${topic}. Interface: ${lang}.
+  const prompt = `You are an expert Spanish language educational designer for LINGORA.
+Student level: ${level}. Topic: ${topic}. Interface language: ${lang}.
 Request: "${message}"
 
 Return ONLY valid JSON. No markdown. No preamble.
 Shape:
 {
   "title": "schema title",
-  "subtitle": "optional subtitle",
+  "subtitle": "one line objective for this schema",
   "level": "${level}",
+  "errors": ["Error frecuente 1: descripción", "Error frecuente 2: descripción"],
   "blocks": [
-    {"type":"concept","title":"Core idea","body":"explanation"},
-    {"type":"bullets","title":"Key points","items":["point 1","point 2"]},
-    {"type":"highlight","text":"The most important rule","tone":"ok","label":"80/20"},
-    {"type":"comparison","left":"SER","right":"ESTAR","label":"Criterio"},
-    {"type":"flow","steps":["Step 1","Step 2","Step 3"]},
-    {"type":"table","columns":["Form","Example"],"rows":[["soy","I am"]]}
+    {"type":"concept","title":"Objetivo general","body":"What the student will achieve — concrete, not vague"},
+    {"type":"concept","title":"Core concept","body":"The essential explanation — dense, pedagogically correct"},
+    {"type":"bullets","title":"Conceptos clave","items":["key rule 1","key rule 2","key rule 3"]},
+    {"type":"flow","steps":["Step or rule 1","Step or rule 2","Step or rule 3"]},
+    {"type":"comparison","left":"CASE A","right":"CASE B","label":"Criterio"},
+    {"type":"table","columns":["Form","Example","Context"],"rows":[["form","example","context"]]},
+    {"type":"highlight","text":"The single most important rule — the 80/20","tone":"ok","label":"CLAVE 80/20"},
+    {"type":"highlight","text":"The most common error — what NOT to do","tone":"danger","label":"ERROR CRÍTICO"},
+    {"type":"bullets","title":"Micro tarea","items":["Produce one sentence using this structure","Identify one error from the errores list"]}
   ]
 }
 
-Rules:
-- 4-8 blocks total
-- always start with a 'concept' block
-- include at least one 'highlight' block (80/20 rule)
-- include 'bullets' for key concepts
-- use 'comparison' only when comparing two things
-- use 'flow' for sequences, conjugations, or step-by-step
-- use 'table' only for compact data (max 6 rows)
-- tone options: ok, warn, info, highlight`
+MANDATORY RULES:
+- Always include: objective concept, 80/20 highlight (tone:ok, green), error highlight (tone:danger, red), micro-task bullets
+- errors[]: 2-4 specific, common student errors as descriptive strings
+- Tone semantics: ok=key rules (green), danger=errors/risk (red), warn=exceptions (yellow), info=notes (blue), highlight=exam focus (purple)
+- Schema must be a DENSE STUDY TOOL, not a light summary
+- After delivering this schema, the natural next step is a simulacro — end with student readiness for practice
+- Instructions in ${lang}. Spanish for examples and exercises.
+- 6-10 blocks total`
 
   try {
     const res = await openai.chat.completions.create({
@@ -389,6 +397,51 @@ Rules:
     if (!parsed.blocks?.length) return null
     return parsed
   } catch { return null }
+}
+
+// ── Detect explicit transcription request ────────────
+function isTranscribeRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'transcribe', 'transcripción', 'transcribir', 'transcribe este',
+    'qué dice', 'que dice', 'qué se dice', 'what does it say',
+    'text from audio', 'texto del audio', 'escribe lo que',
+    'pasar a texto', 'convertir a texto',
+  ].some(p => m.includes(p))
+}
+
+// ── Detect explicit correction request ────────────────
+function isCorrectionRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'corrige esto', 'corrige este', 'corrígeme', 'corrige mi',
+    'correct this', 'fix this', 'hay errores', 'hay algún error',
+    'está bien escrito', 'revisa esto',
+  ].some(p => m.includes(p))
+}
+
+// ── Detect explicit translation request ───────────────
+function isTranslateRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'traduce', 'translate', 'cómo se dice', 'como se dice',
+    'how do you say', 'qué significa', 'que significa', 'what does',
+    'en español', 'in english', 'en inglés', 'in spanish',
+  ].some(p => m.includes(p))
+}
+
+// ── Detect full course request → force structured mode ──────
+function isCourseRequest(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'curso completo', 'full course', 'complete course',
+    'enséñame desde cero', 'teach me from scratch',
+    'aprende desde cero', 'learn from scratch',
+    'curso de', 'course on', 'quiero aprender',
+    'want to learn', 'build me a course',
+    'hazme un curso', 'dame un curso',
+    'programa completo', 'complete program',
+  ].some(p => m.includes(p))
 }
 
 // ─── canBypassTutorPhase ─────────────────────────────
@@ -496,24 +549,50 @@ async function runFastPaths(
 // Mode 2: guided Cervantes-based course sequence.
 // One action per message. Tutor drives. User follows.
 const STRUCTURED_COURSE_DIRECTIVE = `You are executing a guided Spanish course session (LINGORA Structured Mode).
+LANGUAGE RULE: Always respond in the student's interface language for instructions and feedback. Spanish for examples and exercises only.
 
-CURRENT SEQUENCE (follow strictly, one step per message):
-1. SCHEMA — Produce a complete structured schema for the topic. Include: main rule, 80/20 key, conjugation/vocabulary table, common errors, examples.
-2. EXAMPLES — Give 3 guided examples using the student's real context (profession, origin, goals). Ask student to produce one example themselves.
-3. QUIZ — Generate a DELE/CCSE format quiz: 1 reading comprehension text + 3 multiple choice questions. Real exam format.
-4. SCORE — After student answers, give: score (X/3), specific corrections, one-sentence reinforcement.
-5. NEXT — Ask: "Ready for the next block?" and briefly name the next topic.
+CORE MANDATE — READ FIRST:
+You are NOT answering questions. You are CONSTRUCTING KNOWLEDGE.
 
-RULES:
-- ONE step per message. Never combine steps.
-- Adapt all examples to the student's actual level and professional context.
-- Use the student's interface language for instructions.
-- Spanish for examples and exercises.
-- Never explain what you are going to do. Just do it.`
+Before teaching any topic:
+1. Determine the full curriculum structure appropriate for the level
+2. Organize it into logical modules with clear progression
+3. Execute the teaching sequence step by step — schema → examples → practice → quiz → feedback
+
+You MUST ALWAYS:
+- Respect CEFR level progression (A0 → A1 → A2 → B1 → B2 → C1 → C2)
+- Choose grammar, vocabulary, and communicative goals appropriate to the level
+- Maintain internal curriculum consistency across turns — never repeat a module already covered
+- If the student's level is unknown, infer it from their production and calibrate
+- If curriculum plan is in context: follow it. If not: build one before teaching.
+- If a topic request falls outside Spanish (acupuncture, law, finance, etc.): build the curriculum for that domain using the same pedagogical structure
+
+CURRICULUM AUTONOMY:
+If no curriculum guide exists for the requested topic or domain, build one first.
+Structure: [Module 1: Foundation] → [Module 2: Core concepts] → ... → [Final module: Mastery validation]
+Then execute that structure. Never improvise without structure.
+
+DEPTH RULE — NON-NEGOTIABLE:
+Superficial answers are forbidden. Depth is mandatory.
+Always expand until the topic is FULLY OPERATIONAL for the student — not just understood conceptually, but usable in real situations.
+If the concept has subtleties, exceptions, or common errors: cover them all. Do not summarize where detail is needed.
+
+AUTO-ARTEFACT RULE:
+If a visual schema, table, or comparison would improve retention at this moment: generate it. Do not wait to be asked.
+Proactively insert visuals when explaining: conjugation patterns, grammar contrasts, vocabulary sets, error comparisons, logical sequences.
+This is part of your teaching responsibility, not an option.
+
+MASTERY GATE:
+Before advancing to the next module, the student must demonstrate understanding.
+Run a short verification: 1-2 targeted questions or a micro-production task.
+If student score < 70%: stay in current module with targeted correction. Identify the specific error.
+If student score >= 70%: brief positive reinforcement, then advance.
+Never skip this gate in structured or pdf_course mode.`
 
 // ─── PDF_COURSE_DIRECTIVE ─────────────────────────
 // Mode 3: course material generation + submission evaluation.
 const PDF_COURSE_DIRECTIVE = `You are generating a formal Spanish course module (LINGORA PDF Course Mode).
+LANGUAGE RULE: Instructions and feedback in student's interface language. Content (theory, exercises) in Spanish.
 
 When generating course content:
 - Produce complete theory: explanation, 80/20 rule, full table
@@ -536,6 +615,7 @@ RULES:
 // ─── FREE_CONVERSATION_DIRECTIVE ─────────────────
 // Mode 4: natural conversation, opportunistic correction.
 const FREE_CONVERSATION_DIRECTIVE = `You are having a natural Spanish conversation with the student (LINGORA Free Mode).
+LANGUAGE RULE: Match the student's interface language for all meta-communication. Do not switch to Spanish spontaneously unless the student writes in Spanish.
 
 RULES:
 - Respond naturally. No forced structure.
@@ -597,11 +677,58 @@ export async function POST(req: NextRequest) {
       : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
     const enrichedState: Partial<SessionState> = { ...state, tutorMode }
 
+    // ── INTENT OVERRIDE LAYER (Priority 1) ─────────────
+    // Explicit operation commands block ALL mode/lesson/phase interference.
+    // Order: transcribe > pronunciation > translate > correct > summarize
+    // These are detected on message text BEFORE any routing decision.
+    const msgLower = (message ?? '').toLowerCase()
+    const requestedOp: RequestedOperation | undefined =
+      isTranscribeRequest(msgLower)   ? 'transcribe'   :
+      isCorrectionRequest(msgLower)   ? 'correct'      :
+      isTranslateRequest(msgLower)    ? 'translate'    :
+      enrichedState.requestedOperation ?? undefined
+
+    // Auto-activate structured mode for full course requests
+    // activeMode must be read from enrichedState here — enrichedStateWithOp not yet defined
+    const activeModeEarly = (enrichedState.activeMode ?? 'interact') as 'interact'|'structured'|'pdf_course'|'free'
+    if (!audio && isCourseRequest(message ?? '') && activeModeEarly !== 'structured' && activeModeEarly !== 'pdf_course') {
+      // Force structured mode and flag for curriculum generation
+      const courseEnrichedState: Partial<SessionState> = { ...enrichedState, activeMode: 'structured', tokens: 0 }
+      // Treat as first message in structured mode — will trigger curriculum + roadmap
+      const courseRoadmapRes = await (async () => {
+        const mentor2 = courseEnrichedState.mentor ?? 'sarah'
+        const topic2  = courseEnrichedState.topic  ?? (message ?? '').slice(0, 80)
+        const level2  = courseEnrichedState.level  ?? 'A1'
+        const lang2   = courseEnrichedState.lang   ?? 'en'
+        const cp = await openai.chat.completions.create({
+          model: 'gpt-4o', temperature: 0.3, max_tokens: 600,
+          messages: [{ role: 'user', content: `Level: ${level2}. Topic: ${topic2}. Generate structured curriculum JSON: { "title": "...", "totalModules": 8, "modules": [{ "number": 1, "title": "...", "focus": "...", "skills": ["..."] }] }` }],
+          response_format: { type: 'json_object' },
+        }).catch(() => null)
+        const cpData = cp?.choices?.[0]?.message?.content ?? null
+        let mods: string[] = []
+        try { if (cpData) mods = (JSON.parse(cpData).modules ?? []).slice(0,8).map((m: {number:number;title:string}) => `${m.number}. ${m.title}`) } catch {}
+        if (!mods.length) mods = ['1. Foundation', '2. Core concepts', '3. Practice', '4. Advanced']
+        const roadmapMsg = await getMentorResponse(
+          `Student wants a full course on: ${topic2}. Level: ${level2}. Present this curriculum and ask if ready to start:
+${mods.join('\n')}`,
+          courseEnrichedState, STRUCTURED_COURSE_DIRECTIVE
+        ).catch(() => null)
+        return ok({ message: roadmapMsg ?? `Course on ${topic2} — ${mods.length} modules ready.`, artifact: null, state: { ...courseEnrichedState, curriculumPlan: cpData ?? undefined, curriculumTopic: topic2, currentModule: 1, learningStage: 'schema', tokens: 1, lastAction: 'guide' as PedagogicalAction, tutorPhase: 'guide', courseActive: true } })
+      })()
+      return courseRoadmapRes
+    }
+
+    // Persist requestedOperation in session so multi-turn operations stay locked
+    const enrichedStateWithOp: Partial<SessionState> = requestedOp
+      ? { ...enrichedState, requestedOperation: requestedOp }
+      : enrichedState
+
     // ── M. Mode-aware routing setup ──────────────
     // Read activeMode from state, select appropriate directive.
     // Roadmap: if this is the very first chat message (tokens=0) in a mode,
     // return roadmap response immediately before any other processing.
-    const activeMode = enrichedState.activeMode ?? 'interact'
+    const activeMode = enrichedStateWithOp.activeMode ?? 'interact'
 
     // Select system directive based on active mode
     function getModeDirective(): string {
@@ -626,42 +753,80 @@ export async function POST(req: NextRequest) {
       const level  = enrichedState.level  ?? 'A1'
       const lang   = enrichedState.lang   ?? 'en'
 
+      // Generate real structured curriculum first, then roadmap
+      // This is a ONE-TIME call at course init — not repeated each turn
+      const curriculumPrompt = `Student level: ${level}. Topic or domain: ${topic}. Interface language: ${lang}.
+
+Generate a structured curriculum for this topic and level.
+Return ONLY a JSON object (no markdown, no explanation):
+{
+  "title": "curriculum title",
+  "level": "${level}",
+  "totalModules": 8,
+  "modules": [
+    {"number": 1, "title": "Module title", "focus": "What this module teaches", "skills": ["skill1", "skill2"]},
+    {"number": 2, "title": "Module title", "focus": "What this module teaches", "skills": ["skill1"]}
+  ],
+  "note": "One sentence on the pedagogical approach for this level"
+}
+Rules:
+- 6–10 modules, logical progression from foundation to mastery
+- Respect CEFR if topic is language learning (A0/A1 = basics, B1/B2 = intermediate, C1/C2 = advanced)
+- If topic is NOT Spanish language (e.g. acupuncture, finance, law): build domain-appropriate curriculum with same rigor
+- Module titles must be specific, not generic ("Present tense: ser/estar" not "Grammar module 1")`
+
+      let curriculumData: string | null = null
+      try {
+        const currRes = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: curriculumPrompt }],
+          temperature: 0.3,
+          max_tokens: 800,
+          response_format: { type: 'json_object' },
+        })
+        curriculumData = currRes.choices?.[0]?.message?.content ?? null
+      } catch { /* curriculum generation failed — roadmap will be generic */ }
+
+      // Parse curriculum for roadmap display
+      let moduleList: string[] = []
+      try {
+        if (curriculumData) {
+          const parsed = JSON.parse(curriculumData) as { modules?: Array<{ number: number; title: string }> }
+          moduleList = (parsed.modules ?? []).slice(0, 8).map(m => `${m.number}. ${m.title}`)
+        }
+      } catch { /* use fallback */ }
+      if (!moduleList.length) {
+        moduleList = activeMode === 'structured'
+          ? ['1. Esquema completo', '2. Ejemplos guiados', '3. Simulacro DELE/CCSE', '4. Puntuación', '5. Siguiente bloque']
+          : ['1. Teoría + ejercicios', '2. Entrega por adjunto', '3. Corrección y puntuación', '4. Siguiente módulo']
+      }
+
       const roadmapPrompt = activeMode === 'structured'
         ? `The student has chosen: mentor=${mentor}, topic=${topic}, level=${level}, mode=Structured Course.
 Generate a concise roadmap message in the student's language (${lang}).
-Format exactly:
-"Has elegido [mentor] · [topic] · [level] · Curso estructurado.
-
-Ruta de hoy:
-1. Esquema completo del tema
-2. Ejemplos guiados con tu contexto
-3. Simulacro formato DELE/CCSE
-4. Puntuación y siguiente bloque
-
-Empezamos. [Ask: what specific aspect of the topic do you want to cover first, OR propose one if the topic is specific enough]"
-Respond in ${lang}. Keep it under 120 words. No preamble.`
+Format: present the curriculum below, then ask if ready to start Module 1.
+Curriculum modules:
+${moduleList.join('\n')}
+Keep it under 150 words. No preamble. Start directly with the plan.`
         : `The student has chosen: mentor=${mentor}, topic=${topic}, level=${level}, mode=PDF Course.
 Generate a concise roadmap in the student's language (${lang}).
-Format:
-"Has elegido [mentor] · [topic] · [level] · Curso PDF.
-
-Cómo funciona:
-1. Te envío el módulo completo con teoría y ejercicios
-2. Haces los ejercicios y me los devuelves
-3. Los corrijo y te doy tu puntuación
-4. Pasamos al siguiente módulo
-
-[Ask: ready to receive Module 1?]"
-Respond in ${lang}. Under 120 words. No preamble.`
+Show the module plan below, then explain the submit-and-correct flow.
+Modules:
+${moduleList.join('\n')}
+Under 150 words. No preamble.`
 
       try {
         const roadmapText = await getMentorResponse(roadmapPrompt, enrichedState)
         const roadmapNextState: Partial<SessionState> = {
-          ...enrichedState,
-          tokens:        1,
-          learningStage: 'schema',
-          currentModule: 1,
-          courseActive:  true,
+          ...enrichedStateWithOp,
+          tokens:          1,
+          learningStage:   'schema',
+          currentModule:   1,
+          courseActive:    true,
+          curriculumPlan:  curriculumData ? (() => {
+            try { return JSON.parse(curriculumData) as CurriculumPlan } catch { return undefined }
+          })() : undefined,
+          curriculumTopic: topic,
           // Seed protocol so next turn enters at schema, not guide.
           // derivePhase() reads lastAction — 'guide' maps to TutorPhase 'guide'.
           // advancePhase('guide', 'structured', 1) → next in SEQUENCE = 'lesson'.
@@ -765,9 +930,24 @@ Respond in ${lang}. Under 120 words. No preamble.`
       }
       const transcribed = tx.text
 
+      // ── TRANSCRIPTION OVERRIDE (Priority 1 in audio) ──────────
+      // Check against ORIGINAL user message, not the transcribed content.
+      // Using transcribed content risks false positives if someone says "transcribe" in Spanish.
+      if (isTranscribeRequest(message ?? '') || requestedOp === 'transcribe') {
+        const cleanTranscription = transcribed
+          .replace(/transcribe(?: este| this| el| la| este audio| this audio)?[:.]?\s*/i, '')
+          .trim() || transcribed
+        const txNextState: Partial<SessionState> = {
+          ...enrichedState,
+          requestedOperation: undefined,  // clear after serving
+          tokens: (enrichedState.tokens ?? 0) + 1,
+        }
+        return ok({ message: cleanTranscription, transcription: transcribed, artifact: null, state: txNextState })
+      }
+
       // ── SEEK fix: run fast-paths on transcribed text ──────────
       // Spoken intent must be respected identically to typed intent.
-      const audioFastPath = await runFastPaths(transcribed, enrichedState)
+      const audioFastPath = await runFastPaths(transcribed, enrichedStateWithOp)
       if (audioFastPath) return audioFastPath
 
       // ── PRONUNCIATION EVALUATION MODE ─────────────────────────
@@ -880,6 +1060,61 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
         if (tts.success && tts.url) ttsArt = audioArtifact(tts.url)
       }
       return ok({ message: responseText, transcription: transcribed, artifact: ttsArt, state: audioNextState })
+    }
+
+    // ── 3a. Gallery audio intercept ──────────────────
+    // Audio files uploaded from gallery (not recorded in-app) enter via files[].
+    // Detect audio/* mime type and route same as direct audio input.
+    if (files?.length && !audio) {
+      const audioFile = files.find(f => f.type?.startsWith('audio/'))
+      if (audioFile && audioFile.data) {
+        // Treat as audio input — transcribe first
+        const tx = await transcribeAudio({ data: audioFile.data, format: audioFile.type?.split('/')[1] ?? 'webm' })
+        if (tx.success) {
+          const transcribed = tx.text
+          // Check for transcription override
+          if (isTranscribeRequest(message ?? '') || requestedOp === 'transcribe') {
+            const cleanTx = transcribed.replace(/transcribe(?: este| this)?[:.]?\s*/i, '').trim() || transcribed
+            return ok({ message: cleanTx, transcription: transcribed, artifact: null, state: { ...enrichedState, requestedOperation: undefined, tokens: (enrichedState.tokens ?? 0) + 1 } })
+          }
+          // Otherwise: treat as conversational audio input
+          // Full parity with direct audio branch: fast-paths → pronunciation → conversation + TTS
+          const galleryFastPath = await runFastPaths(transcribed, enrichedStateWithOp)
+          if (galleryFastPath) return galleryFastPath
+
+          // Pronunciation check for gallery audio
+          const galleryEvalKw = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno']
+          const galleryWantsEval = galleryEvalKw.some(p => (message ?? '').toLowerCase().includes(p))
+          if (galleryWantsEval || requestedOp === 'pronunciation') {
+            try {
+              const evalResult = await evaluatePronunciation(transcribed, transcribed, enrichedStateWithOp.lang)
+              if (evalResult.success) {
+                const lines = (evalResult.feedbackText ?? '').split('\n')
+                const feedbackLine = lines.find((l: string) => l.startsWith('FEEDBACK:'))?.replace('FEEDBACK:', '').trim() ?? ''
+                const tipLine = lines.find((l: string) => l.startsWith('TIP:'))?.replace('TIP:', '').trim() ?? ''
+                const errorsLine = lines.find((l: string) => l.startsWith('ERRORS:'))?.replace('ERRORS:', '').trim() ?? ''
+                const feedbackFull = [feedbackLine, errorsLine && errorsLine !== 'Ninguno detectado' ? errorsLine : ''].filter(Boolean).join(' — ')
+                const pronContent = { target: undefined, transcribed, score: evalResult.score ?? 0, feedback: feedbackFull || (evalResult.feedbackText ?? ''), correction: tipLine || undefined }
+                const pronArt: ArtifactPayload = { type: 'pronunciation_report', content: pronContent } as unknown as ArtifactPayload
+                return ok({ message: '', transcription: transcribed, pronunciationScore: evalResult.score ?? undefined, artifact: pronArt, state: { ...enrichedStateWithOp, tokens: (enrichedStateWithOp.tokens ?? 0) + 1 } })
+              }
+            } catch { /* fall through to conversation */ }
+          }
+
+          // Conversation + TTS
+          const { action: gAction, systemDirective: gDir, nextPhase: gPhase, nextLessonIndex: gLesson, nextCourseActive: gCourse } = resolvePedagogicalAction({ message: transcribed, state: enrichedStateWithOp, explicit: null })
+          const gText = await getMentorResponse(transcribed, enrichedStateWithOp, gDir).catch(() => null)
+          const gNext: Partial<SessionState> = { ...enrichedStateWithOp, tutorPhase: gPhase, lastAction: gAction, lastTask: gAction, lessonIndex: gLesson, courseActive: gCourse, tokens: (enrichedStateWithOp.tokens ?? 0) + 1, samples: [...(enrichedStateWithOp.samples ?? []), transcribed] }
+          const wantsGalleryTts = process.env.LINGORA_TTS_ENABLED === 'true' || Boolean(process.env.OPENAI_API_KEY)
+          let galleryTtsArt: ArtifactPayload | null = null
+          if (wantsGalleryTts && gText) {
+            const tts = await generateSpeech(gText, { voice: 'nova' })
+            if (tts.success && tts.url) galleryTtsArt = audioArtifact(tts.url)
+          }
+          return ok({ message: gText ?? `🎤 "${transcribed}"`, transcription: transcribed, artifact: galleryTtsArt, state: gNext })
+        }
+        // transcription failed — fall through to generic file handler
+      }
     }
 
     // ── 3b. PDF Course submission intercept ─────────
@@ -1092,6 +1327,20 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
       }
     }
 
+    // ── 5-FAST-TRANSCRIBE. Forced transcription (text message) ────────
+    // "Transcribe this audio" as text → user wants to transcribe audio they'll send
+    // Give clear instructions to send audio. Do not teach.
+    if (isTranscribeRequest(message ?? '') && !audio && !files?.length) {
+      const txGuide: Record<string, string> = {
+        es: '🎤 Para transcribir, envía el audio usando el botón de micrófono o sube el archivo de audio. Lo convertiré a texto limpio.',
+        en: '🎤 To transcribe, send the audio using the microphone button or upload the audio file. I'll convert it to clean text.',
+        no: '🎤 For å transkribere, send lyden med mikrofon-knappen eller last opp lydfilen. Jeg konverterer den til ren tekst.',
+      }
+      const lang = enrichedState.lang ?? 'en'
+      const txMsg = txGuide[lang] ?? txGuide.en
+      return ok({ message: txMsg, artifact: null, state: enrichedState })
+    }
+
     // ── 5-FAST-C2. Rich content (complex table/content requests) ──────
     // Routes to mentor with uncapped directive — produces DeepSeek-quality output.
     // Triggered when: multi-tense, errors requested, explanations, long input.
@@ -1302,6 +1551,21 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
 
     // ── 5h. LESSON — explicit branch ──────────────
     if (action === 'lesson') {
+      // ── MASTERY GATE: enforce minimum score before module advance ─────
+      // If student is in structured mode and current module has low mastery: block advance
+      const currMod = enrichedStateWithOp.currentModule ?? 1
+      const currMastery = enrichedStateWithOp.masteryByModule?.[currMod]
+      const masteryBlocked = (activeMode === 'structured' || activeMode === 'pdf_course') &&
+        currMastery !== undefined &&
+        currMastery.score < 70 &&
+        currMastery.attempts >= 1  // only gate after at least one attempt
+      if (masteryBlocked) {
+        const retryPrompt = `Student is still in Module ${currMod}. Their current mastery score is ${currMastery!.score}/100 — below the 70% threshold. Do NOT advance to the next module. Instead: identify the specific concept they are struggling with, give a targeted micro-correction, and offer one more focused practice item.`
+        const retryText = await getMentorResponse(retryPrompt, enrichedStateWithOp, STRUCTURED_COURSE_DIRECTIVE).catch(() => null)
+        const retryState: Partial<SessionState> = { ...enrichedStateWithOp, tokens: (enrichedStateWithOp.tokens ?? 0) + 1 }
+        return ok({ message: retryText ?? '', artifact: null, state: retryState })
+      }
+
       // pdf_course mode: generate PdfAssignment instead of plain lesson
       // Integrated here so action=lesson cannot skip this in pdf_course mode
       if (activeMode === 'pdf_course') {
@@ -1329,7 +1593,31 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
       const msg = ragContext
         ? `${message}\n\n[Contexto de referencia — integrar naturalmente:]\n${ragContext.text}`
         : (message ?? '')
-      const lessonText = await getMentorResponse(msg, nextState, activeMode === 'structured' ? STRUCTURED_COURSE_DIRECTIVE : activeMode === 'pdf_course' ? PDF_COURSE_DIRECTIVE : systemDirective)
+      // Inject curriculum plan for guided modes (structured/pdf_course)
+      const depthSuffix = enrichedStateWithOp.depthMode === 'deep'
+        ? '\n\nDEPTH MODE: DEEP — expand every concept to mastery level. No shortcuts.'
+        : enrichedStateWithOp.depthMode === 'shallow'
+        ? '\n\nDEPTH MODE: SHALLOW — brief overview only. Student requested light pass.'
+        : ''
+      // Inject errorMemory into directive for personalized correction
+      const errorMemoryContext = (enrichedStateWithOp.errorMemory && (
+        (enrichedStateWithOp.errorMemory.grammar?.length ?? 0) > 0 ||
+        (enrichedStateWithOp.errorMemory.vocabulary?.length ?? 0) > 0
+      )) ? `
+
+[STUDENT ERROR MEMORY — correct these if they reappear]
+Grammar errors: ${(enrichedStateWithOp.errorMemory.grammar ?? []).slice(-5).join(', ')}
+Vocabulary gaps: ${(enrichedStateWithOp.errorMemory.vocabulary ?? []).slice(-5).join(', ')}` : ''
+
+      const lessonDirective = (activeMode === 'structured' ? STRUCTURED_COURSE_DIRECTIVE : activeMode === 'pdf_course' ? PDF_COURSE_DIRECTIVE : systemDirective) + depthSuffix
+      // curriculumPlan is always CurriculumPlan | undefined per contract — never a raw string
+      const currPlanStr = enrichedStateWithOp.curriculumPlan
+        ? JSON.stringify(enrichedStateWithOp.curriculumPlan, null, 2)
+        : null
+      const msgWithCurriculum = (currPlanStr && (activeMode === 'structured' || activeMode === 'pdf_course'))
+        ? `[CURRICULUM PLAN — follow this structure]\n${currPlanStr}\n\n[CURRENT MODULE: ${enrichedStateWithOp.currentModule ?? 1}]\n\n[STUDENT MESSAGE]\n${msg}`
+        : msg
+      const lessonText = await getMentorResponse(msgWithCurriculum, nextState, lessonDirective)
       const lessonStage = (activeMode === 'structured' || activeMode === 'pdf_course') && enrichedState.learningStage
         ? nextStage(enrichedState.learningStage as 'diagnosis'|'schema'|'examples'|'quiz'|'score'|'next')
         : enrichedState.learningStage
@@ -1342,10 +1630,20 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     // ── 5i. CONVERSATION (default + free practice) ─
     // Also handles cases where protocol resolves to conversation mode
     // In guided modes, override the system directive with mode-specific one
+    // Inject errorMemory into conversation directive
+    const convErrorCtx = (enrichedStateWithOp.errorMemory && (enrichedStateWithOp.errorMemory.grammar?.length ?? 0) > 0)
+      ? `
+
+[STUDENT ERROR MEMORY]
+Grammar: ${(enrichedStateWithOp.errorMemory.grammar ?? []).slice(-5).join(', ')}
+Vocabulary: ${(enrichedStateWithOp.errorMemory.vocabulary ?? []).slice(-5).join(', ')}
+If relevant: address these errors in your response.`
+      : ''
+
     const modeDirective = getModeDirective()
-    const effectiveDirective = (activeMode !== 'interact' && modeDirective !== RICH_CONTENT_DIRECTIVE)
+    const effectiveDirective = ((activeMode !== 'interact' && modeDirective !== RICH_CONTENT_DIRECTIVE)
       ? modeDirective
-      : systemDirective
+      : systemDirective) + convErrorCtx
 
     let ragContext = null
     try { ragContext = await getRagContext(message ?? '') } catch { /* non-critical */ }
@@ -1353,14 +1651,25 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     const msgWithContext = ragContext
       ? `${message}\n\n[Contexto de referencia — integrar naturalmente, no citar literalmente:]\n${ragContext.text}`
       : (message ?? '')
+    // Inject curriculum for guided modes in conversation branch too
+    const msgFinal = (enrichedStateWithOp.curriculumPlan && (activeMode === 'structured' || activeMode === 'pdf_course'))
+      ? `[CURRICULUM PLAN]\n${enrichedStateWithOp.curriculumPlan}\n\n[CURRENT MODULE: ${enrichedStateWithOp.currentModule ?? 1}]\n\n${msgWithContext}`
+      : msgWithContext
 
     // Humanization: 1.2s pause on first message — tutor feels present, not instant-bot
     if ((enrichedState.tokens ?? 0) <= 1) {
       await new Promise(r => setTimeout(r, 1200))
     }
 
-    const mentorResponse = await getMentorResponse(msgWithContext, nextState, effectiveDirective)
-    let finalResponse    = (mentorResponse ?? '').trim() || 'How can I help you?'
+    const mentorResponse = await getMentorResponse(msgFinal, nextState, effectiveDirective)
+    const langFallbacks: Record<string, string> = {
+      es: '¿En qué puedo ayudarte?', en: 'How can I help you?',
+      no: 'Hvordan kan jeg hjelpe?', fr: 'Comment puis-je vous aider?',
+      de: 'Wie kann ich helfen?',    it: 'Come posso aiutarti?',
+      pt: 'Como posso ajudar?',      ar: 'كيف يمكنني مساعدتك؟',
+      ja: 'どのようにお手伝いできますか？', zh: '我能帮您什么？',
+    }
+    let finalResponse = (mentorResponse ?? '').trim() || (langFallbacks[enrichedStateWithOp.lang ?? 'en'] ?? 'How can I help you?')
 
     // Commercial engine — non-critical
     try {
@@ -1386,6 +1695,17 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     const advancedStage = (activeMode === 'structured' || activeMode === 'pdf_course') && enrichedState.learningStage
       ? nextStage(enrichedState.learningStage as Parameters<typeof nextStage>[0])
       : enrichedState.learningStage
+    // ── R4: Clear requestedOperation after execution (prevent sticky mode)
+    // translate, correct, summarize, conversation: all cleared after single execution
+    // transcription and pronunciation are cleared in their own early-return paths
+    if (requestedOp && ['translate', 'correct', 'summarize', 'conversation'].includes(requestedOp)) {
+      nextState = { ...nextState, requestedOperation: undefined }
+    }
+
+    // ── TOKEN AUTHORITY: single increment for conversation path only.
+    // Early-return paths (roadmap, transcription, gallery, quiz, pdf, schema, etc.)
+    // increment tokens inline before returning. They never reach this block.
+    // This block is the sole token increment for the conversation fallback path.
     nextState = {
       ...nextState,
       tokens: (nextState.tokens ?? 0) + 1,
