@@ -1,6 +1,6 @@
 // ================================================
 // FILE: app/api/chat/route.ts
-// LINGORA 10.2 — ROUTER (VALID)
+// LINGORA v10.2 — CHAT ROUTER
 // Full replacement — typed and build-safe
 // ================================================
 
@@ -714,7 +714,7 @@ export async function POST(req: NextRequest) {
 ${mods.join('\n')}`,
           courseEnrichedState, STRUCTURED_COURSE_DIRECTIVE
         ).catch(() => null)
-        return ok({ message: roadmapMsg ?? `Course on ${topic2} — ${mods.length} modules ready.`, artifact: null, state: { ...courseEnrichedState, curriculumPlan: cpData ?? undefined, curriculumTopic: topic2, currentModule: 1, learningStage: 'schema', tokens: 1, lastAction: 'guide' as PedagogicalAction, tutorPhase: 'guide', courseActive: true } })
+        return ok({ message: roadmapMsg ?? `Course on ${topic2} — ${mods.length} modules ready.`, artifact: null, state: { ...courseEnrichedState, curriculumPlan: cpData ? (() => { try { return JSON.parse(cpData) as CurriculumPlan } catch { return undefined } })() : undefined, curriculumTopic: topic2, currentModule: 1, learningStage: 'schema', tokens: 1, lastAction: 'guide' as PedagogicalAction, tutorPhase: 'guide', courseActive: true } })
       })()
       return courseRoadmapRes
     }
@@ -1720,3 +1720,4 @@ If relevant: address these errors in your response.`
     return ok({ message: 'Error interno. Por favor intenta de nuevo.', error: msg }, 500)
   }
 }
+
