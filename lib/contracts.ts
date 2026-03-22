@@ -10,7 +10,38 @@
 import type { TutorMode, TutorPhase, PedagogicalAction } from '@/lib/tutorProtocol'
 
 // ─── SESSION STATE ───────────────────────────────
-export interface SessionState {
+// ─── Exported state sub-types ────────────────────────────────────
+
+export type DepthMode = 'shallow' | 'standard' | 'deep'
+
+export type RequestedOperation =
+  | 'transcribe'
+  | 'pronunciation'
+  | 'translate'
+  | 'correct'
+  | 'summarize'
+  | 'conversation'
+
+export interface ModuleMastery {
+  score:       number
+  attempts:    number
+  lastUpdated: number
+}
+
+export interface ErrorMemory {
+  grammar:       string[]
+  vocabulary:    string[]
+  pronunciation: string[]
+  lastUpdated?:  number
+}
+
+export interface EngagementState {
+  streak:           number
+  lastActive:       number
+  completedModules: number[]
+}
+
+interface SessionState {
   lang:    string | null
   mentor:  'sarah' | 'alex' | 'nick' | null
   topic:   string | null
@@ -35,9 +66,33 @@ export interface SessionState {
 
   // ── Sprint 2.3: Guided modes ──
   activeMode?:     'interact' | 'structured' | 'pdf_course' | 'free'
+
+  // ── Curriculum plan (structured — stored once at course init) ──
+  curriculumPlan?: CurriculumPlan
+  curriculumTopic?: string
+
+  // ── Mastery model (per-module progress) ──────────────────────
+  // Gates module advancement: student must demonstrate understanding
+  masteryByModule?: Record<number, ModuleMastery>
+
+  // ── Error memory (persistent across turns) ───────────────────
+  // Used to personalize corrections and revisit weak spots
+  errorMemory?: ErrorMemory
+
+  // ── Engagement state ─────────────────────────────────────────
+  engagement?: EngagementState
+
+  // ── Depth mode ───────────────────────────────────────────────
+  // Controls how thoroughly the tutor expands each concept
+  depthMode: DepthMode
+
+  // ── Sprint 2.4: Explicit operation override ──
+  // Set when user gives an explicit operation command.
+  // Persists until user changes task or session resets.
+  requestedOperation?: RequestedOperation  // MUST be cleared after execution
   learningStage?:  'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
   currentModule?:  number
-  score?:          number
+  sessionScore?:   number   // session-level score distinct from masteryByModule scores
   pdfCourseActive?: boolean
 }
 
@@ -63,8 +118,15 @@ export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
   activeMode:       undefined,
   learningStage:    undefined,
   currentModule:    undefined,
-  score:            undefined,
+  sessionScore:            undefined,
   pdfCourseActive:  false,
+  requestedOperation: undefined,
+  curriculumPlan:      undefined,
+  curriculumTopic:     undefined,
+  masteryByModule:     {},
+  errorMemory:         { grammar: [], vocabulary: [], pronunciation: [] },
+  engagement:          { streak: 0, lastActive: Date.now(), completedModules: [] },
+  depthMode:           'standard',
 }
 
 // ─── MESSAGE ─────────────────────────────────────
@@ -190,6 +252,8 @@ export interface SchemaProContent {
   subtitle?: string
   level?:    string
   blocks:    SchemaBlock[]
+  errors?: string[]
+  colorHints?: Record<string, 'green' | 'red' | 'blue' | 'yellow' | 'purple'>
 }
 
 export interface SchemaProArtifact {
@@ -229,6 +293,24 @@ export interface AudioTranscript {
     language?: string
     url?:      string
   }
+}
+
+// ─── Curriculum types (exported for route.ts) ───────────────
+
+export interface CurriculumModule {
+  number:        number
+  title:         string
+  focus:         string
+  skills:        string[]
+  completed?:    boolean
+  masteryScore?: number
+}
+
+export interface CurriculumPlan {
+  title:   string
+  topic:   string
+  level:   string
+  modules: CurriculumModule[]
 }
 
 // ─── Sprint 2.3 Artifacts ────────────────────────
@@ -294,22 +376,22 @@ export interface PDFChat {
 
 export type ArtifactPayload =
   | SchemaArtifact
-  | IllustrationArtifact
-  | PdfArtifact
-  | AudioArtifact
-  | QuizArtifact
+  | SchemaProArtifact
   | TableArtifact
   | TableMatrixArtifact
-  | SchemaProArtifact
+  | QuizArtifact
+  | PdfArtifact
+  | PdfAssignment
+  | SubmissionFeedback
+  | IllustrationArtifact
+  | AudioArtifact
   | PronunciationReport
   | SimulacroResult
   | AudioTranscript
-  | PDFChat
   | RoadmapBlock
   | ScoreReport
   | LessonModule
-  | PdfAssignment
-  | SubmissionFeedback
+  | PDFChat
   | null
 
 // ─── SCHEMA CONTENT ──────────────────────────────
@@ -400,4 +482,35 @@ export interface ChatResponse {
   diagnostic?:         unknown
   error?:              string
 }
+
+// ─── TYPE GUARD HELPERS (runtime safety) ─────────────────────────
+
+export function isCurriculumPlan(obj: unknown): obj is CurriculumPlan {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    Array.isArray((obj as CurriculumPlan).modules)
+  )
+}
+
+export function isModuleMastery(obj: unknown): obj is ModuleMastery {
+  return typeof obj === 'object' && obj !== null && 'score' in obj && 'attempts' in obj
+}
+
+export function isErrorMemory(obj: unknown): obj is ErrorMemory {
+  if (typeof obj !== 'object' || obj === null) return false
+  const e = obj as Record<string, unknown>
+  return Array.isArray(e.grammar) && Array.isArray(e.vocabulary) && Array.isArray(e.pronunciation)
+}
+
+// ─── STATE INVARIANTS ────────────────────────────────────────────
+// contracts.ts is the single source of truth for all state shapes.
+// No other module may redefine structures already declared here.
+// Invariants:
+// 1. curriculumPlan is always CurriculumPlan | undefined — never a raw string
+// 2. masteryByModule keys must correspond to modules in curriculumPlan.modules
+// 3. engagement.completedModules must align with modules where masteryScore >= 70
+// 4. requestedOperation MUST be cleared to undefined after each execution
+// 5. tokens are incremented once per request, at the final return only
+// 6. depthMode defaults to 'standard' — never undefined at runtime
 
