@@ -78,7 +78,9 @@ export function resolvePedagogicalAction(params: {
 
   // Explicit artifact requests always win
   if (explicit && explicit !== 'conversation') {
-    const mode = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
+    const mode = state.activeMode
+    ? modeToTutorMode(state.activeMode as 'interact'|'structured'|'pdf_course'|'free', state.topic ?? null, state.mentor ?? null)
+    : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
     return {
       action:           explicit,
       mode,
@@ -89,7 +91,9 @@ export function resolvePedagogicalAction(params: {
     }
   }
 
-  const mode    = resolveTutorMode(state.topic ?? null, state.mentor ?? null)
+  const mode    = state.activeMode
+    ? modeToTutorMode(state.activeMode as 'interact'|'structured'|'pdf_course'|'free', state.topic ?? null, state.mentor ?? null)
+    : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
   const tokens  = state.tokens ?? 0
 
   // FIX: use lastAction (protocol field), not lastTask (legacy field)
@@ -341,3 +345,41 @@ PROHIBITED BEHAVIORS (absolute — never do these):
 — Do not blend multiple phases (lesson + quiz + feedback) in a single response.
 — Do not act as a general-purpose AI assistant — you have a specific tutoring role.
 — Do not give the quiz answer before the student responds.`
+
+// ─── Mode-aware helpers ──────────────────────────
+
+// Returns the appropriate tutorMode based on activeMode
+// 'structured' and 'pdf_course' use structured tutorMode
+// 'interact' uses conversational
+// 'free' uses conversational without phase control
+export function modeToTutorMode(
+  activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined,
+  topic:  string | null,
+  mentor: string | null
+): TutorMode {
+  if (activeMode === 'structured' || activeMode === 'pdf_course') return 'structured'
+  if (activeMode === 'free') return 'conversational'
+  // 'interact' — use existing topic+mentor logic
+  return resolveTutorMode(topic, mentor)
+}
+
+// Returns initial learningStage for a given mode
+export function initialStage(
+  activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined
+): LearningStage {
+  // Guided modes start at schema (aligns with route.ts roadmap learningStage)
+  return 'schema'
+}
+
+// Returns next learningStage in the structured sequence
+// diagnosis → schema → examples → quiz → score → next (loops back to schema)
+export function nextStage(current: LearningStage): LearningStage {
+  const seq: LearningStage[] = ['diagnosis', 'schema', 'examples', 'quiz', 'score', 'next']
+  const idx = seq.indexOf(current)
+  if (idx === -1 || idx >= seq.length - 1) return 'schema'
+  return seq[idx + 1]
+}
+
+export type LearningStage = 'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
+
+
