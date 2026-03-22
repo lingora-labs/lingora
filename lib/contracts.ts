@@ -41,7 +41,7 @@ export interface EngagementState {
   completedModules: number[]
 }
 
-interface SessionState {
+export interface SessionState {
   lang:    string | null
   mentor:  'sarah' | 'alex' | 'nick' | null
   topic:   string | null
