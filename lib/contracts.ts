@@ -32,6 +32,13 @@ export interface SessionState {
   courseActive?:       boolean
   lastAction?:         PedagogicalAction | null
   awaitingQuizAnswer?: boolean        // true when quiz sent, waiting for user response
+
+  // ── Sprint 2.3: Guided modes ──
+  activeMode?:     'interact' | 'structured' | 'pdf_course' | 'free'
+  learningStage?:  'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
+  currentModule?:  number
+  score?:          number
+  pdfCourseActive?: boolean
 }
 
 export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
@@ -53,6 +60,11 @@ export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
   courseActive:     false,
   lastAction:       null,
   awaitingQuizAnswer: false,
+  activeMode:       undefined,
+  learningStage:    undefined,
+  currentModule:    undefined,
+  score:            undefined,
+  pdfCourseActive:  false,
 }
 
 // ─── MESSAGE ─────────────────────────────────────
@@ -187,31 +199,92 @@ export interface SchemaProArtifact {
 
 // ─── Pronunciation Report ─────────────────────────
 export interface PronunciationReport {
-  type:        'pronunciation_report'
-  target?:     string
-  transcribed: string
-  score:       number
-  feedback:    string
-  correction?: string
+  type:    'pronunciation_report'
+  content: {
+    target?:     string
+    transcribed: string
+    score:       number
+    feedback:    string
+    correction?: string
+  }
 }
 
 // ─── Simulacro Result ─────────────────────────────
 export interface SimulacroResult {
-  type:           'simulacro_result'
-  score:          number
-  total:          number
-  feedback:       string
-  recommendation: string
-  retry?:         boolean
+  type:    'simulacro_result'
+  content: {
+    score:          number
+    total:          number
+    feedback:       string
+    recommendation: string
+    retry?:         boolean
+  }
 }
 
 // ─── Audio Transcript ─────────────────────────────
 export interface AudioTranscript {
-  type:      'audio_transcript'
-  text:      string
-  language?: string
-  url?:      string
+  type:    'audio_transcript'
+  content: {
+    text:      string
+    language?: string
+    url?:      string
+  }
 }
+
+// ─── Sprint 2.3 Artifacts ────────────────────────
+
+export interface RoadmapBlock {
+  type:    'roadmap'
+  content: {
+    mode:   'interact' | 'structured' | 'pdf_course' | 'free'
+    mentor: string
+    topic:  string
+    level:  string
+    steps:  string[]
+    first:  string
+  }
+}
+
+export interface ScoreReport {
+  type:    'score_report'
+  content: {
+    score:          number
+    total:          number
+    feedback:       string
+    recommendation: string
+    nextStep:       string
+  }
+}
+
+export interface LessonModule {
+  type:    'lesson_module'
+  content: {
+    module: number
+    title:  string
+    stage:  'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
+  }
+}
+
+export interface PdfAssignment {
+  type:    'pdf_assignment'
+  content: {
+    title:        string
+    instructions: string
+    url?:         string
+    exercises?:   string[]
+  }
+}
+
+export interface SubmissionFeedback {
+  type:    'submission_feedback'
+  content: {
+    score:          number
+    corrections:    string[]
+    feedback:       string
+    nextAssignment: string
+  }
+}
+
 
 // ─── PDF Chat Export ──────────────────────────────
 export interface PDFChat {
@@ -232,6 +305,11 @@ export type ArtifactPayload =
   | SimulacroResult
   | AudioTranscript
   | PDFChat
+  | RoadmapBlock
+  | ScoreReport
+  | LessonModule
+  | PdfAssignment
+  | SubmissionFeedback
   | null
 
 // ─── SCHEMA CONTENT ──────────────────────────────
@@ -322,3 +400,4 @@ export interface ChatResponse {
   diagnostic?:         unknown
   error?:              string
 }
+
