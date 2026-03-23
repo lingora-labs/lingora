@@ -36,6 +36,7 @@ interface Msg {
   artifact?: Artifact | null; score?: number
   audioUrl?: string   // post-send audio playback URL
   imageUrl?: string   // inline image from user upload
+  suggestedActions?: SuggestedAction[]
 }
 type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 
@@ -63,7 +64,7 @@ interface Sub      { title: string; content: string; keyTakeaway?: string }
 interface Norm {
   title: string; objective: string; block: string; keyConcepts: string[]
   subtopics: Sub[]; quiz: QuizQ[]; tableRows: TableRow[]
-  summary: string; examples: string[]
+  summary: string; examples: string[]; errors: string[]
 }
 
 // ─── Static Data ─────────────────────────────────
@@ -178,7 +179,8 @@ function normSchema(c?: Record<string, unknown>): Norm {
     const inferred = subtopics.filter(s => s.title.length < 40 && s.content.length < 80).map(s => ({ left: s.title, right: s.content }))
     if (inferred.length >= 3) tableRows = inferred
   }
-  return { title: ss(r.title) || 'LINGORA Schema', objective: ss(r.objective), block: ss(r.block) || 'LINGORA', keyConcepts: sa(r.keyConcepts), subtopics, quiz, tableRows, summary: ss(r.summary) || ss(r.globalTakeaway) || ss(r.keyTakeaway), examples: sa(r.examples) }
+  const errors: string[] = Array.isArray(r.errors) ? r.errors.map(ss).filter(Boolean) : []
+  return { title: ss(r.title) || 'LINGORA Schema', objective: ss(r.objective), block: ss(r.block) || 'LINGORA', keyConcepts: sa(r.keyConcepts), subtopics, quiz, tableRows, summary: ss(r.summary) || ss(r.globalTakeaway) || ss(r.keyTakeaway), examples: sa(r.examples), errors }
 }
 
 // Full markdown renderer — produces React-compatible HTML string
@@ -368,6 +370,38 @@ function SchemaBlock({ content }: { content: Record<string, unknown> }) {
           </div>
         )}
 
+        {/* Errores frecuentes — explicit errors[] from schema data takes priority */}
+        {(s.errors?.length > 0 || s.keyConcepts.some(c => c.toLowerCase().includes('error'))) && (
+          <div style={{ background:'linear-gradient(180deg,rgba(255,107,107,.09),rgba(255,107,107,.04))', border:'1px solid rgba(255,107,107,.22)', borderRadius:14, padding:14 }}>
+            <SL>⚠️ Errores frecuentes</SL>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {(s.errors?.length > 0
+                ? s.errors
+                : s.keyConcepts.filter(c => c.toLowerCase().includes('error'))
+              ).map((e: string, i: number) => (
+                <div key={i} style={{ fontSize:13, color:'var(--coral)', display:'flex', gap:6, alignItems:'flex-start' }}>
+                  <span style={{ flexShrink:0 }}>❌</span><span>{e}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Subtopic error detection */}
+        {s.subtopics.some(sub => sub.title.toLowerCase().includes('error') || sub.content.toLowerCase().includes('❌')) && (
+          <div style={{ background:'rgba(255,107,107,.06)', border:'1px solid rgba(255,107,107,.18)', borderRadius:14, padding:14 }}>
+            <SL>⚠️ Errores frecuentes</SL>
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {s.subtopics.filter(sub => sub.title.toLowerCase().includes('error') || sub.content.toLowerCase().includes('❌')).map((sub,i) => (
+                <div key={i}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--coral)', marginBottom:3 }}>{sub.title}</div>
+                  <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.5 }}>{sub.content}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 80/20 Summary */}
         {s.summary && (
           <div style={{ background:'linear-gradient(180deg,rgba(0,201,167,.09),rgba(0,201,167,.04))', border:'1px solid rgba(0,201,167,.22)', borderRadius:14, padding:14 }}>
@@ -529,15 +563,24 @@ function renderSBlock(b: SBlock, i: number): ReactNode {
           </div>
         </div>
       )
-    case 'highlight':
+    case 'highlight': {
+      const toneMap: Record<string, { bg: string; border: string; color: string; icon: string }> = {
+        ok:        { bg:'rgba(0,201,167,.09)',  border:'rgba(0,201,167,.22)',  color:'var(--teal)',  icon:'🧠' },
+        warn:      { bg:'rgba(245,200,66,.09)', border:'rgba(245,200,66,.22)', color:'var(--gold)',  icon:'⚠️' },
+        danger:    { bg:'rgba(255,107,107,.09)',border:'rgba(255,107,107,.22)',color:'var(--coral)', icon:'❌' },
+        info:      { bg:'rgba(56,189,248,.09)', border:'rgba(56,189,248,.22)', color:'#38bdf8',     icon:'💡' },
+        highlight: { bg:'rgba(196,181,253,.09)',border:'rgba(196,181,253,.22)',color:'#c4b5fd',     icon:'🎯' },
+      }
+      const ts = toneMap[b.tone ?? 'ok'] ?? toneMap.ok
       return (
-        <div key={i} style={{ background:'linear-gradient(180deg,rgba(0,201,167,.09),rgba(0,201,167,.04))', border:'1px solid rgba(0,201,167,.22)', borderRadius:14, padding:14 }}>
-          {b.label && <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label}</div>}
+        <div key={i} style={{ background:`linear-gradient(180deg,${ts.bg},${ts.bg.replace('.09','.04')})`, border:`1px solid ${ts.border}`, borderRadius:14, padding:14 }}>
+          {b.label && <div style={{ fontSize:11, fontWeight:800, color:ts.color, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label}</div>}
           <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>
-            🧠 {b.text}
+            {ts.icon} {b.text}
           </div>
         </div>
       )
+    }
     case 'comparison':
       return (
         <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, overflow:'hidden' }}>
@@ -609,6 +652,58 @@ function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
   )
 }
 
+
+// ─── SuggestedActionBar ───────────────────────────
+// Renders interactive next-step buttons after tutor responses.
+// Actions are dispatched as synthetic messages to callAPI.
+type SuggestedAction = {
+  id:      string
+  label:   string
+  action:  string
+  payload?: Record<string, unknown>
+  tone?:   'primary' | 'secondary' | 'warning'
+  emoji?:  string
+}
+
+function SuggestedActionBar({
+  actions,
+  onAction,
+}: {
+  actions:  SuggestedAction[]
+  onAction: (action: SuggestedAction) => void
+}) {
+  if (!actions?.length) return null
+  const toneStyle = (tone?: string) => {
+    if (tone === 'primary')   return { bg: 'rgba(0,201,167,.15)', border: 'rgba(0,201,167,.35)', color: 'var(--teal)' }
+    if (tone === 'warning')   return { bg: 'rgba(255,107,107,.1)', border: 'rgba(255,107,107,.3)', color: 'var(--coral)' }
+    return { bg: 'rgba(255,255,255,.05)', border: 'var(--border)', color: 'var(--muted)' }
+  }
+  return (
+    <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:8, paddingLeft:36 }}>
+      {actions.map(a => {
+        const s = toneStyle(a.tone)
+        return (
+          <button
+            key={a.id}
+            onClick={() => onAction(a)}
+            style={{
+              display:'flex', alignItems:'center', gap:5,
+              padding:'5px 11px', borderRadius:20,
+              border:`1px solid ${s.border}`, background:s.bg,
+              color:s.color, fontSize:12, fontWeight:600, cursor:'pointer',
+              transition:'all .15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
+          >
+            {a.emoji && <span style={{ fontSize:13 }}>{a.emoji}</span>}
+            {a.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 // ─── CopyBlock ────────────────────────────────────
 // Wraps any structured content with a copy-to-clipboard button.
@@ -778,10 +873,20 @@ function ArtifactRender({ a }: { a: Artifact }) {
           <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>Ruta de hoy</div>
           <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
             {(r.steps ?? []).map((step: string, i: number) => (
-              <div key={i} style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color:'var(--silver)' }}>
+              <button
+                key={i}
+                onClick={() => {
+                  const evt = new CustomEvent('lingora-step-select', { detail: { step, index: i } })
+                  window.dispatchEvent(evt)
+                }}
+                style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color:'var(--silver)', background:'transparent', border:'none', cursor:'pointer', textAlign:'left', padding:'4px 0', width:'100%', transition:'color .15s' }}
+                onMouseEnter={e => (e.currentTarget.style.color = 'var(--teal)')}
+                onMouseLeave={e => (e.currentTarget.style.color = 'var(--silver)')}
+              >
                 <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'var(--teal)', flexShrink:0 }}>{i+1}</span>
                 {step}
-              </div>
+                <span style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', opacity:.6 }}>›</span>
+              </button>
             ))}
           </div>
           {r.first && <div style={{ marginTop:10, fontSize:13, color:'var(--teal)', fontWeight:700 }}>→ {r.first}</div>}
@@ -887,41 +992,51 @@ function ArtifactRender({ a }: { a: Artifact }) {
 function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
   const isUser = msg.sender === 'user'
   return (
-    <div style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
-      <div style={{ width:28, height:28, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, flexShrink:0, background: isUser ? 'var(--teal)' : mc, color:'#fff' }}>
-        {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
-      </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:6, maxWidth:'100%' }}>
-        {msg.text && (
-          !isUser && isCopyable(msg.text) ? (
-            <CopyBlock text={msg.text}>
-              <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
+    <>
+      <div style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
+        <div style={{ width:28, height:28, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, flexShrink:0, background: isUser ? 'var(--teal)' : mc, color:'#fff' }}>
+          {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:6, maxWidth:'100%' }}>
+          {msg.text && (
+            !isUser && isCopyable(msg.text) ? (
+              <CopyBlock text={msg.text}>
+                <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
+                  dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+              </CopyBlock>
+            ) : (
+              <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
                 dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
-            </CopyBlock>
-          ) : (
-            <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
-              dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
-          )
-        )}
-        {/* Inline image — shown when user sends an image file */}
-        {msg.imageUrl && (
-          <div style={{ marginTop:4, borderRadius:12, overflow:'hidden', maxWidth:280, border:'1px solid var(--border)' }}>
-            <img src={msg.imageUrl} alt="Adjunto" style={{ width:'100%', display:'block', borderRadius:12 }} />
-          </div>
-        )}
-        {/* Audio playback — shown when user sends audio */}
-        {msg.audioUrl && (
-          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:10, background:'rgba(0,201,167,.06)', border:'1px solid rgba(0,201,167,.15)', maxWidth:280 }}>
-            <span style={{ fontSize:12 }}>🎤</span>
-            <audio controls src={msg.audioUrl} style={{ flex:1, height:24, minWidth:0 }} />
-          </div>
-        )}
-        {msg.artifact && <ArtifactRender a={msg.artifact} />}
-        {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
+            )
+          )}
+          {msg.imageUrl && (
+            <div style={{ marginTop:4, borderRadius:12, overflow:'hidden', maxWidth:280, border:'1px solid var(--border)' }}>
+              <img src={msg.imageUrl} alt="Adjunto" style={{ width:'100%', display:'block', borderRadius:12 }} />
+            </div>
+          )}
+          {msg.audioUrl && (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:10, background:'rgba(0,201,167,.06)', border:'1px solid rgba(0,201,167,.15)', maxWidth:280 }}>
+              <span style={{ fontSize:12 }}>🎤</span>
+              <audio controls src={msg.audioUrl} style={{ flex:1, height:24, minWidth:0 }} />
+            </div>
+          )}
+          {msg.artifact && <ArtifactRender a={msg.artifact} />}
+          {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
+        </div>
       </div>
-    </div>
+      {!isUser && (msg.suggestedActions?.length ?? 0) > 0 && (
+        <SuggestedActionBar
+          actions={msg.suggestedActions!}
+          onAction={(a) => {
+            const evt = new CustomEvent('lingora-suggested-action', { detail: a })
+            window.dispatchEvent(evt)
+          }}
+        />
+      )}
+    </>
   )
 }
+
 
 function Typing({ mc }: { mc: string }) {
   return (
@@ -1025,6 +1140,8 @@ export default function BetaPage() {
   useEffect(() => { topicRef.current  = topic },    [topic])
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
 
+
+
   // Persist
   useEffect(() => {
     try { const sv = localStorage.getItem('lng1010'); if (sv) { const p = JSON.parse(sv) as Partial<SS>; setSession(s => ({...s,...p,sessionId:'s'+Math.random().toString(36).slice(2)})); if (p.lang) setLang(p.lang); if (p.mentor) setMentor(p.mentor as MK); if (p.topic) setTopic(p.topic as TK); if (p.activeMode) setActiveMode(p.activeMode as ActiveMode) } } catch {}
@@ -1050,12 +1167,53 @@ export default function BetaPage() {
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
       // Token count comes from server state — do NOT increment here
       // route.ts is the authoritative source to avoid double counting
-      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore })
+      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore, suggestedActions: data.suggestedActions ?? undefined })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó demasiado. Intenta de nuevo.' : 'Error de conexión. Intenta de nuevo.' })
     } finally { setLoading(false) }
   }, [addMsg])
+
+  // Suggested action tap — converts action type to callAPI call
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const a = (e as CustomEvent).detail as { action: string; label: string; payload?: Record<string, unknown> }
+      if (!a || loading) return
+      const actionMessages: Record<string, string> = {
+        show_schema:        'Hazme un esquema completo de este tema',
+        show_table:         'Hazme una tabla comparativa de este tema',
+        show_matrix:        'Hazme una matriz de análisis',
+        start_quiz:         'Hazme un simulacro de este tema',
+        retry_quiz:         'Dame otro simulacro más difícil',
+        practice_examples:  'Dame 3 ejemplos guiados para practicar',
+        pronunciation_drill:'Quiero practicar la pronunciación',
+        deepen_topic:       'Profundiza más en este tema',
+        next_module:        'Siguiente bloque',
+        switch_mode:        'Cambiar a curso estructurado',
+        download_pdf:       'Genera el PDF de este material',
+        review_errors:      'Repasa mis errores recurrentes',
+        hear_audio:         'Lee esto en voz alta',
+        show_image:         'Genera un diagrama visual de este tema',
+      }
+      const msg = actionMessages[a.action] ?? a.label
+      addMsg({ sender: 'user', text: msg })
+      callAPI({ message: msg })
+    }
+    window.addEventListener('lingora-suggested-action', handler)
+    return () => window.removeEventListener('lingora-suggested-action', handler)
+  }, [loading, addMsg, callAPI])
+
+  // Roadmap step tap — sends the step as a message to trigger that stage
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const step = (e as CustomEvent).detail?.step as string
+      if (!step || loading) return
+      addMsg({ sender: 'user', text: step })
+      callAPI({ message: step })
+    }
+    window.addEventListener('lingora-step-select', handler)
+    return () => window.removeEventListener('lingora-step-select', handler)
+  }, [loading, addMsg, callAPI])
 
   // ── Unified send: text + pending audio + pending files ──
   const sendComposer = useCallback(async () => {
@@ -1515,7 +1673,7 @@ export default function BetaPage() {
               <label title="Adjuntar archivo"
                 style={{ width:38, height:38, borderRadius:'50%', border:'1px solid var(--border)', background:'transparent', color:'var(--muted)', fontSize:15, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                 📎
-                <input ref={fileInputRef} type="file" accept="image/*,application/pdf,text/*" onChange={handleFile} style={{ display:'none' }} />
+                <input ref={fileInputRef} type="file" accept="image/*,application/pdf,text/*,audio/*" onChange={handleFile} style={{ display:'none' }} />
               </label>
               {/* Text input */}
               <textarea ref={taRef} value={input}
