@@ -76,6 +76,26 @@ export function resolvePedagogicalAction(params: {
 } {
   const { message, state, explicit } = params
 
+  // ── INTERACT / FREE BYPASS (Priority 0) ──────────────────────
+  // In interact and free modes, the model responds freely.
+  // No pedagogical phase calculation. No forced sequence.
+  // The tutor guides through directive, not through protocol state.
+  if (state.activeMode === 'interact' || state.activeMode === 'free') {
+    const freeMode = modeToTutorMode(
+      state.activeMode as 'interact' | 'free',
+      state.topic ?? null,
+      state.mentor ?? null
+    )
+    return {
+      action:           'conversation',
+      mode:             freeMode,
+      systemDirective:  buildDirective('conversation', state),
+      nextPhase:        'conversation',
+      nextLessonIndex:  state.lessonIndex ?? 0,
+      nextCourseActive: state.courseActive ?? false,
+    }
+  }
+
   // Explicit artifact requests always win
   if (explicit && explicit !== 'conversation') {
     const mode = state.activeMode
@@ -189,6 +209,11 @@ function phaseFromAction(action: PedagogicalAction): TutorPhase {
   const map: Partial<Record<PedagogicalAction, TutorPhase>> = {
     guide: 'guide', lesson: 'lesson', schema: 'schema',
     quiz: 'quiz', feedback: 'feedback', conversation: 'conversation',
+    // Interruption actions — preserve sequence position by mapping to 'lesson'
+    // This matches derivePhase() which also maps these to 'lesson'
+    illustration: 'lesson',
+    pdf:          'lesson',
+    pronunciation: 'lesson',
   }
   return map[action] ?? 'idle'
 }
@@ -365,7 +390,7 @@ export function modeToTutorMode(
 
 // Returns initial learningStage for a given mode
 export function initialStage(
-  activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined
+  _activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined
 ): LearningStage {
   // Guided modes start at schema (aligns with route.ts roadmap learningStage)
   return 'schema'
@@ -381,5 +406,4 @@ export function nextStage(current: LearningStage): LearningStage {
 }
 
 export type LearningStage = 'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
-
 
