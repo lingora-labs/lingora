@@ -295,6 +295,33 @@ export interface AudioTranscript {
   }
 }
 
+// ─── Suggested Actions (interactive pathing) ────────────────
+
+export type SuggestedActionType =
+  | 'next_module'
+  | 'show_schema'
+  | 'show_table'
+  | 'show_matrix'
+  | 'start_quiz'
+  | 'retry_quiz'
+  | 'practice_examples'
+  | 'pronunciation_drill'
+  | 'deepen_topic'
+  | 'switch_mode'
+  | 'download_pdf'
+  | 'review_errors'
+  | 'hear_audio'
+  | 'show_image'
+
+export interface SuggestedAction {
+  id:       string
+  label:    string
+  action:   SuggestedActionType
+  payload?: Record<string, unknown>
+  tone?:    'primary' | 'secondary' | 'warning'
+  emoji?:   string
+}
+
 // ─── Curriculum types (exported for route.ts) ───────────────
 
 export interface CurriculumModule {
@@ -481,6 +508,7 @@ export interface ChatResponse {
   extractedTexts?:     string[]
   diagnostic?:         unknown
   error?:              string
+  suggestedActions?: SuggestedAction[]
 }
 
 // ─── TYPE GUARD HELPERS (runtime safety) ─────────────────────────
@@ -511,6 +539,7 @@ export function isErrorMemory(obj: unknown): obj is ErrorMemory {
 // 2. masteryByModule keys must correspond to modules in curriculumPlan.modules
 // 3. engagement.completedModules must align with modules where masteryScore >= 70
 // 4. requestedOperation MUST be cleared to undefined after each execution
-// 5. tokens are incremented once per request, at the final return only
+// 5. each request path increments tokens exactly once before returning — never twice
 // 6. depthMode defaults to 'standard' — never undefined at runtime
+
 
