@@ -677,7 +677,7 @@ If the student's message is short (under 10 words), vague, or just a greeting li
 // Used by streaming and non-streaming paths to ensure identical context.
 function toOpenAIMessages(messages: import('@/lib/contracts').ChatMessage[]): Array<{role:'user'|'assistant'|'system', content:string}> {
   return messages.slice(-10).map(m => ({
-    role: (m.role ?? (m.sender === 'user' ? 'user' : 'assistant')) as 'user'|'assistant'|'system',
+    role: ((m as {role?:string}).role ?? (m.sender === 'user' ? 'user' : 'assistant')) as 'user'|'assistant'|'system',
     content: m.text ?? m.html.replace(/<[^>]+>/g, '') ?? '',
   })).filter(m => m.content.trim().length > 0)
 }
@@ -2200,4 +2200,3 @@ If relevant: address these errors in your response.`
     return ok({ message: 'Error interno. Por favor intenta de nuevo.', error: msg }, 500)
   }
 }
-
