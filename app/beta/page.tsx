@@ -8,7 +8,7 @@
 // ─ Topic cards with localized descriptions
 // ─ Mentor cards premium (code, bio, speciality)
 // ─ LN Splash transition (1800ms/3600ms)
-// ─ UNED-grade-schema renderer
+// ─ UNED-grade schema renderer
 // ─ Export TXT + PDF client-side
 // ─ Voice input, file upload, quiz interactivo
 // ================================================
@@ -23,7 +23,7 @@ type Phase = 'onboarding' | 'splash' | 'mode' | 'chat'
 
 interface Artifact {
   type: 'schema' | 'quiz' | 'table' | 'table_matrix' | 'schema_pro' |
-        'illustration' | 'pdf' | 'pdf_chat' | 'audio' |
+        'illustration' | 'pdf' | 'course_pdf' | 'pdf_chat' | 'audio' |
         'pronunciation_report' | 'simulacro_result' | 'audio_transcript' |
         'roadmap' | 'score_report' | 'lesson_module' | 'pdf_assignment' | 'submission_feedback'
   url?: string
@@ -783,6 +783,30 @@ function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'pdf' && a.url) return (
     <a href={a.url} download="lingora.pdf" target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📄 Descargar PDF</a>
   )
+  if (a.type === 'course_pdf') {
+    const cp = a as unknown as { url: string; title?: string; modules?: string[] | number }
+    const mods = Array.isArray(cp.modules) ? cp.modules as string[] : []
+    return (
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(245,200,66,.25)', background:'rgba(245,200,66,.05)' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(245,200,66,.15)', display:'flex', alignItems:'center', gap:8 }}>
+          <span>📚</span>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{cp.title ?? 'Curso PDF'}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>Documento descargable</div>
+          </div>
+        </div>
+        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+          {mods.slice(0, 6).map((m: string, i: number) => (
+            <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {m}</div>
+          ))}
+          <a href={cp.url} download target="_blank" rel="noopener"
+            style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:4, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.12)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700, width:'fit-content' }}>
+            📄 Descargar curso PDF
+          </a>
+        </div>
+      </div>
+    )
+  }
   if (a.type === 'pdf_chat' && a.url) return (
     <a href={a.url} download={`lingora-chat-${Date.now()}.pdf`} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📋 Descargar historial PDF</a>
   )
@@ -1157,22 +1181,58 @@ export default function BetaPage() {
     setLoading(true)
     try {
       const ctrl = new AbortController()
-      const to = setTimeout(() => ctrl.abort(), 25000)
+      const to = setTimeout(() => ctrl.abort(), 30000)
       const res = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ...payload, ttsRequested: true, state: { ...sessionRef.current, mentor: mentorRef.current, lang: langRef.current, topic: topicRef.current, activeMentor: mentorRef.current, topicSystemPrompt: TSYS[topicRef.current], activeMode: sessionRef.current.activeMode } }), signal: ctrl.signal })
       clearTimeout(to)
+
+      // ── STREAMING path (SSE) ──────────────────────────────────
+      const contentType = res.headers.get('content-type') ?? ''
+      if (contentType.includes('text/event-stream')) {
+        const reader = res.body!.getReader()
+        const decoder = new TextDecoder()
+        // Add placeholder message for streaming — capture generated id
+        const streamId = Date.now()+'-stream'
+        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null }])
+        let accumulated = ''
+        let sseBuffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+          const sseLines = sseBuffer.split('\n')
+          sseBuffer = sseLines.pop() ?? ''
+          for (const line of sseLines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const parsed = JSON.parse(line.slice(6))
+              if (parsed.delta) {
+                accumulated += parsed.delta
+                setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, text: accumulated } : m))
+              }
+              if (parsed.done) {
+                if (parsed.state) setSession((s) => { const n = {...s,...parsed.state,samples:[...(s.samples??[]),...((parsed.state?.samples??[]).filter((x:string)=>!(s.samples??[]).includes(x)))],sessionId:s.sessionId}; sessionRef.current = n; return n })
+                if (parsed.artifact || parsed.suggestedActions) {
+                  setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, artifact: parsed.artifact ?? null, suggestedActions: parsed.suggestedActions } : m))
+                }
+              }
+            } catch { /* partial chunk — buffer handles it */ }
+          }
+        }
+        return  // body consumed by SSE reader — do not fall through to res.json()
+      }
+
+      // ── Non-streaming path (JSON) ─────────────────────────────
       const data = await res.json()
-      if (data.state) setSession(s => { const n = {...s,...data.state,samples:[...(s.samples??[]),...((data.state?.samples??[]).filter((x:string)=>!(s.samples??[]).includes(x)))],sessionId:s.sessionId}; sessionRef.current = n; return n })
-      if (data.diagnostic) { addMsg({ sender:'ln', text:'```\n'+JSON.stringify(data.diagnostic,null,2)+'\n```' }); return }
+      if (data.state) setSession((s) => { const n = {...s,...data.state,samples:[...(s.samples??[]),...((data.state?.samples??[]).filter((x:string)=>!(s.samples??[]).includes(x)))],sessionId:s.sessionId}; sessionRef.current = n; return n })
+      if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
-      // Token count comes from server state — do NOT increment here
-      // route.ts is the authoritative source to avoid double counting
       addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore, suggestedActions: data.suggestedActions ?? undefined })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó demasiado. Intenta de nuevo.' : 'Error de conexión. Intenta de nuevo.' })
     } finally { setLoading(false) }
-  }, [addMsg])
+  }, [addMsg, setMsgs])
 
   // Suggested action tap — converts action type to callAPI call
   useEffect(() => {
@@ -1180,20 +1240,29 @@ export default function BetaPage() {
       const a = (e as CustomEvent).detail as { action: string; label: string; payload?: Record<string, unknown> }
       if (!a || loading) return
       const actionMessages: Record<string, string> = {
-        show_schema:        'Hazme un esquema completo de este tema',
-        show_table:         'Hazme una tabla comparativa de este tema',
-        show_matrix:        'Hazme una matriz de análisis',
-        start_quiz:         'Hazme un simulacro de este tema',
-        retry_quiz:         'Dame otro simulacro más difícil',
-        practice_examples:  'Dame 3 ejemplos guiados para practicar',
-        pronunciation_drill:'Quiero practicar la pronunciación',
-        deepen_topic:       'Profundiza más en este tema',
-        next_module:        'Siguiente bloque',
-        switch_mode:        'Cambiar a curso estructurado',
-        download_pdf:       'Genera el PDF de este material',
-        review_errors:      'Repasa mis errores recurrentes',
-        hear_audio:         'Lee esto en voz alta',
-        show_image:         'Genera un diagrama visual de este tema',
+        show_schema:         'Hazme un esquema completo de este tema',
+        show_table:          'Hazme una tabla comparativa de este tema',
+        show_matrix:         'Hazme una matriz de análisis',
+        start_quiz:          'Hazme un simulacro de este tema',
+        retry_quiz:          'Dame otro simulacro más difícil',
+        practice_examples:   'Dame 3 ejemplos guiados para practicar',
+        pronunciation_drill: 'Quiero practicar la pronunciación',
+        deepen_topic:        'Profundiza más en este tema',
+        next_module:         'Siguiente bloque',
+        switch_mode:         'Cambiar a curso estructurado',
+        download_pdf:        'Genera el PDF de este material',
+        review_errors:       'Repasa mis errores recurrentes',
+        hear_audio:          'Lee esto en voz alta',
+        show_image:          'Genera un diagrama visual de este tema',
+        continue_lesson:     'Continúa con la lección',
+        start_course:        'Empezamos el curso',
+        export_chat_pdf:     'Exporta esta conversación a PDF',
+        download_course_pdf: 'Descarga el curso completo en PDF',
+        submit_assignment:   'Enviar tarea',
+        choose_examples:     'Ver ejemplos reales',
+        choose_exercise:     'Hacer un ejercicio',
+        choose_conversation: 'Practicar en conversación libre',
+        start_pronunciation: 'Practicar pronunciación ahora',
       }
       const msg = actionMessages[a.action] ?? a.label
       addMsg({ sender: 'user', text: msg })
@@ -1429,7 +1498,7 @@ export default function BetaPage() {
           </div>
           <div style={{ display:'flex', flexDirection:'column', gap:10, width:'100%', maxWidth:420 }}>
             {([
-              { key:'interact'   as ActiveMode, emoji:'🧠', title:'Interacción inteligente', desc:'Respuestas ricas con tablas y esquemas. Estilo DeepSeek.' },
+              { key:'interact'   as ActiveMode, emoji:'🧠', title:'Interacción inteligente', desc:'Respuestas ricas con tablas, esquemas y explicación accionable.' },
               { key:'structured' as ActiveMode, emoji:'🎓', title:'Curso estructurado',       desc:'Esquema → ejemplos → simulacro → puntuación. Guiado por el tutor.' },
               { key:'pdf_course' as ActiveMode, emoji:'📄', title:'Curso PDF con entregas',   desc:'Material descargable. Entregas y corrección por el tutor.' },
               { key:'free'       as ActiveMode, emoji:'💬', title:'Conversación libre',       desc:'Habla con naturalidad. Correcciones oportunistas.' },
@@ -1699,3 +1768,4 @@ export default function BetaPage() {
     </>
   )
 }
+
