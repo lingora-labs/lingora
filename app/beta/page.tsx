@@ -8,7 +8,7 @@
 // ─ Topic cards with localized descriptions
 // ─ Mentor cards premium (code, bio, speciality)
 // ─ LN Splash transition (1800ms/3600ms)
-// ─ UNED-grade schema renderer
+// ─ UNED-grade-schema renderer
 // ─ Export TXT + PDF client-side
 // ─ Voice input, file upload, quiz interactivo
 // ================================================
