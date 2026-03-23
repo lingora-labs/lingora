@@ -32,6 +32,7 @@ import type {
   SchemaProArtifact, SchemaProContent,
   RoadmapBlock, PdfAssignment, SubmissionFeedback,
   CurriculumPlan, CurriculumModule, ModuleMastery, ErrorMemory, EngagementState, RequestedOperation,
+  SuggestedAction, SuggestedActionType,
 } from '@/lib/contracts'
 
 export const runtime     = 'nodejs'
@@ -413,9 +414,11 @@ function isTranscribeRequest(message: string): boolean {
 // ── Detect explicit correction request ────────────────
 function isCorrectionRequest(message: string): boolean {
   const m = message.toLowerCase()
+  // Note: "corrige mi" is intentionally excluded — it captures "corrige mi pronunciación"
+  // Pronunciation correction is handled by the audio/pronunciation pipeline
   return [
-    'corrige esto', 'corrige este', 'corrígeme', 'corrige mi',
-    'correct this', 'fix this', 'hay errores', 'hay algún error',
+    'corrige esto', 'corrige este', 'corrígeme', 'corrige este texto',
+    'correct this', 'fix this', 'hay errores en', 'hay algún error',
     'está bien escrito', 'revisa esto',
   ].some(p => m.includes(p))
 }
@@ -481,7 +484,7 @@ async function runFastPaths(
         const next: Partial<SessionState> = {
           ...state,
           lastTask: 'table', lastAction: 'schema' as PedagogicalAction,
-          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true,
+          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true, lastArtifact: 'table_matrix',
         }
         return ok({ message: matrixContent.title ?? 'Matriz lista:', artifact, state: next })
       }
@@ -497,7 +500,7 @@ async function runFastPaths(
         const next: Partial<SessionState> = {
           ...state,
           lastTask: 'schema', lastAction: 'schema' as PedagogicalAction,
-          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true,
+          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true, lastArtifact: 'schema_pro',
         }
         return ok({ message: schemaProContent.title + ':', artifact, state: next })
       }
@@ -513,7 +516,7 @@ async function runFastPaths(
         const next: Partial<SessionState> = {
           ...state,
           lastTask: 'schema', lastAction: 'schema' as PedagogicalAction,
-          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true,
+          tutorPhase: 'lesson', tokens: (state.tokens ?? 0) + 1, courseActive: true, lastArtifact: 'table',
         }
         return ok({ message: tableContent.title ?? 'Tabla lista:', artifact, state: next })
       }
@@ -624,8 +627,132 @@ RULES:
 - If the student asks a question, answer it fully
 - Insert a table or schema only when it clearly helps the current topic
 - Never force a learning sequence
-- Match the student's energy and pace`
+- Match the student's energy and pace
 
+PROACTIVE GUIDANCE RULE (critical — never be passive):
+If the student's message is short (under 10 words), vague, or just a greeting like "hola" or "hello":
+- Do NOT wait passively or just return a greeting
+- Immediately introduce ONE concrete micro-action relevant to their level and topic
+- Always provide: a mini example, a question to spark production, OR a vocabulary/structure invitation
+- Example: "Hola! Practiquemos algo concreto — ¿sabes usar el pretérito indefinido? Dime qué hiciste ayer."
+- NEVER respond with only a question. Always give something first.
+- The student should feel the tutor is present and guiding, not waiting.`
+
+
+// ─── Suggested Actions Engine ─────────────────────────────────
+// Generates contextually appropriate next-step actions after each response.
+// These are rendered as interactive buttons in the UI.
+function generateSuggestedActions(
+  action:     string,
+  activeMode: string,
+  lang:       string,
+  artifactType?: string,
+  score?:     number
+): SuggestedAction[] {
+  // Localized labels
+  const t: Record<string, Record<string, string>> = {
+    schema:       { es:'Ver esquema', en:'View schema', no:'Se skjema', fr:'Voir schéma', de:'Schema anzeigen' },
+    table:        { es:'Ver tabla', en:'View table', no:'Se tabell', fr:'Voir tableau', de:'Tabelle anzeigen' },
+    quiz:         { es:'Hacer simulacro', en:'Take quiz', no:'Ta quiz', fr:'Faire quiz', de:'Quiz machen' },
+    retry:        { es:'Repetir simulacro', en:'Retry quiz', no:'Prøv igjen', fr:'Réessayer', de:'Wiederholen' },
+    practice:     { es:'Practicar con ejemplos', en:'Practice with examples', no:'Øv med eksempler', fr:'Pratiquer', de:'Mit Beispielen üben' },
+    deepen:       { es:'Profundizar más', en:'Go deeper', no:'Gå dypere', fr:'Approfondir', de:'Vertiefen' },
+    next:         { es:'Siguiente bloque', en:'Next module', no:'Neste modul', fr:'Module suivant', de:'Nächstes Modul' },
+    audio:        { es:'Escuchar pronunciación', en:'Hear pronunciation', no:'Hør uttale', fr:'Écouter', de:'Anhören' },
+    image:        { es:'Ver diagrama visual', en:'View diagram', no:'Se diagram', fr:'Voir diagramme', de:'Diagramm anzeigen' },
+    pdf:          { es:'Descargar PDF', en:'Download PDF', no:'Last ned PDF', fr:'Télécharger PDF', de:'PDF herunterladen' },
+    errors:       { es:'Revisar mis errores', en:'Review my errors', no:'Gjennomgå feil', fr:'Revoir les erreurs', de:'Fehler überprüfen' },
+    structured:   { es:'Cambiar a curso estructurado', en:'Switch to structured course', no:'Bytt til strukturert kurs', fr:'Mode structuré', de:'Strukturierter Kurs' },
+  }
+  const l = (key: string) => t[key]?.[lang] ?? t[key]?.en ?? key
+
+  // After schema/explanation
+  if (action === 'schema' || action === 'lesson' || artifactType === 'schema' || artifactType === 'schema_pro') {
+    return [
+      { id:'sa-table',    label:l('table'),    action:'show_table',        tone:'secondary', emoji:'📊' },
+      { id:'sa-quiz',     label:l('quiz'),     action:'start_quiz',        tone:'primary',   emoji:'🧪' },
+      { id:'sa-practice', label:l('practice'), action:'practice_examples', tone:'secondary', emoji:'✍️' },
+      { id:'sa-audio',    label:l('audio'),    action:'pronunciation_drill',tone:'secondary', emoji:'🔊' },
+      { id:'sa-deepen',   label:l('deepen'),   action:'deepen_topic',       tone:'secondary', emoji:'🔬' },
+    ]
+  }
+  // After table
+  if (artifactType === 'table' || artifactType === 'table_matrix') {
+    return [
+      { id:'sa-schema',   label:l('schema'),   action:'show_schema',       tone:'secondary', emoji:'📋' },
+      { id:'sa-quiz',     label:l('quiz'),     action:'start_quiz',        tone:'primary',   emoji:'🧪' },
+      { id:'sa-practice', label:l('practice'), action:'practice_examples', tone:'secondary', emoji:'✍️' },
+      { id:'sa-pdf',      label:l('pdf'),      action:'download_pdf',      tone:'secondary', emoji:'📄' },
+    ]
+  }
+  // After quiz (with score)
+  if (action === 'feedback' || artifactType === 'quiz') {
+    const passed = (score ?? 0) >= 7
+    return [
+      passed
+        ? { id:'sa-next',   label:l('next'),   action:'next_module',   tone:'primary',   emoji:'▶️' }
+        : { id:'sa-retry',  label:l('retry'),  action:'retry_quiz',    tone:'warning',   emoji:'🔄' },
+      { id:'sa-errors',   label:l('errors'),   action:'review_errors',  tone:'secondary', emoji:'❌' },
+      { id:'sa-deepen',   label:l('deepen'),   action:'deepen_topic',   tone:'secondary', emoji:'🔬' },
+    ]
+  }
+  // After roadmap or guide
+  if (action === 'guide' || artifactType === 'roadmap') {
+    return [
+      { id:'sa-schema',   label:l('schema'),   action:'show_schema',       tone:'primary',   emoji:'📋' },
+      { id:'sa-table',    label:l('table'),    action:'show_table',        tone:'secondary', emoji:'📊' },
+      { id:'sa-audio',    label:l('audio'),    action:'pronunciation_drill',tone:'secondary', emoji:'🔊' },
+    ]
+  }
+  // After illustration
+  if (artifactType === 'illustration') {
+    return [
+      { id:'sa-schema',   label:l('schema'),   action:'show_schema',       tone:'secondary', emoji:'📋' },
+      { id:'sa-quiz',     label:l('quiz'),     action:'start_quiz',        tone:'primary',   emoji:'🧪' },
+    ]
+  }
+  // Conversation/free mode — suggest structure if not already in structured mode
+  if (activeMode === 'free' || activeMode === 'interact') {
+    return [
+      { id:'sa-schema',     label:l('schema'),     action:'show_schema',       tone:'secondary', emoji:'📋' },
+      { id:'sa-quiz',       label:l('quiz'),       action:'start_quiz',        tone:'secondary', emoji:'🧪' },
+      { id:'sa-structured', label:l('structured'), action:'switch_mode',        tone:'secondary', emoji:'🎓' },
+    ]
+  }
+  return []
+}
+
+// ─── Pedagogical image prompt builder ─────────────────────────
+// Builds a DALL-E prompt that produces infographics matching LINGORA's
+// visual system: dark navy, semantic color blocks, readable hierarchy.
+function buildPedagogicalImagePrompt(message: string, state: Partial<SessionState>): string {
+  const topic = state.topic ?? 'Spanish'
+  const level = state.level ?? 'A1'
+  return `Educational infographic for Spanish language learning. Topic: "${message}" (level ${level}, domain: ${topic}).
+
+STYLE — MANDATORY, DO NOT DEVIATE:
+- Background: DARK NAVY BLUE (#1a2a4a) — NOT cream, NOT beige, NOT white, NOT light
+- Title: white bold sans-serif, large, fully legible at top
+- LEFT COLUMN — structured text blocks:
+  * GREEN block: Objetivo/Key concepts, dark green bg, white readable text, 2-4 items
+  * RED block: Errors/Contrasts, dark red bg, white readable text, 2-4 items
+  * BLUE block: Structure/Grammar, dark blue, white text
+- RIGHT COLUMN — flow diagram:
+  * Rounded pill nodes connected by arrows showing logical flow
+  * Each node: SHORT readable label in white, high contrast
+- BOTTOM: quote block, italic white text, quotation marks visible
+- ALL TEXT fully legible, minimum 16pt equivalent, no blur, no distortion
+- Professional educational infographic — structured, hierarchical, study-ready
+
+STRICTLY PROHIBITED:
+- NO cartoon illustrations (no churches, cacti, hats, cars, clocks, plants, buildings)
+- NO speech bubbles with illegible text
+- NO light or cream backgrounds
+- NO decorative scenes, landscapes, or characters
+- NO blurry or illegible text anywhere
+- NO stock photo or watercolor style
+- Spell all words correctly (SUBJUNCTIVE not SUBJUNTIVE)`
+}
 
 function buildAutoSchemaPrompt(state: Partial<SessionState>): string {
   const topic   = state.topic    ?? 'conversación'
@@ -700,21 +827,59 @@ export async function POST(req: NextRequest) {
         const topic2  = courseEnrichedState.topic  ?? (message ?? '').slice(0, 80)
         const level2  = courseEnrichedState.level  ?? 'A1'
         const lang2   = courseEnrichedState.lang   ?? 'en'
-        const cp = await openai.chat.completions.create({
-          model: 'gpt-4o', temperature: 0.3, max_tokens: 600,
-          messages: [{ role: 'user', content: `Level: ${level2}. Topic: ${topic2}. Generate structured curriculum JSON: { "title": "...", "totalModules": 8, "modules": [{ "number": 1, "title": "...", "focus": "...", "skills": ["..."] }] }` }],
-          response_format: { type: 'json_object' },
+
+        // RAW INTELLIGENCE FIRST — no JSON coercion, no token cap
+        // The model builds the best possible curriculum for this domain
+        const rawCurriculumPrompt = `You are a master curriculum designer with deep expertise.
+Build the most complete, domain-accurate curriculum for: "${topic2}"
+Student level: ${level2}. Interface language: ${lang2}.
+
+Requirements:
+- Use domain-specific terminology (not generic "Module 1: Introduction")
+- Differentiate mastery levels within the domain
+- Include clinical, professional, or practical applications where relevant
+- Reference real certification paths or standards if they exist
+- Each module: specific title + concrete outcome (what the student will DO)
+- Realistic time estimate per phase
+- Legal or safety note if the domain requires supervised practice
+- End with 2-3 real recommended resources (real titles and authors)
+
+Format: structured text. Use ## for phases, ### for modules.
+Produce at the level a domain expert would. No generic outlines. No filler.
+If the user's interface language is not Spanish, write instructions in ${lang2} and content examples in Spanish.`
+
+        const rawRes = await openai.chat.completions.create({
+          model: 'gpt-4o', temperature: 0.7, max_tokens: 2500,
+          messages: [{ role: 'user', content: rawCurriculumPrompt }],
         }).catch(() => null)
-        const cpData = cp?.choices?.[0]?.message?.content ?? null
+        const rawCurriculum = rawRes?.choices?.[0]?.message?.content ?? null
+
+        // Parse module titles from raw text for internal state
         let mods: string[] = []
-        try { if (cpData) mods = (JSON.parse(cpData).modules ?? []).slice(0,8).map((m: {number:number;title:string}) => `${m.number}. ${m.title}`) } catch {}
+        if (rawCurriculum) {
+          const moduleMatches = rawCurriculum.match(/###\s+[^\n]+/g)
+          if (moduleMatches?.length) {
+            mods = moduleMatches.slice(0, 10).map((m: string, i: number) => `${i+1}. ${m.replace(/###\s+/, '').trim()}`)
+          }
+        }
         if (!mods.length) mods = ['1. Foundation', '2. Core concepts', '3. Practice', '4. Advanced']
-        const roadmapMsg = await getMentorResponse(
-          `Student wants a full course on: ${topic2}. Level: ${level2}. Present this curriculum and ask if ready to start:
-${mods.join('\n')}`,
-          courseEnrichedState, STRUCTURED_COURSE_DIRECTIVE
-        ).catch(() => null)
-        return ok({ message: roadmapMsg ?? `Course on ${topic2} — ${mods.length} modules ready.`, artifact: null, state: { ...courseEnrichedState, curriculumPlan: cpData ? (() => { try { return JSON.parse(cpData) as CurriculumPlan } catch { return undefined } })() : undefined, curriculumTopic: topic2, currentModule: 1, learningStage: 'schema', tokens: 1, lastAction: 'guide' as PedagogicalAction, tutorPhase: 'guide', courseActive: true } })
+
+        // Build typed CurriculumPlan from parsed modules
+        const cpData: CurriculumPlan = {
+          title: `Curso completo: ${topic2}`,
+          topic: topic2, level: level2,
+          modules: mods.map((m, i) => ({
+            number: i + 1,
+            title: m.replace(/^\d+\.\s*/, '').trim(),
+            focus: '', skills: [],
+          }))
+        }
+
+        return ok({
+          message: rawCurriculum ?? `Course on ${topic2} — ${mods.length} modules ready.`,
+          artifact: null,
+          state: { ...courseEnrichedState, curriculumPlan: cpData, curriculumTopic: topic2, currentModule: 1, learningStage: 'schema', tokens: 1, lastAction: 'guide' as PedagogicalAction, tutorPhase: 'guide', courseActive: true }
+        })
       })()
       return courseRoadmapRes
     }
@@ -723,6 +888,39 @@ ${mods.join('\n')}`,
     const enrichedStateWithOp: Partial<SessionState> = requestedOp
       ? { ...enrichedState, requestedOperation: requestedOp }
       : enrichedState
+
+    // ── HARD INTENT OVERRIDES (before any pedagogical routing) ──
+    // Translate and correct are literal commands — execute them now,
+    // before resolvePedagogicalAction(), before fast-paths, before everything.
+    if (requestedOp === 'translate' || (requestedOp !== 'correct' && isTranslateRequest(message ?? '') && !audio)) {
+      // Parse intended target language from the message
+      // "traduce al inglés" → 'English', "translate to Spanish" → 'Spanish'
+      const msgL = (message ?? '').toLowerCase()
+      const langHints: Array<[string, string]> = [
+        ['inglés', 'English'], ['english', 'English'], ['al inglés', 'English'],
+        ['español', 'Spanish'], ['spanish', 'Spanish'], ['al español', 'Spanish'],
+        ['noruego', 'Norwegian'], ['norwegian', 'Norwegian'],
+        ['francés', 'French'], ['french', 'French'],
+        ['alemán', 'German'], ['german', 'German'],
+        ['italiano', 'Italian'], ['italian', 'Italian'],
+        ['portugués', 'Portuguese'], ['portuguese', 'Portuguese'],
+      ]
+      const detectedLang = langHints.find(([hint]) => msgL.includes(hint))?.[1]
+      const targetLang = detectedLang ?? (enrichedStateWithOp.lang === 'es' ? 'English' : 'Spanish')
+      const translateDirective = `Translate the following to ${targetLang}. Return ONLY the translation. No explanation. No pedagogy. No quiz. No lesson.`
+      const translation = await getMentorResponse(message ?? '', enrichedStateWithOp, translateDirective).catch(() => null)
+      return ok({ message: translation ?? '', artifact: null, state: { ...enrichedStateWithOp, requestedOperation: undefined, tokens: (enrichedStateWithOp.tokens ?? 0) + 1 } })
+    }
+
+    if (requestedOp === 'correct' || isCorrectionRequest(message ?? '')) {
+      const correctDirective = `Correct the Spanish in the following text. Return:
+1. The corrected version (full text)
+2. A numbered list of each specific error with brief explanation
+Format in the student's language (${enrichedStateWithOp.lang ?? 'en'}).
+No quiz. No lesson. No schema. Just the correction.`
+      const correction = await getMentorResponse(message ?? '', enrichedStateWithOp, correctDirective).catch(() => null)
+      return ok({ message: correction ?? '', artifact: null, state: { ...enrichedStateWithOp, requestedOperation: undefined, tokens: (enrichedStateWithOp.tokens ?? 0) + 1 } })
+    }
 
     // ── M. Mode-aware routing setup ──────────────
     // Read activeMode from state, select appropriate directive.
@@ -780,9 +978,8 @@ Rules:
         const currRes = await openai.chat.completions.create({
           model: 'gpt-4o',
           messages: [{ role: 'user', content: curriculumPrompt }],
-          temperature: 0.3,
-          max_tokens: 800,
-          response_format: { type: 'json_object' },
+          temperature: 0.7,
+          max_tokens: 2500,
         })
         curriculumData = currRes.choices?.[0]?.message?.content ?? null
       } catch { /* curriculum generation failed — roadmap will be generic */ }
@@ -791,8 +988,18 @@ Rules:
       let moduleList: string[] = []
       try {
         if (curriculumData) {
-          const parsed = JSON.parse(curriculumData) as { modules?: Array<{ number: number; title: string }> }
-          moduleList = (parsed.modules ?? []).slice(0, 8).map(m => `${m.number}. ${m.title}`)
+          // Parse module titles from ### headers in free-text curriculum
+          const headerMatches = curriculumData.match(/###\s+[^\n]+/g)
+          if (headerMatches?.length) {
+            moduleList = headerMatches.slice(0, 10).map((m: string, i: number) =>
+              `${i+1}. ${m.replace(/###\s+/, '').trim()}`
+            )
+          }
+          // Fallback: try JSON parse if model still returned JSON
+          if (!moduleList.length) {
+            const parsed = JSON.parse(curriculumData) as { modules?: Array<{ number: number; title: string }> }
+            moduleList = (parsed.modules ?? []).slice(0, 8).map((m: { number: number; title: string }) => `${m.number}. ${m.title}`)
+          }
         }
       } catch { /* use fallback */ }
       if (!moduleList.length) {
@@ -823,9 +1030,14 @@ Under 150 words. No preamble.`
           learningStage:   'schema',
           currentModule:   1,
           courseActive:    true,
-          curriculumPlan:  curriculumData ? (() => {
-            try { return JSON.parse(curriculumData) as CurriculumPlan } catch { return undefined }
-          })() : undefined,
+          curriculumPlan:  moduleList.length ? {
+            title: `Curriculum: ${topic}`, topic, level,
+            modules: moduleList.map((m, i) => ({
+              number: i + 1,
+              title: m.replace(/^\d+\.\s*/, '').trim(),
+              focus: '', skills: [],
+            }))
+          } : undefined,
           curriculumTopic: topic,
           // Seed protocol so next turn enters at schema, not guide.
           // derivePhase() reads lastAction — 'guide' maps to TutorPhase 'guide'.
@@ -1275,9 +1487,9 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
           const nextState: Partial<SessionState> = {
             ...enrichedState,
             lastTask: 'table', lastAction: 'schema' as PedagogicalAction,
-            tutorPhase: 'lesson', tokens: (enrichedState.tokens ?? 0) + 1, courseActive: true,
+            tutorPhase: 'lesson', tokens: (enrichedState.tokens ?? 0) + 1, courseActive: true, lastArtifact: 'table_matrix',
           }
-          return ok({ message: matrixContent.title ?? 'Matriz lista:', artifact, state: nextState })
+          return ok({ message: matrixContent.title ?? 'Matriz lista:', artifact, state: nextState, suggestedActions: generateSuggestedActions('schema', activeMode, enrichedState.lang ?? 'en', 'table_matrix') })
         }
       } catch { /* fall through */ }
     }
@@ -1292,9 +1504,9 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
           const nextState: Partial<SessionState> = {
             ...enrichedState,
             lastTask: 'schema', lastAction: 'schema' as PedagogicalAction,
-            tutorPhase: 'lesson', tokens: (enrichedState.tokens ?? 0) + 1, courseActive: true,
+            tutorPhase: 'lesson', tokens: (enrichedState.tokens ?? 0) + 1, courseActive: true, lastArtifact: 'schema_pro',
           }
-          return ok({ message: schemaProContent.title + ':', artifact, state: nextState })
+          return ok({ message: schemaProContent.title + ':', artifact, state: nextState, suggestedActions: generateSuggestedActions('schema', activeMode, enrichedState.lang ?? 'en', 'schema_pro') })
         }
       } catch { /* fall through */ }
     }
@@ -1313,10 +1525,10 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
             lastAction:  'schema',   // treat as schema for protocol continuity
             tutorPhase:  'lesson',
             tokens:      (enrichedState.tokens ?? 0) + 1,
-            courseActive: true,
+            courseActive: true, lastArtifact: 'table',
           }
           console.log(`[ROUTER] table ok title="${tableContent.title}"`)
-          return ok({ message: tableContent.title ?? 'Tabla lista:', artifact: tableArtifact, state: nextState })
+          return ok({ message: tableContent.title ?? 'Tabla lista:', artifact: tableArtifact, state: nextState, suggestedActions: generateSuggestedActions('schema', activeMode, enrichedState.lang ?? 'en', 'table') })
         }
         // If table generation failed, fall through to schema
         console.log('[ROUTER] table generation failed, falling through to schema')
@@ -1388,10 +1600,10 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
         ...nextState,
         lastAction: 'feedback' as PedagogicalAction, lastTask: 'feedback',
         tutorPhase: 'feedback', awaitingQuizAnswer: false,
-        tokens: (nextState.tokens ?? 0) + 1,
+        tokens: (nextState.tokens ?? 0) + 1, lastArtifact: 'quiz',
       }
       if (quizArtifact) {
-        return ok({ message: quizArtifact.content.title + ':', artifact: quizArtifact, state: nextState })
+        return ok({ message: quizArtifact.content.title + ':', artifact: quizArtifact, state: nextState, suggestedActions: generateSuggestedActions('feedback', activeMode, enrichedState.lang ?? 'en', 'quiz') })
       }
     }
 
@@ -1439,11 +1651,12 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
           uiLanguage: nextState.lang      ?? 'en',
         })
         if (!schemaContent?.title) throw new Error('Invalid schema structure')
-        nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 10, lastArtifact: `schema:${schemaContent.title}` }
+        nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1, lastArtifact: `schema:${schemaContent.title}` }
         return ok({
           message:  'Schema listo:',
           artifact: { type: 'schema', content: schemaContent, metadata: { timestamp: Date.now() } },
           state:    nextState,
+          suggestedActions: generateSuggestedActions('schema', activeMode, enrichedStateWithOp.lang ?? 'en', 'schema'),
         })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -1454,10 +1667,11 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     // ── 5c. Illustration ──────────────────────────
     if (action === 'illustration') {
       try {
-        const image = await generateImage(message ?? '')
+        const pedImagePrompt = buildPedagogicalImagePrompt(message ?? '', nextState)
+        const image = await generateImage(pedImagePrompt)
         if (image.success && image.url) {
           nextState = { ...nextState, lastArtifact: 'illustration' }
-          return ok({ message: 'Imagen lista:', artifact: { type: 'illustration', url: image.url }, state: nextState })
+          return ok({ message: 'Imagen lista:', artifact: { type: 'illustration', url: image.url }, state: nextState, suggestedActions: generateSuggestedActions('schema', activeMode, enrichedState.lang ?? 'en', 'illustration') })
         }
         return ok({ message: `No se pudo generar la imagen: ${image.message ?? 'error desconocido'}`, artifact: null, state: nextState })
       } catch (err: unknown) {
@@ -1546,7 +1760,7 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     if (action === 'guide') {
       const guideText = await getMentorResponse(message ?? '', nextState, systemDirective)
       nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1 }
-      return ok({ message: guideText ?? '', artifact: null, state: nextState })
+      return ok({ message: guideText ?? '', artifact: null, state: nextState, suggestedActions: generateSuggestedActions('guide', activeMode, enrichedState.lang ?? 'en', 'roadmap') })
     }
 
     // ── 5h. LESSON — explicit branch ──────────────
@@ -1653,7 +1867,7 @@ If relevant: address these errors in your response.`
       : (message ?? '')
     // Inject curriculum for guided modes in conversation branch too
     const msgFinal = (enrichedStateWithOp.curriculumPlan && (activeMode === 'structured' || activeMode === 'pdf_course'))
-      ? `[CURRICULUM PLAN]\n${enrichedStateWithOp.curriculumPlan}\n\n[CURRENT MODULE: ${enrichedStateWithOp.currentModule ?? 1}]\n\n${msgWithContext}`
+      ? `[CURRICULUM PLAN]\n${JSON.stringify(enrichedStateWithOp.curriculumPlan, null, 2)}\n\n[CURRENT MODULE: ${enrichedStateWithOp.currentModule ?? 1}]\n\n${msgWithContext}`
       : msgWithContext
 
     // Humanization: 1.2s pause on first message — tutor feels present, not instant-bot
@@ -1710,9 +1924,22 @@ If relevant: address these errors in your response.`
       ...nextState,
       tokens: (nextState.tokens ?? 0) + 1,
       ...(advancedStage ? { learningStage: advancedStage } : {}),
+      lastArtifact: null,  // clear so pedagogicalArtifactType doesn't inherit stale artifact
     }
 
-    return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState })
+    // Generate suggested actions based on what just happened
+    // Pass the pedagogical artifact type (not TTS audio type) to suggestedActions
+    const pedagogicalArtifactType = nextState.lastArtifact
+      ? nextState.lastArtifact.split(':')[0]
+      : undefined
+    const suggestedActions = generateSuggestedActions(
+      action,
+      activeMode,
+      enrichedStateWithOp.lang ?? 'en',
+      pedagogicalArtifactType,
+      undefined
+    )
+    return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState, suggestedActions: suggestedActions.length ? suggestedActions : undefined })
 
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
