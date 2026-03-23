@@ -21,6 +21,8 @@ export type RequestedOperation =
   | 'correct'
   | 'summarize'
   | 'conversation'
+  | 'export_chat_pdf'
+  | 'generate_course_pdf'
 
 export interface ModuleMastery {
   score:       number
@@ -86,6 +88,11 @@ export interface SessionState {
   // Controls how thoroughly the tutor expands each concept
   depthMode: DepthMode
 
+  // ── Continuity fields (tutor never restarts) ──────────────────
+  lastConcept?:   string   // last concept explicitly taught
+  lastUserGoal?:  string   // user's stated goal in this session
+  lastMistake?:   string   // last identified error for follow-up
+
   // ── Sprint 2.4: Explicit operation override ──
   // Set when user gives an explicit operation command.
   // Persists until user changes task or session resets.
@@ -124,6 +131,9 @@ export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
   curriculumPlan:      undefined,
   curriculumTopic:     undefined,
   masteryByModule:     {},
+  lastConcept:         undefined,
+  lastUserGoal:        undefined,
+  lastMistake:         undefined,
   errorMemory:         { grammar: [], vocabulary: [], pronunciation: [] },
   engagement:          { streak: 0, lastActive: Date.now(), completedModules: [] },
   depthMode:           'standard',
@@ -132,8 +142,15 @@ export const DEFAULT_SESSION: Omit<SessionState, 'sessionId'> = {
 // ─── MESSAGE ─────────────────────────────────────
 export interface ChatMessage {
   sender:     string
+  role?:      'user' | 'assistant' | 'system'
+  text?:      string
   html:       string
   timestamp?: number
+}
+
+export interface OpenAIMessage {
+  role:    'user' | 'assistant' | 'system'
+  content: string
 }
 
 // ─── INCOMING PAYLOAD ────────────────────────────
@@ -147,6 +164,8 @@ export interface MessagePayload {
   autoSchema?:          boolean
   ttsRequested?:        boolean
   pronunciationTarget?: string | null
+  exportPdf?:           boolean
+  activeMode?:          'interact' | 'structured' | 'pdf_course' | 'free'
 }
 
 // ─── AUDIO INPUT ─────────────────────────────────
@@ -312,6 +331,15 @@ export type SuggestedActionType =
   | 'review_errors'
   | 'hear_audio'
   | 'show_image'
+  | 'continue_lesson'
+  | 'start_course'
+  | 'export_chat_pdf'
+  | 'download_course_pdf'
+  | 'submit_assignment'
+  | 'choose_examples'
+  | 'choose_exercise'
+  | 'choose_conversation'
+  | 'start_pronunciation'
 
 export interface SuggestedAction {
   id:       string
@@ -401,6 +429,13 @@ export interface PDFChat {
   url:  string
 }
 
+export interface CoursePdfArtifact {
+  type:     'course_pdf'
+  url:      string
+  title?:   string
+  modules?: string[] | number
+}
+
 export type ArtifactPayload =
   | SchemaArtifact
   | SchemaProArtifact
@@ -418,6 +453,7 @@ export type ArtifactPayload =
   | RoadmapBlock
   | ScoreReport
   | LessonModule
+  | CoursePdfArtifact
   | PDFChat
   | null
 
@@ -508,7 +544,17 @@ export interface ChatResponse {
   extractedTexts?:     string[]
   diagnostic?:         unknown
   error?:              string
-  suggestedActions?: SuggestedAction[]
+  suggestedActions?:    SuggestedAction[]
+}
+
+
+// ─── Build & diagnostic types ─────────────────────────────
+
+export interface BuildInfo {
+  buildSignature:   string
+  commitHint?:      string
+  deployedAt?:      string
+  streamingEnabled: boolean
 }
 
 // ─── TYPE GUARD HELPERS (runtime safety) ─────────────────────────
@@ -541,5 +587,4 @@ export function isErrorMemory(obj: unknown): obj is ErrorMemory {
 // 4. requestedOperation MUST be cleared to undefined after each execution
 // 5. each request path increments tokens exactly once before returning — never twice
 // 6. depthMode defaults to 'standard' — never undefined at runtime
-
 
