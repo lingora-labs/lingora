@@ -165,3 +165,4 @@ The system never simulates success. Every tool either returns a real result or a
 ## Version
 
 `10.1.0` — Clean architecture on Vercel/Next.js. No Netlify heritage.
+
