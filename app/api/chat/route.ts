@@ -231,7 +231,7 @@ function isComplexTableRequest(message: string): boolean {
 }
 
 // Rich-content directive for complex requests routed to mentor
-// Produces DeepSeek-quality output: multiple tables, full conjugations,
+// Produces benchmark-quality output: multiple tables, full conjugations,
 // errors, explanations — no row/column caps, no simplification.
 const RICH_CONTENT_DIRECTIVE = `You are an elite Spanish language content generator.
 LANGUAGE RULE: Always respond in the student's interface language for instructions and explanations. Use Spanish for examples, conjugations, and exercises. Do not switch languages arbitrarily.
@@ -434,17 +434,34 @@ function isTranslateRequest(message: string): boolean {
 }
 
 // ── Detect full course request → force structured mode ──────
-function isCourseRequest(message: string): boolean {
+// Strong course request — explicit full course intent
+// These ALWAYS trigger the raw curriculum pipeline
+function isStrongCourseRequest(message: string): boolean {
   const m = message.toLowerCase()
   return [
     'curso completo', 'full course', 'complete course',
     'enséñame desde cero', 'teach me from scratch',
-    'aprende desde cero', 'learn from scratch',
-    'curso de', 'course on', 'quiero aprender',
-    'want to learn', 'build me a course',
     'hazme un curso', 'dame un curso',
-    'programa completo', 'complete program',
+    'build me a course', 'programa completo', 'complete program',
+    'desde cero hasta', 'from scratch to',
+    'curso estructurado', 'structured course',
   ].some(p => m.includes(p))
+}
+
+// Soft learning intent — user wants to learn something specific
+// Does NOT trigger full curriculum pipeline; goes to lesson/conversation
+function isSoftLearningIntent(message: string): boolean {
+  const m = message.toLowerCase()
+  return [
+    'quiero aprender', 'want to learn',
+    'enséñame', 'teach me', 'explícame', 'explain to me',
+    'curso de', 'course on',
+  ].some(p => m.includes(p)) && !isStrongCourseRequest(message)
+}
+
+// Combined — for backwards compat in existing guards
+function isCourseRequest(message: string): boolean {
+  return isStrongCourseRequest(message)
 }
 
 // ─── canBypassTutorPhase ─────────────────────────────
@@ -575,6 +592,16 @@ If no curriculum guide exists for the requested topic or domain, build one first
 Structure: [Module 1: Foundation] → [Module 2: Core concepts] → ... → [Final module: Mastery validation]
 Then execute that structure. Never improvise without structure.
 
+COGNITIVE STRUCTURE — MANDATORY IN EVERY TEACHING RESPONSE:
+Every substantive response must follow this sequence. No exceptions.
+1. CONTEXT: Why does this matter? Real-world relevance in 1-2 sentences.
+2. CONCEPT: The core idea — clear, non-academic, immediately graspable.
+3. REAL EXAMPLE: A concrete example from work, daily life, or the student's domain.
+4. TRANSFER: How does the student use this right now? Connect to their situation.
+5. ACTION: One specific thing the student can do or produce immediately.
+If a response can be read without needing the tutor, it has failed.
+Definitions alone are forbidden. Tables alone are forbidden. Lists without application are forbidden.
+
 DEPTH RULE — NON-NEGOTIABLE:
 Superficial answers are forbidden. Depth is mandatory.
 Always expand until the topic is FULLY OPERATIONAL for the student — not just understood conceptually, but usable in real situations.
@@ -629,6 +656,12 @@ RULES:
 - Never force a learning sequence
 - Match the student's energy and pace
 
+COGNITIVE QUALITY RULE:
+Every substantive response must leave the student able to DO something — not just know something.
+If you explain a concept, immediately show how to use it in the student's real context.
+Definitions without application are forbidden even in free mode.
+One actionable output per response: a phrase to try, a correction to internalize, a question to answer.
+
 PROACTIVE GUIDANCE RULE (critical — never be passive):
 If the student's message is short (under 10 words), vague, or just a greeting like "hola" or "hello":
 - Do NOT wait passively or just return a greeting
@@ -638,6 +671,25 @@ If the student's message is short (under 10 words), vague, or just a greeting li
 - NEVER respond with only a question. Always give something first.
 - The student should feel the tutor is present and guiding, not waiting.`
 
+
+// ─── OpenAI message mapper ─────────────────────────────────────
+// Converts ChatMessage[] to OpenAI-compatible role/content format.
+// Used by streaming and non-streaming paths to ensure identical context.
+function toOpenAIMessages(messages: import('@/lib/contracts').ChatMessage[]): Array<{role:'user'|'assistant'|'system', content:string}> {
+  return messages.slice(-10).map(m => ({
+    role: (m.role ?? (m.sender === 'user' ? 'user' : 'assistant')) as 'user'|'assistant'|'system',
+    content: m.text ?? m.html.replace(/<[^>]+>/g, '') ?? '',
+  })).filter(m => m.content.trim().length > 0)
+}
+
+// ─── Decision point detector ────────────────────────────────────
+// Detects if the tutor's text response contains a decision question.
+// Used as fallback to generate suggestedActions when backend didn't produce them.
+function detectDecisionPoint(text: string): boolean {
+  const lower = text.toLowerCase()
+  return ['¿quieres', '¿prefieres', 'elige', '¿te gustaría', 'ready to', 'do you want',
+    '¿empezamos', '¿continuamos', 'what would you', '¿quieres que'].some(p => lower.includes(p))
+}
 
 // ─── Suggested Actions Engine ─────────────────────────────────
 // Generates contextually appropriate next-step actions after each response.
@@ -775,6 +827,9 @@ export async function GET() {
     system:    'LINGORA',
     platform:  'vercel-nextjs',
     timestamp: new Date().toISOString(),
+    buildSignature:   process.env.LINGORA_BUILD_SIGNATURE ?? 'unset',
+    commitHint:       process.env.LINGORA_COMMIT_HINT     ?? 'unset',
+    streamingEnabled: process.env.LINGORA_STREAMING_ENABLED === 'true',
     rag,
     tutorProtocol: 'v1.1',
     environment: {
@@ -920,6 +975,56 @@ Format in the student's language (${enrichedStateWithOp.lang ?? 'en'}).
 No quiz. No lesson. No schema. Just the correction.`
       const correction = await getMentorResponse(message ?? '', enrichedStateWithOp, correctDirective).catch(() => null)
       return ok({ message: correction ?? '', artifact: null, state: { ...enrichedStateWithOp, requestedOperation: undefined, tokens: (enrichedStateWithOp.tokens ?? 0) + 1 } })
+    }
+
+    // ── EXPORT CHAT PDF ──────────────────────────────────────────
+    if (requestedOp === 'export_chat_pdf') {
+      try {
+        const msgs = enrichedStateWithOp.messages ?? []
+        const transcript = msgs.map(m => {
+          const role = m.sender === 'user' ? 'USER' : `${(m.sender ?? 'TUTOR').toUpperCase()}`
+          const text = m.text ?? m.html?.replace(/<[^>]+>/g, '') ?? ''
+          return `${role}: ${text}`
+        }).join('\n\n')
+        const title = `LINGORA — ${enrichedStateWithOp.topic ?? 'Session'} — ${new Date().toLocaleDateString()}`
+        const pdf = await generatePDF({ title, content: transcript, filename: `lingora-chat-${Date.now()}` })
+        if (pdf.success && pdf.url) {
+          return ok({ message: '', artifact: { type: 'pdf_chat', url: pdf.url } as import('@/lib/contracts').ArtifactPayload, state: { ...enrichedStateWithOp, requestedOperation: undefined } })
+        }
+      } catch { /* fall through */ }
+      return ok({ message: 'No se pudo generar el PDF. Intenta de nuevo.', artifact: null, state: { ...enrichedStateWithOp, requestedOperation: undefined } })
+    }
+
+    // ── GENERATE COURSE PDF ──────────────────────────────────────
+    if (requestedOp === 'generate_course_pdf') {
+      try {
+        const plan = enrichedStateWithOp.curriculumPlan
+        const topic = enrichedStateWithOp.topic ?? 'Curso'
+        const moduleList = plan?.modules?.map(m => `Módulo ${m.number}: ${m.title}`) ?? []
+        const content = [
+          `LINGORA — Curso: ${topic}`,
+          `Nivel: ${enrichedStateWithOp.level ?? 'A1'}`,
+          '',
+          '=== PLAN CURRICULAR ===',
+          ...moduleList,
+          '',
+          '=== CONTENIDO ===',
+          ...(enrichedStateWithOp.messages?.slice(-20).map(m => {
+            const role = m.sender === 'user' ? 'Estudiante' : 'Tutor'
+            return `${role}: ${m.text ?? m.html?.replace(/<[^>]+>/g, '') ?? ''}`
+          }) ?? []),
+        ].join('\n')
+        const pdf = await generatePDF({ title: `Curso: ${topic}`, content, filename: `lingora-course-${Date.now()}` })
+        if (pdf.success && pdf.url) {
+          const courseArt: import('@/lib/contracts').ArtifactPayload = {
+            type: 'course_pdf', url: pdf.url,
+            title: `Curso: ${topic}`,
+            modules: moduleList,
+          } as unknown as import('@/lib/contracts').ArtifactPayload
+          return ok({ message: '', artifact: courseArt, state: { ...enrichedStateWithOp, requestedOperation: undefined } })
+        }
+      } catch { /* fall through */ }
+      return ok({ message: 'No se pudo generar el PDF del curso.', artifact: null, state: { ...enrichedStateWithOp, requestedOperation: undefined } })
     }
 
     // ── M. Mode-aware routing setup ──────────────
@@ -1072,6 +1177,9 @@ Under 150 words. No preamble.`
           system: 'LINGORA', version: 'v10.2', tutorProtocol: 'v1.1',
           platform: 'vercel-nextjs', status: 'operational',
           timestamp: new Date().toISOString(),
+          buildSignature:   process.env.LINGORA_BUILD_SIGNATURE ?? 'unset',
+          commitHint:       process.env.LINGORA_COMMIT_HINT     ?? 'unset',
+          streamingEnabled: process.env.LINGORA_STREAMING_ENABLED === 'true',
           modules: { schema: true, image: true, audio: true, tts: true,
                      pronunciation: true, rag: true, commercial: true,
                      quiz: true, tutorProtocol: true, autoSchema: true },
@@ -1278,7 +1386,7 @@ Return ONLY the corrected sentence. No explanation. No quotes.` }],
     // Audio files uploaded from gallery (not recorded in-app) enter via files[].
     // Detect audio/* mime type and route same as direct audio input.
     if (files?.length && !audio) {
-      const audioFile = files.find(f => f.type?.startsWith('audio/'))
+      const audioFile = files.find(f => f.type?.startsWith('audio/') || f.type === 'video/webm')
       if (audioFile && audioFile.data) {
         // Treat as audio input — transcribe first
         const tx = await transcribeAudio({ data: audioFile.data, format: audioFile.type?.split('/')[1] ?? 'webm' })
@@ -1476,6 +1584,55 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     const messageIsQuiz   = isQuizRequest(message ?? '')
     const messageIsLevel  = isLevelRequest(message ?? '')
 
+    // ── COURSE REQUEST GUARD (fires before all fast-paths) ────────
+    // isCourseRequest() at line ~821 only fires when activeMode !== structured.
+    // But once the user IS in structured mode, a full course prompt still
+    // arrives here and falls through to schema fast-path, producing a schema
+    // artifact instead of a raw intelligence curriculum.
+    // This guard intercepts it before schema/table/quiz fast-paths.
+    if (isCourseRequest(message ?? '') && !audio) {
+      const courseRaw = await openai.chat.completions.create({
+        model: 'gpt-4o', temperature: 0.7, max_tokens: 2500,
+        messages: [{ role: 'user', content: `You are a master curriculum designer with deep domain expertise.
+Build the most complete, domain-accurate curriculum for: "${message ?? ''}"
+Student level: ${enrichedState.level ?? 'A1'}. Interface language: ${enrichedState.lang ?? 'en'}.
+
+Requirements:
+- Domain-specific terminology and module titles (not generic "Module 1: Introduction")
+- Differentiate mastery levels within the domain
+- Clinical, professional, or practical applications where relevant
+- Real standards or certification paths if they exist
+- Each module: specific title + concrete outcome
+- Realistic time estimate per phase
+- Legal/safety note if the domain requires supervised practice
+- End with 2-3 real recommended resources (real titles and authors)
+
+Format: structured text. Use ## for phases, ### for modules.
+Write at the level a domain expert would. No generic outlines.` }],
+      }).catch(() => null)
+      const rawCurriculum = courseRaw?.choices?.[0]?.message?.content ?? null
+      if (rawCurriculum) {
+        // Parse modules from ### headers
+        const headerMatches = rawCurriculum.match(/###\s+[^\n]+/g)
+        const mods = headerMatches?.slice(0, 10).map((m: string, i: number) =>
+          `${i+1}. ${m.replace(/###\s+/, '').trim()}`) ?? []
+        const cpData: CurriculumPlan = {
+          title: `Curso: ${enrichedState.topic ?? message?.slice(0, 60) ?? 'curso'}`,
+          topic: enrichedState.topic ?? message?.slice(0, 60) ?? '',
+          level: enrichedState.level ?? 'A1',
+          modules: mods.map((m, i) => ({ number: i+1, title: m.replace(/^\d+\.\s*/, '').trim(), focus: '', skills: [] }))
+        }
+        const courseNextState: Partial<SessionState> = {
+          ...enrichedStateWithOp,
+          curriculumPlan: cpData, currentModule: 1, learningStage: 'schema',
+          courseActive: true, lastAction: 'guide' as PedagogicalAction,
+          tokens: (enrichedStateWithOp.tokens ?? 0) + 1, lastArtifact: 'roadmap',
+        }
+        return ok({ message: rawCurriculum, artifact: null, state: courseNextState,
+          suggestedActions: generateSuggestedActions('guide', activeMode, enrichedStateWithOp.lang ?? 'en', 'roadmap') })
+      }
+    }
+
     // Precedence: matrix > schema_pro > table > quiz > level > protocol
     // ── 5-FAST-A. Matrix table ─────────────────────
     if (messageIsMatrix) {
@@ -1554,7 +1711,7 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
     }
 
     // ── 5-FAST-C2. Rich content (complex table/content requests) ──────
-    // Routes to mentor with uncapped directive — produces DeepSeek-quality output.
+    // Routes to mentor with uncapped directive — produces benchmark-quality output.
     // Triggered when: multi-tense, errors requested, explanations, long input.
     const messageIsComplex = isComplexTableRequest(message ?? '') && isTableRequest(message ?? '')
     if (messageIsComplex) {
@@ -1814,6 +1971,13 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
         ? '\n\nDEPTH MODE: SHALLOW — brief overview only. Student requested light pass.'
         : ''
       // Inject errorMemory into directive for personalized correction
+      // Inject continuity context — tutor always continues, never restarts
+      const continuityContext = [
+        enrichedStateWithOp.lastConcept  ? `[LAST CONCEPT TAUGHT: ${enrichedStateWithOp.lastConcept}]` : '',
+        enrichedStateWithOp.lastUserGoal ? `[STUDENT GOAL: ${enrichedStateWithOp.lastUserGoal}]` : '',
+        enrichedStateWithOp.lastMistake  ? `[LAST MISTAKE TO FOLLOW UP: ${enrichedStateWithOp.lastMistake}]` : '',
+      ].filter(Boolean).join('\n')
+
       const errorMemoryContext = (enrichedStateWithOp.errorMemory && (
         (enrichedStateWithOp.errorMemory.grammar?.length ?? 0) > 0 ||
         (enrichedStateWithOp.errorMemory.vocabulary?.length ?? 0) > 0
@@ -1823,7 +1987,7 @@ Sé específico. Corrige errores reales. No improvises si el contenido no es leg
 Grammar errors: ${(enrichedStateWithOp.errorMemory.grammar ?? []).slice(-5).join(', ')}
 Vocabulary gaps: ${(enrichedStateWithOp.errorMemory.vocabulary ?? []).slice(-5).join(', ')}` : ''
 
-      const lessonDirective = (activeMode === 'structured' ? STRUCTURED_COURSE_DIRECTIVE : activeMode === 'pdf_course' ? PDF_COURSE_DIRECTIVE : systemDirective) + depthSuffix
+      const lessonDirective = (activeMode === 'structured' ? STRUCTURED_COURSE_DIRECTIVE : activeMode === 'pdf_course' ? PDF_COURSE_DIRECTIVE : systemDirective) + depthSuffix + (continuityContext ? '\n\n' + continuityContext : '')
       // curriculumPlan is always CurriculumPlan | undefined per contract — never a raw string
       const currPlanStr = enrichedStateWithOp.curriculumPlan
         ? JSON.stringify(enrichedStateWithOp.curriculumPlan, null, 2)
@@ -1835,7 +1999,10 @@ Vocabulary gaps: ${(enrichedStateWithOp.errorMemory.vocabulary ?? []).slice(-5).
       const lessonStage = (activeMode === 'structured' || activeMode === 'pdf_course') && enrichedState.learningStage
         ? nextStage(enrichedState.learningStage as 'diagnosis'|'schema'|'examples'|'quiz'|'score'|'next')
         : enrichedState.learningStage
-      nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1, ...(lessonStage ? { learningStage: lessonStage } : {}) }
+      // Capture last concept for continuity
+      const conceptMatch = (lessonText ?? '').match(/(?:hoy vemos|today we cover|module|módulo)[^.\n]{0,80}/i)
+      const extractedConcept = conceptMatch?.[0]?.slice(0, 100) ?? undefined
+      nextState = { ...nextState, tokens: (nextState.tokens ?? 0) + 1, ...(lessonStage ? { learningStage: lessonStage } : {}), ...(extractedConcept ? { lastConcept: extractedConcept } : {}) }
       return ok({ message: lessonText ?? '', artifact: null, state: nextState })
     }
 
@@ -1916,6 +2083,13 @@ If relevant: address these errors in your response.`
       nextState = { ...nextState, requestedOperation: undefined }
     }
 
+    // Extract lastConcept and lastUserGoal from this turn for continuity
+    const goalKeywords = ['quiero', 'necesito', 'want to', 'need to', 'mi objetivo', 'my goal']
+    const newGoal = goalKeywords.some(k => (message ?? '').toLowerCase().includes(k))
+      ? (message ?? '').slice(0, 120)
+      : undefined
+    if (newGoal) nextState = { ...nextState, lastUserGoal: newGoal }
+
     // ── TOKEN AUTHORITY: single increment for conversation path only.
     // Early-return paths (roadmap, transcription, gallery, quiz, pdf, schema, etc.)
     // increment tokens inline before returning. They never reach this block.
@@ -1932,6 +2106,8 @@ If relevant: address these errors in your response.`
     const pedagogicalArtifactType = nextState.lastArtifact
       ? nextState.lastArtifact.split(':')[0]
       : undefined
+    // If tutor posed a decision and backend hasn't generated actions, produce fallback
+    const hasTutorDecision = detectDecisionPoint(finalResponse)
     const suggestedActions = generateSuggestedActions(
       action,
       activeMode,
@@ -1939,7 +2115,84 @@ If relevant: address these errors in your response.`
       pedagogicalArtifactType,
       undefined
     )
-    return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState, suggestedActions: suggestedActions.length ? suggestedActions : undefined })
+    // Compute finalActions here so BOTH streaming and non-streaming paths use it
+    const decisionLabels: Record<string, [string, string, string]> = {
+      es: ['Sí, empecemos',     'Ver ejemplos',     'Prefiero practicar'],
+      en: ["Yes, let's start",  'Show examples',    "I'd rather practice"],
+      no: ['Ja, vi starter',    'Se eksempler',     'Foretrekker å øve'],
+      fr: ['Oui, commençons',   'Voir exemples',    'Préférer pratiquer'],
+      de: ['Ja, beginnen wir',  'Beispiele zeigen', 'Lieber üben'],
+    }
+    const [dl1, dl2, dl3] = decisionLabels[enrichedStateWithOp.lang ?? 'en'] ?? decisionLabels.en
+    const hasTutorDecision2 = detectDecisionPoint(finalResponse)
+    const finalActions = suggestedActions.length ? suggestedActions
+      : hasTutorDecision2 ? [
+          { id:'sa-yes',   label:dl1, action:'continue_lesson'   as import('@/lib/contracts').SuggestedActionType, tone:'primary'   as const, emoji:'▶️' },
+          { id:'sa-ex',    label:dl2, action:'choose_examples'   as import('@/lib/contracts').SuggestedActionType, tone:'secondary' as const, emoji:'📚' },
+          { id:'sa-later', label:dl3, action:'practice_examples' as import('@/lib/contracts').SuggestedActionType, tone:'secondary' as const, emoji:'✍️' },
+        ]
+      : undefined
+
+    // ── STREAMING (SSE) — conversation and lesson path ─────────
+    // Fast-paths (schema, table, quiz) already returned above via ok().
+    // This branch handles conversational responses only.
+    // Streaming gives the "tutor thinking in real time" perception.
+    if (process.env.LINGORA_STREAMING_ENABLED === 'true') {
+      const encoder = new TextEncoder()
+      const streamBody = new ReadableStream({
+        async start(controller) {
+          try {
+            const streamCompletion = await openai.chat.completions.create({
+              model: 'gpt-4o',
+              messages: [
+                { role: 'system' as const, content: effectiveDirective },
+                ...toOpenAIMessages(nextState.messages ?? []),
+                { role: 'user' as const, content: msgFinal },
+              ],
+              temperature: 0.7,
+              stream: true,
+            })
+            let streamedText = ''
+            for await (const chunk of streamCompletion) {
+              const delta = chunk.choices[0]?.delta?.content ?? ''
+              if (delta) {
+                streamedText += delta
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}
+
+`))
+              }
+            }
+            // Send final chunk with artifact, state, suggestedActions
+            const finalChunk = {
+              done: true,
+              artifact: ttsArtifact,
+              state: nextState,
+              suggestedActions: finalActions,
+            }
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}
+
+`))
+            controller.close()
+          } catch {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, error: true, state: nextState })}
+
+`))
+            controller.close()
+          }
+        }
+      })
+      return new Response(streamBody, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-LINGORA': 'v10.2',
+        },
+      })
+    }
+
+    // Non-streaming fallback — finalActions already computed above
+    return ok({ message: finalResponse, artifact: ttsArtifact, state: nextState, suggestedActions: finalActions })
 
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
