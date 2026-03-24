@@ -10,8 +10,12 @@
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
-import type { SessionState, ChatRequest, ExecutionPlan } from '@/lib/contracts'
-import type { TutorMode } from '@/lib/tutorProtocol'
+import type {
+  SessionState,
+  ChatRequest,
+  ExecutionPlan,
+  TutorMode as ContractsTutorMode,
+} from '@/lib/contracts'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -30,7 +34,7 @@ const FALLBACKS: Record<string, string> = {
 
 type LegacyMentorState = Partial<SessionState> & {
   mentor?: 'Alex' | 'Sarah' | 'Nick'
-  tutorMode?: TutorMode
+  tutorMode?: ContractsTutorMode
   level?: string
   topic?: string
   lang?: string
@@ -49,23 +53,17 @@ type MentorRuntimeParams = {
   action?: string
 }
 
+type ProtocolTutorMode = Parameters<typeof getModeInstruction>[0]
+
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
-  return (
-    state.interfaceLanguage ??
-    state.lang ??
-    'en'
-  )
+  return state.interfaceLanguage ?? state.lang ?? 'en'
 }
 
 function resolveMentorName(state: LegacyMentorState): 'Alex' | 'Sarah' | 'Nick' {
-  return (
-    state.mentorProfile ??
-    state.mentor ??
-    'Alex'
-  )
+  return state.mentorProfile ?? state.mentor ?? 'Alex'
 }
 
-function resolveTutorMode(state: LegacyMentorState): TutorMode {
+function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
   if (state.tutorMode) return state.tutorMode
 
   switch (state.activeMode) {
@@ -78,6 +76,18 @@ function resolveTutorMode(state: LegacyMentorState): TutorMode {
     default:
       return 'conversational'
   }
+}
+
+/**
+ * Bridges contracts TutorMode to tutorProtocol accepted mode.
+ * If tutorProtocol does not yet expose 'free', we safely map it to
+ * conversational instructions while preserving SEEK 3.0 runtime semantics.
+ */
+function resolveProtocolMode(mode: ContractsTutorMode): ProtocolTutorMode {
+  if (mode === 'free') {
+    return 'conversational' as ProtocolTutorMode
+  }
+  return mode as ProtocolTutorMode
 }
 
 function resolveTopic(state: LegacyMentorState): string | null {
@@ -103,8 +113,10 @@ function buildContext(state: LegacyMentorState): string {
   if (topic) parts.push(`Topic: ${topic}`)
   if (lang) parts.push(`Student language: ${lang}`)
   if (state.lastAction) parts.push(`Last action: ${state.lastAction}`)
-  if ((state.currentModuleIndex ?? state.lessonIndex) && (state.currentModuleIndex ?? state.lessonIndex)! > 0) {
-    parts.push(`Lesson index: ${state.currentModuleIndex ?? state.lessonIndex}`)
+
+  const lessonIndex = state.currentModuleIndex ?? state.lessonIndex
+  if (lessonIndex && lessonIndex > 0) {
+    parts.push(`Lesson index: ${lessonIndex}`)
   }
 
   if (state.tutorPhase) parts.push(`Current phase: ${state.tutorPhase}`)
@@ -157,9 +169,10 @@ export function buildMentorPrompt(params: {
   const mentorName = resolveMentorName(state)
   const profile = getMentorProfile(mentorName)
   const mode = resolveTutorMode(state)
+  const protocolMode = resolveProtocolMode(mode)
   const topic = resolveTopic(state)
   const context = buildContext(state)
-  const modeInstructions = getModeInstruction(mode, topic)
+  const modeInstructions = getModeInstruction(protocolMode, topic)
   const executionDirective = buildExecutionDirective({
     systemDirective: params.systemDirective,
     plan: params.plan,
@@ -183,7 +196,7 @@ export function buildMentorPrompt(params: {
 function normalizeLegacyCall(
   message: string,
   state: LegacyMentorState = {},
-  systemDirective?: string
+  systemDirective?: string,
 ): { message: string; state: LegacyMentorState; systemDirective?: string } {
   return { message, state, systemDirective }
 }
@@ -209,15 +222,15 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): {
 export async function getMentorResponse(
   message: string,
   state?: LegacyMentorState,
-  systemDirective?: string
+  systemDirective?: string,
 ): Promise<string>
 export async function getMentorResponse(
-  params: MentorRuntimeParams
+  params: MentorRuntimeParams,
 ): Promise<string>
 export async function getMentorResponse(
   arg1: string | MentorRuntimeParams,
   arg2?: LegacyMentorState,
-  arg3?: string
+  arg3?: string,
 ): Promise<string> {
   const normalized =
     typeof arg1 === 'string'
@@ -235,7 +248,7 @@ export async function getMentorResponse(
 
   try {
     const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Mentor timeout')), 14000)
+      setTimeout(() => reject(new Error('Mentor timeout')), 14000),
     )
 
     const completion = await Promise.race([
@@ -272,7 +285,7 @@ export async function getMentorResponse(
  * - If streaming fails, falls back to one single full-text delta
  */
 export async function getMentorResponseStream(
-  params: MentorRuntimeParams
+  params: MentorRuntimeParams,
 ): Promise<AsyncGenerator<string>> {
   const normalized = normalizeRuntimeCall(params)
 
@@ -293,9 +306,9 @@ export async function getMentorResponseStream(
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-        temperature: 0.7,
-        top_p: 0.88,
-        max_tokens: 650,
+      temperature: 0.7,
+      top_p: 0.88,
+      max_tokens: 650,
     })
 
     return (async function* () {
