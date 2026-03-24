@@ -732,13 +732,20 @@ export interface OrchestrationContext {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * StatePatch — a partial update to SessionState produced by execution layers.
+ * StatePatch — partial update to SessionState produced by execution layers.
  * state-manager.ts merges patches into the current state, enforcing invariants.
  *
- * IMPORTANT: patch must never contain undefined fields that would overwrite
- * valid existing state. Use explicit null only when clearing a field is intended.
+ * CLEAR SEMANTICS (unambiguous — Opción A):
+ *   undefined in patch field = "do not touch this field" (preserves current value)
+ *   null in patch field      = "explicitly clear this field"
+ *
+ * The only field that uses null-as-clear is requestedOperation.
+ * clearRequestedOperation() returns { requestedOperation: null } to trigger this.
+ * All other fields use undefined as the no-op sentinel.
  */
-export type StatePatch = Partial<SessionState>;
+export type StatePatch = Partial<SessionState> & {
+  requestedOperation?: RequestedOperation | null;
+};
 
 /**
  * StateValidationResult — returned by state-manager.validateStateInvariants().
@@ -847,4 +854,3 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
-
