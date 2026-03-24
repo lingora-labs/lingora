@@ -1,14 +1,17 @@
 // ================================================
-// LINGORA 10.2 — MENTOR ENGINE v1.1
-// NORTH_STAR removed — mentor is governed, not free.
-// tutorPhase and courseActive now in context.
+// LINGORA SEEK 3.0 — MENTOR ENGINE
+// Compatible with legacy v10.2 signature + SEEK 3.0 execution engines
+// Adds:
+// - buildMentorPrompt()
+// - getMentorResponse() with dual signature support
+// - getMentorResponseStream()
 // ================================================
 
 import OpenAI from 'openai'
-import { getMentorProfile }           from './profiles'
+import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
-import type { SessionState }          from '@/lib/contracts'
-import type { TutorMode }             from '@/lib/tutorProtocol'
+import type { SessionState, ChatRequest, ExecutionPlan } from '@/lib/contracts'
+import type { TutorMode } from '@/lib/tutorProtocol'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -16,7 +19,7 @@ const FALLBACKS: Record<string, string> = {
   es: 'No pude procesar tu mensaje. Intenta de nuevo.',
   en: 'Could not process your message. Please try again.',
   no: 'Kunne ikke behandle meldingen din. Prøv igjen.',
-  fr: 'Je n\'ai pas pu traiter votre message. Réessayez.',
+  fr: "Je n'ai pas pu traiter votre message. Réessayez.",
   de: 'Konnte Ihre Nachricht nicht verarbeiten. Versuchen Sie es erneut.',
   it: 'Non ho potuto elaborare il tuo messaggio. Riprova.',
   pt: 'Não consegui processar sua mensagem. Tente novamente.',
@@ -25,73 +28,290 @@ const FALLBACKS: Record<string, string> = {
   zh: '无法处理您的消息。请重试。',
 }
 
-function buildContext(state: Partial<SessionState>): string {
+type LegacyMentorState = Partial<SessionState> & {
+  mentor?: 'Alex' | 'Sarah' | 'Nick'
+  tutorMode?: TutorMode
+  level?: string
+  topic?: string
+  lang?: string
+  lastAction?: string
+  lessonIndex?: number
+  courseActive?: boolean
+  awaitingQuizAnswer?: boolean
+  samples?: unknown[]
+}
+
+type MentorRuntimeParams = {
+  request: ChatRequest
+  state: SessionState
+  plan?: ExecutionPlan
+  priorContext?: string
+  action?: string
+}
+
+function resolveInterfaceLanguage(state: LegacyMentorState): string {
+  return (
+    state.interfaceLanguage ??
+    state.lang ??
+    'en'
+  )
+}
+
+function resolveMentorName(state: LegacyMentorState): 'Alex' | 'Sarah' | 'Nick' {
+  return (
+    state.mentorProfile ??
+    state.mentor ??
+    'Alex'
+  )
+}
+
+function resolveTutorMode(state: LegacyMentorState): TutorMode {
+  if (state.tutorMode) return state.tutorMode
+
+  switch (state.activeMode) {
+    case 'structured':
+    case 'pdf_course':
+      return 'structured'
+    case 'free':
+      return 'free'
+    case 'interact':
+    default:
+      return 'conversational'
+  }
+}
+
+function resolveTopic(state: LegacyMentorState): string | null {
+  if (state.curriculumPlan?.topic) return state.curriculumPlan.topic
+  if (state.lastConcept) return state.lastConcept
+  if (state.topic) return state.topic
+  return null
+}
+
+function resolveLevel(state: LegacyMentorState): string | undefined {
+  return state.confirmedLevel ?? state.userLevel ?? state.level
+}
+
+function buildContext(state: LegacyMentorState): string {
   const parts: string[] = []
 
-  if (state.level && state.level !== 'A0')  parts.push(`Level: ${state.level}`)
-  if ((state.tokens ?? 0) > 0)              parts.push(`Exchanges: ${state.tokens}`)
-  if (state.topic)                          parts.push(`Topic: ${state.topic}`)
-  if (state.lang)                           parts.push(`Student language: ${state.lang}`)
-  if (state.lastAction)                     parts.push(`Last action: ${state.lastAction}`)
-  if (state.lessonIndex && state.lessonIndex > 0) parts.push(`Lesson index: ${state.lessonIndex}`)
+  const level = resolveLevel(state)
+  const topic = resolveTopic(state)
+  const lang = resolveInterfaceLanguage(state)
 
-  // Tutor protocol state — critical for consistent behavior
-  if (state.tutorPhase)                     parts.push(`Current phase: ${state.tutorPhase}`)
-  if (state.courseActive !== undefined)     parts.push(`Course active: ${state.courseActive}`)
-  if (state.awaitingQuizAnswer)             parts.push(`Awaiting quiz answer: true`)
-  if ((state.samples ?? []).length > 0)     parts.push(`Student samples collected: ${state.samples!.length}`)
+  if (level && level !== 'A0') parts.push(`Level: ${level}`)
+  if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
+  if (topic) parts.push(`Topic: ${topic}`)
+  if (lang) parts.push(`Student language: ${lang}`)
+  if (state.lastAction) parts.push(`Last action: ${state.lastAction}`)
+  if ((state.currentModuleIndex ?? state.lessonIndex) && (state.currentModuleIndex ?? state.lessonIndex)! > 0) {
+    parts.push(`Lesson index: ${state.currentModuleIndex ?? state.lessonIndex}`)
+  }
+
+  if (state.tutorPhase) parts.push(`Current phase: ${state.tutorPhase}`)
+  if (state.courseActive !== undefined) parts.push(`Course active: ${state.courseActive}`)
+  if (state.awaitingQuizAnswer) parts.push(`Awaiting quiz answer: true`)
+  if ((state.samples ?? []).length > 0) parts.push(`Student samples collected: ${state.samples!.length}`)
+  if ((state.diagnosticSamples ?? 0) > 0) parts.push(`Diagnostic samples: ${state.diagnosticSamples}`)
 
   return parts.length > 0
     ? '\n\n[Session state: ' + parts.join(' · ') + ']'
     : ''
 }
 
-export async function getMentorResponse(
-  message:          string,
-  state:            Partial<SessionState> = {},
+function buildExecutionDirective(params: {
   systemDirective?: string
-): Promise<string> {
-  const profile  = getMentorProfile(state.mentor)
-  const mode     = (state.tutorMode ?? 'conversational') as TutorMode
-  const context  = buildContext(state)
-  const modeInstructions = getModeInstruction(mode, state.topic ?? null)
+  plan?: ExecutionPlan
+  action?: string
+  priorContext?: string
+}): string {
+  const parts: string[] = []
 
-  // System prompt composition:
-  // 1. Mentor personality (who they are — from profiles.ts)
-  // 2. Mode instructions (how they behave in this context)
-  // 3. Action directive (what to do right now — from tutorProtocol)
-  // 4. Prohibitions (what to never do)
-  // 5. Session context (current state)
-  const systemPrompt = [
+  if (params.systemDirective) {
+    parts.push(params.systemDirective)
+  }
+
+  if (params.plan?.mentor?.directive) {
+    parts.push(`Mentor execution directive: ${params.plan.mentor.directive}`)
+  }
+
+  if (params.action) {
+    parts.push(`Current execution action: ${params.action}`)
+  }
+
+  if (params.priorContext && params.priorContext.trim()) {
+    parts.push(`Prior execution context:\n${params.priorContext}`)
+  }
+
+  return parts.length > 0 ? `\n\n${parts.join('\n\n')}` : ''
+}
+
+export function buildMentorPrompt(params: {
+  message: string
+  state?: LegacyMentorState
+  systemDirective?: string
+  priorContext?: string
+  action?: string
+  plan?: ExecutionPlan
+}): { system: string; user: string } {
+  const state = params.state ?? {}
+  const mentorName = resolveMentorName(state)
+  const profile = getMentorProfile(mentorName)
+  const mode = resolveTutorMode(state)
+  const topic = resolveTopic(state)
+  const context = buildContext(state)
+  const modeInstructions = getModeInstruction(mode, topic)
+  const executionDirective = buildExecutionDirective({
+    systemDirective: params.systemDirective,
+    plan: params.plan,
+    action: params.action,
+    priorContext: params.priorContext,
+  })
+
+  const system = [
     profile.system,
     modeInstructions,
-    systemDirective ? `\n\n${systemDirective}` : '',
+    executionDirective,
     TUTOR_PROHIBITIONS,
     context,
   ].filter(Boolean).join('')
+
+  const user = String(params.message || '')
+
+  return { system, user }
+}
+
+function normalizeLegacyCall(
+  message: string,
+  state: LegacyMentorState = {},
+  systemDirective?: string
+): { message: string; state: LegacyMentorState; systemDirective?: string } {
+  return { message, state, systemDirective }
+}
+
+function normalizeRuntimeCall(params: MentorRuntimeParams): {
+  message: string
+  state: LegacyMentorState
+  systemDirective?: string
+  plan?: ExecutionPlan
+  action?: string
+  priorContext?: string
+} {
+  return {
+    message: params.request?.message ?? '',
+    state: params.state ?? {},
+    systemDirective: undefined,
+    plan: params.plan,
+    action: params.action,
+    priorContext: params.priorContext,
+  }
+}
+
+export async function getMentorResponse(
+  message: string,
+  state?: LegacyMentorState,
+  systemDirective?: string
+): Promise<string>
+export async function getMentorResponse(
+  params: MentorRuntimeParams
+): Promise<string>
+export async function getMentorResponse(
+  arg1: string | MentorRuntimeParams,
+  arg2?: LegacyMentorState,
+  arg3?: string
+): Promise<string> {
+  const normalized =
+    typeof arg1 === 'string'
+      ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3)
+      : normalizeRuntimeCall(arg1)
+
+  const { system, user } = buildMentorPrompt({
+    message: normalized.message,
+    state: normalized.state,
+    systemDirective: normalized.systemDirective,
+    plan: normalized.plan,
+    action: normalized.action,
+    priorContext: normalized.priorContext,
+  })
 
   try {
     const timeout = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Mentor timeout')), 14000)
     )
+
     const completion = await Promise.race([
       openai.chat.completions.create({
-        model:       'gpt-4o',
-        messages:    [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: String(message || '') },
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
         ],
-        temperature: 0.7,    // Reduced from 0.82 for more consistent tutoring behavior
-        top_p:       0.88,
-        max_tokens:  650,
+        temperature: 0.7,
+        top_p: 0.88,
+        max_tokens: 650,
       }),
       timeout,
     ])
+
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.error('[MENTOR] Error:', msg)
-    const lang = state.lang ?? 'en'
+    const lang = resolveInterfaceLanguage(normalized.state)
     return FALLBACKS[lang] ?? FALLBACKS.en
+  }
+}
+
+/**
+ * getMentorResponseStream
+ * SEEK 3.0 — Streaming variant of getMentorResponse().
+ * Used by execution-engine-stream.ts.
+ *
+ * Contract:
+ * - Input: MentorRuntimeParams
+ * - Output: AsyncGenerator<string>
+ * - If streaming fails, falls back to one single full-text delta
+ */
+export async function getMentorResponseStream(
+  params: MentorRuntimeParams
+): Promise<AsyncGenerator<string>> {
+  const normalized = normalizeRuntimeCall(params)
+
+  const { system, user } = buildMentorPrompt({
+    message: normalized.message,
+    state: normalized.state,
+    systemDirective: normalized.systemDirective,
+    plan: normalized.plan,
+    action: normalized.action,
+    priorContext: normalized.priorContext,
+  })
+
+  try {
+    const stream = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      stream: true,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+        temperature: 0.7,
+        top_p: 0.88,
+        max_tokens: 650,
+    })
+
+    return (async function* () {
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta?.content
+        if (delta) yield delta
+      }
+    })()
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    console.warn('[MENTOR] Streaming unavailable, falling back to single response:', msg)
+
+    const fallbackText = await getMentorResponse(params)
+
+    return (async function* () {
+      if (fallbackText) yield fallbackText
+    })()
   }
 }
