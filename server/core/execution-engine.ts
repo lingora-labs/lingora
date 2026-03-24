@@ -259,12 +259,17 @@ async function dispatchToExecutor(
     // ── Image generator ──────────────────────────────────────────────────────
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
-      const artifact = await generateImage({
-        message: ctx.request.message,
-        state: ctx.state,
-        priorContext: priorText,
-      });
-      return { artifact };
+      const prompt = priorText || ctx.request.message;
+      const result = await generateImage(prompt);
+      if (result?.success && result.url) {
+        return { artifact: {
+          type: 'illustration' as const,
+          prompt,
+          url: result.url,
+          caption: result.message ?? undefined,
+        }};
+      }
+      return {};
     }
 
     // ── Audio toolkit ────────────────────────────────────────────────────────
@@ -285,11 +290,12 @@ async function dispatchToExecutor(
     // ── Attachment processor ─────────────────────────────────────────────────
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
-      const result = await processAttachment({
-        files: ctx.request.files ?? [],
-        state: ctx.state,
-      });
-      return { text: result.extractedContent };
+      const result = await processAttachment(
+        ctx.request.files ?? [],
+        ctx.state as Record<string, unknown>,
+      );
+      const text = result?.extractedTexts?.[0] ?? undefined;
+      return { text };
     }
 
     // ── Storage ───────────────────────────────────────────────────────────────
