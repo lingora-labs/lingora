@@ -630,9 +630,15 @@ export interface CommercialEngineTrigger extends CommercialTrigger {
  * protected engine first.
  */
 export interface CommercialOffer {
-  triggered: boolean;
-  message?:  string;
-  trigger?:  CommercialTrigger | CommercialEngineTrigger | null;
+  triggered?: boolean;
+  message?:   string;
+  trigger?:   CommercialTrigger | CommercialEngineTrigger | null;
+  // Fields required by protected commercial-engine.ts
+  timestamp:  number;
+  sessionId?: string | null;
+  type?:      'immersion' | 'immersion_suggestion' | 'program_invite';
+  score?:     number;
+  interest?:  boolean;
 }
 
 /**
@@ -813,3 +819,4 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
+
