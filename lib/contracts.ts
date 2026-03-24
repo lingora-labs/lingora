@@ -1,6 +1,6 @@
 // =============================================================================
 // lib/contracts.ts
-// LINGORA SEEK 3.0 — Single Source of Truth for all TypeScript types
+// LINGORA SEEK 3.0 — Single Source of Truth for all TypeScript types.
 // =============================================================================
 // Purpose  : Canonical runtime contracts. Every interface, type and default
 //            used across the LINGORA runtime is defined here and only here.
