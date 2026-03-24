@@ -1,13 +1,19 @@
 // ================================================
-// LINGORA 10.2 — TUTOR PROTOCOL v1.1
+// LINGORA SEEK 3.0 — TUTOR PROTOCOL v1.2
 // lib/tutorProtocol.ts
 //
 // Governing layer between intent detection and mentor.
 // Controls: what the tutor does, when, and how.
 //
-// Architecture: state lives in SessionState (client-side).
-// No external KV needed in this phase — state is sent
-// with every request. This is intentional.
+// v1.2 changes (SEEK 3.0 alignment):
+//   state.topic      → state.lastUserGoal ?? state.lastConcept
+//   state.mentor     → state.mentorProfile
+//   state.level      → state.confirmedLevel ?? state.userLevel
+//   state.lang       → state.interfaceLanguage
+//   state.lessonIndex→ state.currentModuleIndex
+//   state.courseActive → derived from curriculumPlan presence
+//   state.lastAction → state.tutorPhase (SEEK 3.0 phase tracking)
+//   state.awaitingQuizAnswer → not in new contract; derived from tutorPhase === 'quiz'
 // ================================================
 
 import type { SessionState } from '@/lib/contracts'
@@ -34,17 +40,47 @@ export type TutorPhase =
   | 'idle'
   | 'guide'
   | 'lesson'
-  | 'conversation'  // free practice phase (conversational + professional modes)
+  | 'conversation'
   | 'schema'
   | 'quiz'
   | 'feedback'
 
-// ─── Sequence map (what follows what, per mode) ──
+// ─── Sequence map ────────────────────────────────
 const SEQUENCE: Record<TutorMode, TutorPhase[]> = {
   structured:     ['guide', 'lesson', 'schema', 'quiz', 'feedback'],
   conversational: ['guide', 'conversation', 'schema', 'quiz'],
   professional:   ['guide', 'lesson', 'quiz', 'feedback'],
   diagnostic:     ['quiz', 'feedback', 'guide'],
+}
+
+// ─── Legacy field resolvers (SEEK 3.0 compat) ────
+function resolveTopic(state: Partial<SessionState>): string {
+  return state.lastUserGoal ?? state.lastConcept ?? 'Spanish'
+}
+
+function resolveMentor(state: Partial<SessionState>): string {
+  return state.mentorProfile ?? 'Sarah'
+}
+
+function resolveLevel(state: Partial<SessionState>): string {
+  return state.confirmedLevel ?? state.userLevel ?? 'A1'
+}
+
+function resolveLang(state: Partial<SessionState>): string {
+  return state.interfaceLanguage ?? 'en'
+}
+
+function resolveModuleIndex(state: Partial<SessionState>): number {
+  return state.currentModuleIndex ?? 0
+}
+
+function resolveCourseActive(state: Partial<SessionState>): boolean {
+  return !!state.curriculumPlan
+}
+
+function resolveAwaitingQuiz(state: Partial<SessionState>): boolean {
+  // In SEEK 3.0, tutorPhase tracks position. If phase is 'quiz', we are awaiting answer.
+  return state.tutorPhase === 'quiz'
 }
 
 // ─── Mode resolver ────────────────────────────────
@@ -53,7 +89,7 @@ export function resolveTutorMode(
   mentor: string | null
 ): TutorMode {
   const t = topic  ?? 'conversation'
-  const m = mentor ?? 'sarah'
+  const m = (mentor ?? 'sarah').toLowerCase()
 
   if (t === 'leveltest')  return 'diagnostic'
   if (m === 'alex' || t === 'conversation' || t === 'travel') return 'conversational'
@@ -67,69 +103,76 @@ export function resolvePedagogicalAction(params: {
   state:    Partial<SessionState>
   explicit: PedagogicalAction | null
 }): {
-  action:          PedagogicalAction
-  mode:            TutorMode
-  systemDirective: string
-  nextPhase:       TutorPhase
-  nextLessonIndex: number
+  action:           PedagogicalAction
+  mode:             TutorMode
+  systemDirective:  string
+  nextPhase:        TutorPhase
+  nextLessonIndex:  number
   nextCourseActive: boolean
 } {
   const { message, state, explicit } = params
 
-  // ── INTERACT / FREE BYPASS (Priority 0) ──────────────────────
-  // In interact and free modes, the model responds freely.
-  // No pedagogical phase calculation. No forced sequence.
-  // The tutor guides through directive, not through protocol state.
+  const topic  = resolveTopic(state)
+  const mentor = resolveMentor(state)
+
+  // ── INTERACT / FREE BYPASS ────────────────────────────────────
   if (state.activeMode === 'interact' || state.activeMode === 'free') {
     const freeMode = modeToTutorMode(
       state.activeMode as 'interact' | 'free',
-      state.topic ?? null,
-      state.mentor ?? null
+      topic,
+      mentor
     )
     return {
       action:           'conversation',
       mode:             freeMode,
       systemDirective:  buildDirective('conversation', state),
       nextPhase:        'conversation',
-      nextLessonIndex:  state.lessonIndex ?? 0,
-      nextCourseActive: state.courseActive ?? false,
+      nextLessonIndex:  resolveModuleIndex(state),
+      nextCourseActive: resolveCourseActive(state),
     }
   }
 
   // Explicit artifact requests always win
   if (explicit && explicit !== 'conversation') {
     const mode = state.activeMode
-    ? modeToTutorMode(state.activeMode as 'interact'|'structured'|'pdf_course'|'free', state.topic ?? null, state.mentor ?? null)
-    : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
+      ? modeToTutorMode(
+          state.activeMode as 'interact' | 'structured' | 'pdf_course' | 'free',
+          topic,
+          mentor
+        )
+      : resolveTutorMode(topic, mentor)
     return {
       action:           explicit,
       mode,
       systemDirective:  buildDirective(explicit, state),
       nextPhase:        phaseFromAction(explicit),
-      nextLessonIndex:  state.lessonIndex ?? 0,
-      nextCourseActive: state.courseActive ?? false,
+      nextLessonIndex:  resolveModuleIndex(state),
+      nextCourseActive: resolveCourseActive(state),
     }
   }
 
-  const mode    = state.activeMode
-    ? modeToTutorMode(state.activeMode as 'interact'|'structured'|'pdf_course'|'free', state.topic ?? null, state.mentor ?? null)
-    : resolveTutorMode(state.topic ?? null, state.mentor ?? null)
-  const tokens  = state.tokens ?? 0
+  const mode   = state.activeMode
+    ? modeToTutorMode(
+        state.activeMode as 'interact' | 'structured' | 'pdf_course' | 'free',
+        topic,
+        mentor
+      )
+    : resolveTutorMode(topic, mentor)
 
-  // FIX: use lastAction (protocol field), not lastTask (legacy field)
-  const lastAct = (state.lastAction ?? null) as PedagogicalAction | null
+  const tokens         = state.tokens ?? 0
+  const awaitingAnswer = resolveAwaitingQuiz(state)
 
-  // Guard: don't advance past quiz until quiz is answered
-  const awaitingAnswer = state.awaitingQuizAnswer ?? false
+  // In SEEK 3.0, tutorPhase is the authoritative phase tracker
+  const lastAct = (state.tutorPhase ?? null) as PedagogicalAction | null
+
   if (awaitingAnswer) {
-    // User is responding to a quiz — this is feedback
     return {
       action:           'feedback',
       mode,
       systemDirective:  buildDirective('feedback', state),
       nextPhase:        'feedback',
-      nextLessonIndex:  state.lessonIndex ?? 0,
-      nextCourseActive: state.courseActive ?? false,
+      nextLessonIndex:  resolveModuleIndex(state),
+      nextCourseActive: resolveCourseActive(state),
     }
   }
 
@@ -137,16 +180,10 @@ export function resolvePedagogicalAction(params: {
   const nextPhase    = advancePhase(currentPhase, mode, tokens, awaitingAnswer)
   const action       = actionFromPhase(nextPhase, mode)
 
-  // Advance lessonIndex only when feedback is given — this is the stable signal
-  // that a full guide→lesson→schema→quiz→feedback cycle has completed.
-  // Do not advance on quiz alone: awaitingQuizAnswer may not be synced yet.
-  const completingCycle = currentPhase === 'feedback'
+  const completingCycle  = currentPhase === 'feedback'
   const nextLessonIndex  = completingCycle
-    ? (state.lessonIndex ?? 0) + 1
-    : (state.lessonIndex ?? 0)
-
-  // Course is active from the moment the protocol is engaged — no delay
-  const nextCourseActive = true
+    ? resolveModuleIndex(state) + 1
+    : resolveModuleIndex(state)
 
   return {
     action,
@@ -154,7 +191,7 @@ export function resolvePedagogicalAction(params: {
     systemDirective:  buildDirective(action, state),
     nextPhase,
     nextLessonIndex,
-    nextCourseActive,
+    nextCourseActive: true,
   }
 }
 
@@ -172,14 +209,11 @@ function derivePhase(
     quiz:          'quiz',
     feedback:      'feedback',
     conversation:  'conversation',
-    // Artifact actions: do NOT reset to idle — preserve current sequence position.
-    // illustration/pdf/pronunciation are interruptions, not phase transitions.
-    // We treat them as staying in 'lesson' so the sequence continues correctly.
     illustration:  'lesson',
     pdf:           'lesson',
     pronunciation: 'lesson',
   }
-  return map[lastAction] ?? 'lesson'  // unknown actions: assume lesson, not idle
+  return map[lastAction] ?? 'lesson'
 }
 
 function advancePhase(
@@ -191,8 +225,6 @@ function advancePhase(
   const seq = SEQUENCE[mode]
 
   if (tokens === 0 || current === 'idle') return 'guide'
-
-  // Guard: stuck in quiz until answered
   if (current === 'quiz' && awaitingAnswer) return 'quiz'
 
   const idx = seq.indexOf(current)
@@ -200,7 +232,6 @@ function advancePhase(
 
   const nextIdx = (idx + 1) % seq.length
   const next    = seq[nextIdx]
-  // After completing a full cycle, skip guide and restart from lesson
   if (next === 'guide' && tokens > 2) return seq[1] ?? seq[0]
   return next
 }
@@ -209,8 +240,6 @@ function phaseFromAction(action: PedagogicalAction): TutorPhase {
   const map: Partial<Record<PedagogicalAction, TutorPhase>> = {
     guide: 'guide', lesson: 'lesson', schema: 'schema',
     quiz: 'quiz', feedback: 'feedback', conversation: 'conversation',
-    // Interruption actions — preserve sequence position by mapping to 'lesson'
-    // This matches derivePhase() which also maps these to 'lesson'
     illustration: 'lesson',
     pdf:          'lesson',
     pronunciation: 'lesson',
@@ -229,12 +258,13 @@ function buildDirective(
   action: PedagogicalAction,
   state:  Partial<SessionState>
 ): string {
-  const topic   = state.topic    ?? 'Spanish'
-  const level   = state.level    ?? 'A1'
-  const lang    = state.lang     ?? 'en'
-  const mentor  = state.mentor   ?? 'sarah'
-  const tokens  = state.tokens   ?? 0
-  const lesson  = state.lessonIndex ?? 0
+  // All field access via SEEK 3.0 resolvers — no legacy fields
+  const topic  = resolveTopic(state)
+  const level  = resolveLevel(state)
+  const lang   = resolveLang(state)
+  const mentor = resolveMentor(state).toLowerCase()
+  const tokens = state.tokens   ?? 0
+  const lesson = resolveModuleIndex(state)
 
   const base = `TUTOR DIRECTIVE — You are a structured language tutor, not a general assistant.
 Topic: ${topic}. CEFR Level: ${level}. Student language: ${lang}. Mentor persona: ${mentor}.
@@ -371,12 +401,7 @@ PROHIBITED BEHAVIORS (absolute — never do these):
 — Do not act as a general-purpose AI assistant — you have a specific tutoring role.
 — Do not give the quiz answer before the student responds.`
 
-// ─── Mode-aware helpers ──────────────────────────
-
-// Returns the appropriate tutorMode based on activeMode
-// 'structured' and 'pdf_course' use structured tutorMode
-// 'interact' uses conversational
-// 'free' uses conversational without phase control
+// ─── Mode-aware helpers ───────────────────────────
 export function modeToTutorMode(
   activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined,
   topic:  string | null,
@@ -384,20 +409,15 @@ export function modeToTutorMode(
 ): TutorMode {
   if (activeMode === 'structured' || activeMode === 'pdf_course') return 'structured'
   if (activeMode === 'free') return 'conversational'
-  // 'interact' — use existing topic+mentor logic
   return resolveTutorMode(topic, mentor)
 }
 
-// Returns initial learningStage for a given mode
 export function initialStage(
   _activeMode: 'interact' | 'structured' | 'pdf_course' | 'free' | null | undefined
 ): LearningStage {
-  // Guided modes start at schema (aligns with route.ts roadmap learningStage)
   return 'schema'
 }
 
-// Returns next learningStage in the structured sequence
-// diagnosis → schema → examples → quiz → score → next (loops back to schema)
 export function nextStage(current: LearningStage): LearningStage {
   const seq: LearningStage[] = ['diagnosis', 'schema', 'examples', 'quiz', 'score', 'next']
   const idx = seq.indexOf(current)
@@ -406,4 +426,3 @@ export function nextStage(current: LearningStage): LearningStage {
 }
 
 export type LearningStage = 'diagnosis' | 'schema' | 'examples' | 'quiz' | 'score' | 'next'
-
