@@ -321,7 +321,7 @@ async function dispatchSync(
         uiLanguage: state.interfaceLanguage ?? 'en',
       });
       // Wrap SchemaContent in a schema artifact for the artifact renderer
-      return { artifact: { type: 'schema', title: data.title, sections: [], ...data } as any };
+      return { artifact: { type: 'schema', sections: [], ...data } as any };
     }
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
@@ -351,13 +351,18 @@ async function dispatchSync(
       return { text: r.extractedContent };
     }
     case 'knowledge': {
-      const { retrieve } = await import('../knowledge/rag');
-      return { text: await retrieve({ query: request.message, level: state.userLevel }) };
+      const { getRagContext } = await import('../knowledge/rag');
+      const result = await getRagContext(request.message);
+      return { text: result?.text ?? undefined };
     }
     case 'diagnostic': {
-      const { evaluateSample } = await import('./diagnostics');
-      const r = await evaluateSample({ message: request.message, state });
-      return { artifact: r.artifact, patch: r.patch };
+      const { evaluateLevel } = await import('./diagnostics');
+      const samples = [request.message];
+      const result = await evaluateLevel(samples);
+      const patch = result.confidence !== 'insufficient'
+        ? { confirmedLevel: result.level as any, diagnosticSamples: (state.diagnosticSamples ?? 0) + 1 }
+        : { diagnosticSamples: (state.diagnosticSamples ?? 0) + 1 };
+      return { patch };
     }
     case 'tool_storage':
     case 'commercial':
