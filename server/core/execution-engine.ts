@@ -241,7 +241,7 @@ async function dispatchToExecutor(
         level:      ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'B1',
         uiLanguage: ctx.state.interfaceLanguage ?? 'en',
       });
-      const artifact = { type: 'schema' as const, title: data.title, sections: [], ...data };
+      const artifact = { type: 'schema' as const, sections: [], ...data };
       return { artifact };
     }
 
@@ -517,4 +517,3 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
-
