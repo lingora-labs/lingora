@@ -1,6 +1,6 @@
 // =============================================================================
 // lib/contracts.ts
-// LINGORA SEEK 3.0 — Single Source of Truth for all TypeScript types.
+// LINGORA SEEK 3.0 — Single Source of Truth for all TypeScript types
 // =============================================================================
 // Purpose  : Canonical runtime contracts. Every interface, type and default
 //            used across the LINGORA runtime is defined here and only here.
@@ -743,7 +743,7 @@ export interface OrchestrationContext {
  * clearRequestedOperation() returns { requestedOperation: null } to trigger this.
  * All other fields use undefined as the no-op sentinel.
  */
-export type StatePatch = Partial<SessionState> & {
+export type StatePatch = Omit<Partial<SessionState>, 'requestedOperation'> & {
   requestedOperation?: RequestedOperation | null;
 };
 
@@ -854,3 +854,4 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
+
