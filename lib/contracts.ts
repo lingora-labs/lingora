@@ -623,6 +623,19 @@ export interface CommercialEngineTrigger extends CommercialTrigger {
 }
 
 /**
+ * CommercialOffer — legacy compatibility type for protected commercial-engine.ts.
+ * SEEK 3.0 uses the trigger-based commercial model, but the PROTECTED
+ * commercial-engine.ts still imports CommercialOffer from contracts.ts.
+ * Restored as a compatibility bridge — do not remove without updating the
+ * protected engine first.
+ */
+export interface CommercialOffer {
+  triggered: boolean;
+  message?:  string;
+  trigger?:  CommercialTrigger | CommercialEngineTrigger | null;
+}
+
+/**
  * ExecutionPlan — output of orchestrator.ts.
  * The single authoritative description of what will happen, in what order,
  * with what dependencies, for what reason.
@@ -800,4 +813,3 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
-
