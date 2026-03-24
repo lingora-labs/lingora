@@ -123,6 +123,22 @@ export type ArtifactType =
 // SECTION 3 — ARTIFACT PAYLOAD INTERFACES (unchanged from 2.6)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * SchemaContent — raw pedagogical schema data produced by schema-generator.ts.
+ * Used as the content payload before being wrapped in SchemaArtifact or SchemaProArtifact.
+ */
+export interface SchemaContent {
+  title:       string;
+  block?:      string;
+  objective?:  string;
+  keyConcepts: string[];
+  tableRows:   Array<{ left: string; right: string }>;
+  subtopics?:  Array<{ title: string; content: string; keyTakeaway?: string }>;
+  examples:    string[];
+  summary?:    string;
+  quiz:        Array<{ question: string; options: string[]; correct: number }>;
+}
+
 export interface SchemaBlock {
   label: string;
   content: string;
@@ -282,6 +298,18 @@ export interface RichContentArtifact {
   type: 'rich_content';
   title?: string;
   body: string;
+}
+
+/**
+ * DiagnosticState — output of diagnostics.ts evaluateLevel().
+ * Accumulative CEFR assessment result. Used by the diagnostic engine.
+ */
+export interface DiagnosticState {
+  level:      string;
+  confidence: 'insufficient' | 'low' | 'medium' | 'high';
+  samples:    number;
+  score?:     number;
+  nextLevel?: string;
 }
 
 export interface DiagnosticReport {
