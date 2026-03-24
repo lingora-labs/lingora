@@ -313,21 +313,37 @@ async function dispatchSync(
 ): Promise<SyncOut> {
   switch (step.executor) {
     case 'tool_schema': {
-      const { generateArtifact } = await import('../tools/schema-generator');
-      return { artifact: await generateArtifact({ action: step.action, message: request.message, state, priorContext }) };
+      const { generateSchemaContent } = await import('../tools/schema-generator');
+      const topic = priorContext || request.message;
+      const data  = await generateSchemaContent({
+        topic,
+        level:      state.confirmedLevel ?? state.userLevel ?? 'B1',
+        uiLanguage: state.interfaceLanguage ?? 'en',
+      });
+      // Wrap SchemaContent in a schema artifact for the artifact renderer
+      return { artifact: { type: 'schema', title: data.title, sections: [], ...data } as any };
     }
     case 'tool_pdf': {
-      const { generatePdf } = await import('../tools/pdf-generator');
-      return { artifact: await generatePdf({ action: step.action, state }) };
+      const { generatePDF } = await import('../tools/pdf-generator');
+      const title  = state.lastConcept ?? 'LINGORA Study Guide';
+      const result = await generatePDF({ title, content: request.message });
+      const artifact = result.success
+        ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
+        : undefined;
+      return { artifact };
     }
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
       return { artifact: await generateImage({ message: request.message, state, priorContext }) };
     }
     case 'tool_audio': {
-      const { processAudio } = await import('../tools/audio-toolkit');
-      const r = await processAudio({ action: step.action, request, state });
-      return { text: r.transcript, artifact: r.artifact, patch: r.patch };
+      const { transcribeAudio } = await import('../tools/audio-toolkit');
+      const audioData = request.audioDataUrl
+        ? { data: request.audioDataUrl.split(',')[1] || request.audioDataUrl, format: request.audioMimeType?.split('/')[1] || 'webm' }
+        : null;
+      if (!audioData) return {};
+      const result = await transcribeAudio(audioData);
+      return { text: result.success ? result.text : undefined };
     }
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
@@ -398,4 +414,3 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
