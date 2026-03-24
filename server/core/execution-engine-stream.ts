@@ -357,8 +357,15 @@ async function dispatchSync(
     }
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
+      // Map AttachedFile[] to the shape processAttachment expects
+      const filesToProcess = (request.files ?? []).map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        data: f.base64 ?? (f.dataUrl ? f.dataUrl.split(',')[1] ?? f.dataUrl : ''),
+      }));
       const r = await processAttachment(
-        request.files ?? [],
+        filesToProcess,
         state as Record<string, unknown>,
       );
       const text = r?.extractedTexts?.[0] ?? undefined;
@@ -433,4 +440,3 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
