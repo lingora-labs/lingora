@@ -53,7 +53,7 @@ export interface CommercialEvaluationResult {
  * Native type — no cast required at the call site.
  */
 interface CommercialResult {
-  trigger: CommercialEngineTrigger | null;
+  trigger: CommercialTrigger | null;
   state?:  Partial<SessionState>;
 }
 
@@ -88,13 +88,13 @@ export async function evaluateCommercial(
     const contextMessage = updatedState.lastConcept ?? updatedState.lastUserGoal ?? '';
     const result: CommercialResult = await commercialEngine(contextMessage, updatedState);
 
-    // Engine returns trigger: CommercialTrigger | null
     if (!result.trigger) return NOT_TRIGGERED;
 
-    // RULE: trigger.message is the canonical commercial copy.
-    // CommercialResult.trigger is CommercialEngineTrigger | null — no cast required.
-    const trigger = result.trigger;
-    const message = trigger.message;
+    // Safe runtime narrowing: engine returns CommercialTrigger | null.
+    // CommercialEngineTrigger.message may exist if the engine adds it — check safely.
+    const maybeTrigger = result.trigger as Partial<CommercialEngineTrigger>;
+    const message = typeof maybeTrigger.message === 'string' ? maybeTrigger.message : undefined;
+
     if (!message) return NOT_TRIGGERED;
 
     return { triggered: true, message };
@@ -107,4 +107,3 @@ export async function evaluateCommercial(
     return NOT_TRIGGERED;
   }
 }
-
