@@ -290,8 +290,15 @@ async function dispatchToExecutor(
     // ── Attachment processor ─────────────────────────────────────────────────
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
+      // Map AttachedFile[] to the shape processAttachment expects
+      const filesToProcess = (ctx.request.files ?? []).map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        data: f.base64 ?? (f.dataUrl ? f.dataUrl.split(',')[1] ?? f.dataUrl : ''),
+      }));
       const result = await processAttachment(
-        ctx.request.files ?? [],
+        filesToProcess,
         ctx.state as Record<string, unknown>,
       );
       const text = result?.extractedTexts?.[0] ?? undefined;
@@ -523,3 +530,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
