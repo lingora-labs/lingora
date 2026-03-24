@@ -299,7 +299,7 @@ async function dispatchToExecutor(
       }));
       const result = await processAttachment(
         filesToProcess,
-        ctx.state as Record<string, unknown>,
+        ctx.state as unknown as Record<string, unknown>,
       );
       const text = result?.extractedTexts?.[0] ?? undefined;
       return { text };
