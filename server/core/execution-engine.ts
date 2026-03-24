@@ -234,24 +234,25 @@ async function dispatchToExecutor(
 
     // ── Schema generator ─────────────────────────────────────────────────────
     case 'tool_schema': {
-      const { generateArtifact } = await import('../tools/schema-generator');
-      const artifact = await generateArtifact({
-        action: step.action,
-        message: ctx.request.message,
-        state: ctx.state,
-        priorContext: priorText,
+      const { generateSchemaContent } = await import('../tools/schema-generator');
+      const topic = priorText || ctx.request.message;
+      const data  = await generateSchemaContent({
+        topic,
+        level:      ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'B1',
+        uiLanguage: ctx.state.interfaceLanguage ?? 'en',
       });
+      const artifact = { type: 'schema' as const, title: data.title, sections: [], ...data };
       return { artifact };
     }
 
     // ── PDF generator ────────────────────────────────────────────────────────
     case 'tool_pdf': {
-      const { generatePdf } = await import('../tools/pdf-generator');
-      const artifact = await generatePdf({
-        action: step.action,
-        state: ctx.state,
-        // pdf-generator reads conversation history from state or external store
-      });
+      const { generatePDF } = await import('../tools/pdf-generator');
+      const title  = ctx.state.lastConcept ?? 'LINGORA Study Guide';
+      const result = await generatePDF({ title, content: ctx.request.message });
+      const artifact = result.success
+        ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
+        : undefined;
       return { artifact };
     }
 
@@ -268,16 +269,16 @@ async function dispatchToExecutor(
 
     // ── Audio toolkit ────────────────────────────────────────────────────────
     case 'tool_audio': {
-      const { processAudio } = await import('../tools/audio-toolkit');
-      const result = await processAudio({
-        action: step.action,
-        request: ctx.request,
-        state: ctx.state,
-      });
+      const { transcribeAudio } = await import('../tools/audio-toolkit');
+      const audioData = ctx.request.audioDataUrl
+        ? { data: ctx.request.audioDataUrl.split(',')[1] || ctx.request.audioDataUrl, format: ctx.request.audioMimeType?.split('/')[1] || 'webm' }
+        : null;
+      if (!audioData) return {};
+      const result = await transcribeAudio(audioData);
       return {
-        text: result.transcript,
-        artifact: result.artifact,
-        patch: result.patch,
+        text: result.success ? result.text : undefined,
+        artifact: undefined,
+        patch: undefined,
       };
     }
 
@@ -300,26 +301,23 @@ async function dispatchToExecutor(
 
     // ── Knowledge / RAG ───────────────────────────────────────────────────────
     case 'knowledge': {
-      const { retrieve } = await import('../knowledge/rag');
-      const context = await retrieve({
-        query: ctx.request.message,
-        level: ctx.state.userLevel,
-      });
-      // RAG output becomes priorText for dependent steps
-      return { text: context };
+      const { getRagContext } = await import('../knowledge/rag');
+      const result = await getRagContext(ctx.request.message);
+      return { text: result?.text ?? undefined };
     }
 
     // ── Diagnostics ───────────────────────────────────────────────────────────
     case 'diagnostic': {
-      const { evaluateSample } = await import('./diagnostics');
-      const result = await evaluateSample({
-        message: ctx.request.message,
-        state: ctx.state,
-      });
-      return {
-        artifact: result.artifact,
-        patch: result.patch,
-      };
+      const { evaluateLevel } = await import('./diagnostics');
+      // evaluateLevel takes accumulated samples array
+      const samples = ctx.state.diagnosticSamples
+        ? [ctx.request.message]  // append current message to samples
+        : [ctx.request.message];
+      const result = await evaluateLevel(samples);
+      const patch = result.confidence !== 'insufficient'
+        ? { confirmedLevel: result.level as any, diagnosticSamples: (ctx.state.diagnosticSamples ?? 0) + 1 }
+        : { diagnosticSamples: (ctx.state.diagnosticSamples ?? 0) + 1 };
+      return { patch };
     }
 
     // ── Commercial ────────────────────────────────────────────────────────────
@@ -519,3 +517,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
