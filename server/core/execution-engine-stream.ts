@@ -334,7 +334,17 @@ async function dispatchSync(
     }
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
-      return { artifact: await generateImage({ message: request.message, state, priorContext }) };
+      const prompt = priorContext || request.message;
+      const result = await generateImage(prompt);
+      if (result?.success && result.url) {
+        return { artifact: {
+          type: 'illustration' as const,
+          prompt,
+          url: result.url,
+          caption: result.message ?? undefined,
+        }};
+      }
+      return {};
     }
     case 'tool_audio': {
       const { transcribeAudio } = await import('../tools/audio-toolkit');
@@ -347,8 +357,12 @@ async function dispatchSync(
     }
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
-      const r = await processAttachment({ files: request.files ?? [], state });
-      return { text: r.extractedContent };
+      const r = await processAttachment(
+        request.files ?? [],
+        state as Record<string, unknown>,
+      );
+      const text = r?.extractedTexts?.[0] ?? undefined;
+      return { text };
     }
     case 'knowledge': {
       const { getRagContext } = await import('../knowledge/rag');
@@ -419,3 +433,4 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
+
