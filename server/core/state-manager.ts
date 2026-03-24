@@ -248,7 +248,7 @@ export function repairState(
  * 4. engagement is deep-merged (field-level granularity).
  * 5. tokens is patched atomically — if patch.tokens is undefined, the
  *    current value is preserved.
- * 6. requestedOperation is cleared when patch.requestedOperation === null.
+ * 6. requestedOperation is cleared by setting patch.requestedOperation = null (null = explicit clear sentinel).
  *
  * AFTER MERGE: validateStateInvariants is re-run. If violations are found,
  * repairState is applied and a warning is logged.
@@ -267,7 +267,7 @@ export function mergeStatePatch(
       continue;
     }
     // null is intentional clear — allow it
-    (merged as Record<string, unknown>)[key] = patchValue;
+    (merged as unknown as Record<string, unknown>)[key] = patchValue;
   }
 
   // ── Step 2: deep-merge masteryByModule ────────────────────────────────────
@@ -289,12 +289,15 @@ export function mergeStatePatch(
   // ── Step 4: preserve continuity fields if patch omits them ────────────────
   for (const field of CONTINUITY_FIELDS) {
     if (patch[field] === undefined && current[field] !== undefined) {
-      (merged as Record<string, unknown>)[field] = current[field];
+      (merged as unknown as Record<string, unknown>)[field] = current[field];
     }
   }
 
-  // ── Step 5: handle null clears explicitly ────────────────────────────────
-  // If patch.requestedOperation === null, it means "clear it"
+  // ── Step 5: requestedOperation null-as-clear ────────────────────────────
+  // CANONICAL SEMANTICS (Opción A — matches StatePatch contract):
+  //   null   = explicit clear (erase the field)
+  //   undefined = no-op (preserve current value — handled by loop above)
+  // clearRequestedOperation() must return { requestedOperation: null } to trigger this.
   if (patch.requestedOperation === null) {
     merged.requestedOperation = undefined;
   }
@@ -376,7 +379,9 @@ export function advanceTutorPhase(
  * Called by execution-engine after executing a hard override.
  */
 export function clearRequestedOperation(): StatePatch {
-  return { requestedOperation: undefined };
+  // Returns null — the explicit clear sentinel.
+  // undefined would be a no-op; null triggers the clear branch in mergeStatePatch().
+  return { requestedOperation: null };
 }
 
 /**
