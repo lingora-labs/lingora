@@ -2,9 +2,25 @@
 // LINGORA 10.0 — COMMERCIAL ENGINE
 // Migrated from engine/commercial.js
 // Full logic preserved, ported to TypeScript.
+// SEEK 3.0: legacy state field names aligned with contracts.ts
+//   state.level         → state.confirmedLevel ?? state.userLevel
+//   state.interestCount → extended type (not in SessionState)
+//   state.samples       → extended type (not in SessionState)
+//   state.sessionId     → extended type (not in SessionState)
+//   state.commercialOffers → extended type (not in SessionState)
 // ================================================
 
 import type { CommercialOffer, CommercialTrigger, SessionState } from '@/lib/contracts'
+
+// Extended state type for fields the engine manages internally
+// that are not part of the core SessionState contract.
+type CommercialState = Partial<SessionState> & {
+  level?:            string
+  interestCount?:    number
+  samples?:          unknown[]
+  sessionId?:        string | null
+  commercialOffers?: CommercialOffer[]
+}
 
 const CONFIG = {
   bookingLink:         'https://lingora.com/immersion',
@@ -31,12 +47,17 @@ function levelAtLeast(current?: string | null, min?: string): boolean {
   return levelIndex(current) >= levelIndex(min)
 }
 
-function immersionScore(state: Partial<SessionState>): number {
+// Resolve level from SEEK 3.0 fields with fallback to legacy field
+function resolveLevel(state: CommercialState): string {
+  return state.confirmedLevel ?? state.userLevel ?? state.level ?? 'A0'
+}
+
+function immersionScore(state: CommercialState): number {
   let s = 0
   const levelPts: Record<string, number> = {
     A0: 0, A1: 10, A2: 20, B1: 40, B2: 60, C1: 80, C2: 100,
   }
-  s += levelPts[state.level || 'A0'] || 0
+  s += levelPts[resolveLevel(state)] || 0
   s += Math.min((state.tokens || 0) / 10, 30)
   s += Math.min((state.interestCount || 0) * 5, 20)
   return Math.min(s, 100)
@@ -44,22 +65,23 @@ function immersionScore(state: Partial<SessionState>): number {
 
 export interface CommercialResult {
   trigger: CommercialTrigger | null
-  state: Partial<SessionState>
+  state:   CommercialState
 }
 
 export function commercialEngine(
   message: string,
   state: Partial<SessionState> = {}
 ): CommercialResult {
-  const result: CommercialResult = { trigger: null, state: { ...state } }
+  const s = state as CommercialState
+  const result: CommercialResult = { trigger: null, state: { ...s } }
 
   if (!Array.isArray(result.state.commercialOffers)) {
     result.state.commercialOffers = []
   }
 
-  if (!levelAtLeast(state.level, CONFIG.minLevel)) return result
+  if (!levelAtLeast(resolveLevel(s), CONFIG.minLevel)) return result
 
-  const score = immersionScore(state)
+  const score = immersionScore(s)
 
   // Clean offers older than 1 week
   const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
@@ -72,7 +94,7 @@ export function commercialEngine(
   // Session limit
   const sessionCount = result.state.commercialOffers.filter(
     (o: CommercialOffer) =>
-      o.sessionId && state.sessionId && o.sessionId === state.sessionId
+      o.sessionId && s.sessionId && o.sessionId === s.sessionId
   ).length
   if (sessionCount >= CONFIG.maxOffersPerSession) return result
 
@@ -86,21 +108,21 @@ export function commercialEngine(
   const lower = String(message || '').toLowerCase()
   const hasInterest = TRIGGERS.some(t => lower.includes(t))
 
-  const samples = Array.isArray(state.samples) ? state.samples.length : 0
-  const interestCount = state.interestCount || 0
+  const samples       = Array.isArray(s.samples) ? s.samples.length : 0
+  const interestCount = s.interestCount || 0
   const hasStrongInterest =
     hasInterest && samples >= 3 && (interestCount >= 1 || score >= 35)
 
   if (!hasStrongInterest && score < CONFIG.scoreThreshold) return result
 
   result.state.commercialOffers.push({
-    timestamp:  Date.now(),
-    sessionId:  state.sessionId || null,
-    type:       'immersion',
+    timestamp: Date.now(),
+    sessionId: s.sessionId || null,
+    type:      'immersion',
     score,
-    interest:   hasInterest,
+    interest:  hasInterest,
   })
-  result.state.interestCount = (state.interestCount || 0) + (hasInterest ? 1 : 0)
+  result.state.interestCount = (s.interestCount || 0) + (hasInterest ? 1 : 0)
 
   let msg: string
   if (score >= 80) {
@@ -120,24 +142,27 @@ export function commercialEngine(
 }
 
 export function commercialDebug(state: Partial<SessionState> = {}) {
-  const score = immersionScore(state)
-  const samples = Array.isArray(state.samples) ? state.samples.length : 0
-  const interestCount = state.interestCount || 0
+  const s = state as CommercialState
+  const score = immersionScore(s)
+  const samples       = Array.isArray(s.samples) ? s.samples.length : 0
+  const interestCount = s.interestCount || 0
+  const level         = resolveLevel(s)
   return {
     score,
-    level:              state.level || 'A0',
-    levelQualifies:     levelAtLeast(state.level, CONFIG.minLevel),
+    level,
+    levelQualifies:     levelAtLeast(level, CONFIG.minLevel),
     samplesCollected:   samples,
     interestSignals:    interestCount,
     triggerReadiness: {
-      needsScore:           score >= CONFIG.scoreThreshold,
-      needsSamples:         samples >= 3,
+      needsScore:            score >= CONFIG.scoreThreshold,
+      needsSamples:          samples >= 3,
       needsRepeatedInterest: interestCount >= 1,
     },
-    offersThisWeek: (state.commercialOffers || []).filter(
+    offersThisWeek: (s.commercialOffers || []).filter(
       (o: CommercialOffer) =>
         o.timestamp > Date.now() - 7 * 24 * 60 * 60 * 1000
     ).length,
     config: CONFIG,
   }
 }
+
