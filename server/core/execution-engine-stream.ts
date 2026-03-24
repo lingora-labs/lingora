@@ -366,7 +366,7 @@ async function dispatchSync(
       }));
       const r = await processAttachment(
         filesToProcess,
-        state as Record<string, unknown>,
+        state as unknown as Record<string, unknown>,
       );
       const text = r?.extractedTexts?.[0] ?? undefined;
       return { text };
