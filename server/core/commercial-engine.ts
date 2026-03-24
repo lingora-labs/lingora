@@ -134,9 +134,11 @@ export function commercialEngine(
   }
 
   result.trigger = {
-    type:    'immersion',
-    level:   score >= 80 ? 'high' : 'medium',
-    message: msg,
+    type:             'immersion',
+    cooldownRespected: true,
+    sessionScore:      score,
+    level:             score >= 80 ? 'high' : 'medium',
+    message:           msg,
   }
   return result
 }
