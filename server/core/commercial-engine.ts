@@ -10,7 +10,7 @@
 //   state.commercialOffers → extended type (not in SessionState)
 // ================================================
 
-import type { CommercialOffer, CommercialTrigger, SessionState } from '@/lib/contracts'
+import type { CommercialOffer, CommercialEngineTrigger, SessionState } from '@/lib/contracts'
 
 // Extended state type for fields the engine manages internally
 // that are not part of the core SessionState contract.
@@ -64,7 +64,7 @@ function immersionScore(state: CommercialState): number {
 }
 
 export interface CommercialResult {
-  trigger: CommercialTrigger | null
+  trigger: CommercialEngineTrigger | null
   state:   CommercialState
 }
 
@@ -165,4 +165,3 @@ export function commercialDebug(state: Partial<SessionState> = {}) {
     config: CONFIG,
   }
 }
-
