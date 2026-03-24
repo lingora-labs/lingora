@@ -55,6 +55,15 @@ type MentorRuntimeParams = {
 
 type ProtocolTutorMode = Parameters<typeof getModeInstruction>[0]
 
+type NormalizedMentorCall = {
+  message: string
+  state: LegacyMentorState
+  systemDirective?: string
+  plan?: ExecutionPlan
+  action?: string
+  priorContext?: string
+}
+
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
 }
@@ -80,7 +89,7 @@ function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
 
 /**
  * Bridges contracts TutorMode to tutorProtocol accepted mode.
- * If tutorProtocol does not yet expose 'free', we safely map it to
+ * If tutorProtocol does not expose 'free', we map it safely to
  * conversational instructions while preserving SEEK 3.0 runtime semantics.
  */
 function resolveProtocolMode(mode: ContractsTutorMode): ProtocolTutorMode {
@@ -197,18 +206,18 @@ function normalizeLegacyCall(
   message: string,
   state: LegacyMentorState = {},
   systemDirective?: string,
-): { message: string; state: LegacyMentorState; systemDirective?: string } {
-  return { message, state, systemDirective }
+): NormalizedMentorCall {
+  return {
+    message,
+    state,
+    systemDirective,
+    plan: undefined,
+    action: undefined,
+    priorContext: undefined,
+  }
 }
 
-function normalizeRuntimeCall(params: MentorRuntimeParams): {
-  message: string
-  state: LegacyMentorState
-  systemDirective?: string
-  plan?: ExecutionPlan
-  action?: string
-  priorContext?: string
-} {
+function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   return {
     message: params.request?.message ?? '',
     state: params.state ?? {},
@@ -232,7 +241,7 @@ export async function getMentorResponse(
   arg2?: LegacyMentorState,
   arg3?: string,
 ): Promise<string> {
-  const normalized =
+  const normalized: NormalizedMentorCall =
     typeof arg1 === 'string'
       ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3)
       : normalizeRuntimeCall(arg1)
