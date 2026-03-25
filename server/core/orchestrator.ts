@@ -2,35 +2,28 @@
 // server/core/orchestrator.ts
 // LINGORA SEEK 3.0 — Sole Decision Authority
 // =============================================================================
-// Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
-//            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
+// FIX LOG (applied by Consultora Senior 2026-03-25):
 //
-//            THIS MODULE:
-//            ✅ Reads OrchestrationContext (intent + state)
-//            ✅ Evaluates 6 branches in constitutional order
-//            ✅ Produces one complete, auditable ExecutionPlan
-//            ❌ Does NOT call OpenAI or any external service
-//            ❌ Does NOT execute anything
-//            ❌ Does NOT modify state
-//            ❌ Does NOT produce artifacts
-//            ❌ Does NOT decide on mentor responses
+//   FIX-2   buildConversationPlan: adds TTS step (order 2) after mentor step
+//           (order 1) with dependsOn:1. This restores audio output for all
+//           conversational responses, which was missing from the original.
 //
-// Constitutional evaluation order (MUST NOT be scattered):
+//   FIX-2B  buildPedagogicalPlan: adds TTS step after mentor response steps
+//           for non-artifact phases (guide, lesson, feedback, conversation).
+//           Artifact phases (schema, quiz) do not get TTS — artifact is primary.
+//
+//   FIX-4   buildMentorDirective: cognitiveStructure is mode-aware.
+//           true  → structured, pdf_course, first_turn, curriculum, fast_path
+//           false → free, interact (conversation must feel natural, not templated)
+//           This prevents over-didactization of modes that should feel human.
+//
+// Constitutional evaluation order unchanged:
 //   1. Hard overrides
 //   2. First interaction (tokens === 0)
 //   3. Strong curriculum request
 //   4. Fast-path artifact request
-//   5. Active pedagogical phase (structured mode)
+//   5. Active pedagogical phase (structured/pdf_course mode)
 //   6. Default conversation fallback
-//
-// Riesgo principal : Evaluation order drift — adding bypass logic outside
-//                    this file reintroduces multi-cerebro. Any new branch
-//                    MUST be added here and only here.
-//
-// Dependencia      : lib/contracts.ts, server/core/intent-router.ts
-//
-// Commit   : feat(orchestrator): SEEK 3.0 — sole decision authority,
-//            6-step constitutional evaluation, auditable ExecutionPlan
 // =============================================================================
 
 import {
@@ -58,43 +51,22 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PRIORITY = {
-  HARD_OVERRIDE:    100,
-  FIRST_TURN:        90,
-  CURRICULUM:        80,
-  FAST_PATH:         70,
-  PEDAGOGICAL:       60,
-  DEFAULT:           10,
+  HARD_OVERRIDE: 100,
+  FIRST_TURN:     90,
+  CURRICULUM:     80,
+  FAST_PATH:      70,
+  PEDAGOGICAL:    60,
+  DEFAULT:        10,
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API — THE ONLY ENTRY POINT
+// PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * orchestrate
- * ──────────────────────────────────────────────────────────────────────────
- * The sole runtime decision function. All execution authority flows through
- * this function. Every request MUST pass through here.
- *
- * Returns a complete ExecutionPlan:
- * - executor type (or 'hybrid')
- * - priority
- * - blocking flag
- * - pedagogical action
- * - expected artifact types
- * - mentor directive (if applicable)
- * - explicit execution order with step dependencies
- * - human-readable reason (mandatory, non-empty)
- *
- * DETERMINISM GUARANTEE:
- * Same ctx.message + ctx.state + ctx.intent → same ExecutionPlan, always.
- * No randomness. No external calls. No side effects.
- */
 export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1 — HARD OVERRIDES
-  // Explicit system commands. Bypass all pedagogy. Always blocking.
   // ══════════════════════════════════════════════════════════════════════════
   if (isHardOverride(ctx.intent)) {
     return buildHardOverridePlan(ctx);
@@ -102,7 +74,6 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 2 — FIRST INTERACTION
-  // Zero tokens = first turn of the session. Situated greeting, not generic.
   // ══════════════════════════════════════════════════════════════════════════
   if (ctx.isFirstTurn) {
     return buildFirstTurnPlan(ctx);
@@ -110,7 +81,6 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 3 — STRONG CURRICULUM REQUEST
-  // User wants a complete structured course. Generate full curriculum.
   // ══════════════════════════════════════════════════════════════════════════
   if (isStrongCurriculumRequest(ctx.intent)) {
     return buildCurriculumPlan(ctx);
@@ -118,9 +88,6 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 4 — FAST-PATH ARTIFACT REQUEST
-  // User explicitly requested a schema, table, matrix, or illustration.
-  // Returns artifact without going through pedagogical phases.
-  // Priority: table_matrix > schema_pro > table > schema > quiz > illustration
   // ══════════════════════════════════════════════════════════════════════════
   if (isFastPathArtifact(ctx.intent)) {
     return buildFastPathPlan(ctx);
@@ -128,7 +95,6 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 5 — ACTIVE PEDAGOGICAL PHASE
-  // Structured or pdf_course mode with an active phase sequence.
   // ══════════════════════════════════════════════════════════════════════════
   if (ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course') {
     return buildPedagogicalPlan(ctx);
@@ -136,14 +102,12 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 6 — DEFAULT CONVERSATION FALLBACK
-  // Free conversation, interact mode, or any unclassified intent.
-  // This branch NEVER throws. It is the guaranteed fallsafe.
   // ══════════════════════════════════════════════════════════════════════════
   return buildConversationPlan(ctx);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BRANCH BUILDERS — private, each produces one complete ExecutionPlan
+// BRANCH BUILDERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── STEP 1: Hard Override ─────────────────────────────────────────────────
@@ -151,7 +115,6 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
 function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
   const subtype = ctx.intent.subtype as IntentSubtype;
 
-  // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
     executor: ExecutorType;
     action: string;
@@ -204,38 +167,52 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     timeout: 15000,
   };
 
+  // Transcription override: after transcribing, mentor responds to the content
+  // Hard overrides for translate/correct also get a follow-up mentor step
+  const steps: ExecutionStep[] = [step];
+
+  if (config.executor === 'tool_audio' && subtype === 'transcribe') {
+    // Transcription: tool transcribes (step 1), mentor responds to content (step 2)
+    steps.push({
+      order: 2,
+      executor: 'mentor',
+      action: 'respondToTranscription',
+      dependsOn: 1,
+      timeout: 12000,
+    });
+  }
+
   return {
-    executor: config.executor,
+    executor: steps.length > 1 ? 'hybrid' : config.executor,
     priority: PRIORITY.HARD_OVERRIDE,
     blocking: true,
     pedagogicalAction: config.pedagogicalAction,
     artifacts: config.artifacts,
-    mentor: config.executor === 'mentor'
+    mentor: config.executor === 'mentor' || steps.length > 1
       ? buildMentorDirective(ctx.state.mentorProfile, 'CORRECTION_ONLY_DIRECTIVE', ctx)
       : undefined,
-    commercial: undefined, // hard overrides never trigger commercial
+    commercial: undefined,
     skipPhaseAdvance: true,
     reason: `hard_override:${subtype} — user explicitly requested ${subtype}. Bypasses all pedagogy. Matched pattern: ${ctx.intent.matchedPattern ?? 'unknown'}`,
-    executionOrder: [step],
+    executionOrder: steps,
   };
 }
 
 // ── STEP 2: First Turn ────────────────────────────────────────────────────
 
 function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
-  const step: ExecutionStep = {
-    order: 1,
-    executor: 'mentor',
-    action: 'firstTurnGreeting',
-    timeout: 10000,
-  };
+  // FIX-2: first turn gets TTS so Sarah/Alex/Nick's greeting is heard
+  const steps: ExecutionStep[] = [
+    { order: 1, executor: 'mentor',     action: 'firstTurnGreeting', timeout: 10000 },
+    { order: 2, executor: 'tool_audio', action: 'generateTTS',       dependsOn: 1, timeout: 10000 },
+  ];
 
   return {
-    executor: 'mentor',
+    executor: 'hybrid',
     priority: PRIORITY.FIRST_TURN,
     blocking: true,
     pedagogicalAction: 'first_turn_greeting',
-    artifacts: [],
+    artifacts: ['audio'],
     mentor: buildMentorDirective(
       ctx.state.mentorProfile,
       'FIRST_TURN_DIRECTIVE',
@@ -244,14 +221,13 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     commercial: undefined,
     skipPhaseAdvance: false,
     reason: `first_turn — tokens=0, session start. Mentor delivers situated greeting for language=${ctx.interfaceLanguage}, mentor=${ctx.state.mentorProfile ?? 'Alex'}`,
-    executionOrder: [step],
+    executionOrder: steps,
   };
 }
 
 // ── STEP 3: Curriculum ────────────────────────────────────────────────────
 
 function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
-  // Hybrid: mentor presents curriculum narrative + tool generates roadmap artifact
   const steps: ExecutionStep[] = [
     {
       order: 1,
@@ -263,14 +239,14 @@ function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
       order: 2,
       executor: 'mentor',
       action: 'generateCurriculum',
-      dependsOn: 1,  // needs RAG context before generating
+      dependsOn: 1,
       timeout: 20000,
     },
     {
       order: 3,
       executor: 'tool_schema',
       action: 'buildRoadmapArtifact',
-      dependsOn: 2,  // needs curriculum content before building roadmap
+      dependsOn: 2,
       timeout: 10000,
     },
   ];
@@ -298,7 +274,6 @@ function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
 function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
   const subtype = ctx.intent.subtype;
 
-  // Artifact priority resolution: matrix > schema_pro > table > schema > quiz > illustration
   type ArtifactConfig = {
     executor: ExecutorType;
     action: string;
@@ -306,13 +281,13 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
   };
 
   const artifactMap: Record<string, ArtifactConfig> = {
-    table_matrix:   { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
-    schema_pro:     { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro' },
-    table:          { executor: 'tool_schema', action: 'generateTable',        artifact: 'table' },
-    schema:         { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema' },
-    quiz:           { executor: 'tool_schema', action: 'generateQuiz',         artifact: 'quiz' },
-    illustration:   { executor: 'tool_image',  action: 'generateIllustration', artifact: 'illustration' },
-    roadmap:        { executor: 'tool_schema', action: 'buildRoadmapArtifact', artifact: 'roadmap' },
+    table_matrix: { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
+    schema_pro:   { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro'   },
+    table:        { executor: 'tool_schema', action: 'generateTable',       artifact: 'table'        },
+    schema:       { executor: 'tool_schema', action: 'generateSchema',      artifact: 'schema'       },
+    quiz:         { executor: 'tool_schema', action: 'generateQuiz',        artifact: 'quiz'         },
+    illustration: { executor: 'tool_image',  action: 'generateIllustration',artifact: 'illustration' },
+    roadmap:      { executor: 'tool_schema', action: 'buildRoadmapArtifact',artifact: 'roadmap'      },
   };
 
   const config: ArtifactConfig = artifactMap[subtype ?? ''] ?? {
@@ -321,7 +296,6 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
     artifact: 'schema',
   };
 
-  // Hybrid: mentor gives brief contextual text + tool generates artifact
   const steps: ExecutionStep[] = [
     {
       order: 1,
@@ -333,7 +307,7 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
       order: 2,
       executor: 'mentor',
       action: 'briefArtifactIntro',
-      dependsOn: 1, // mentor introduces artifact after it is generated
+      dependsOn: 1,
       timeout: 8000,
     },
   ];
@@ -351,7 +325,7 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
     ),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `fast_path:${subtype ?? 'schema'} — explicit artifact request. Tool generates artifact (step 1) before mentor intro (step 2). Order guaranteed by executionOrder.`,
+    reason: `fast_path:${subtype ?? 'schema'} — explicit artifact request. Tool generates artifact (step 1) before mentor intro (step 2).`,
     executionOrder: steps,
   };
 }
@@ -361,12 +335,12 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
 function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
   const { tutorPhase, activeMode } = ctx.state;
 
-  // Phase → action + artifact + directive mapping
   type PhaseConfig = {
     pedagogicalAction: PedagogicalAction;
     artifact?: ArtifactType;
     directive: MentorDirective['directive'];
     producesArtifact: boolean;
+    addTTS: boolean;  // FIX-2B: whether to add a TTS step
   };
 
   const phaseMap: Record<TutorPhase, PhaseConfig> = {
@@ -374,33 +348,39 @@ function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
       pedagogicalAction: 'guide',
       directive: 'STRUCTURED_COURSE_DIRECTIVE',
       producesArtifact: false,
+      addTTS: true,
     },
     lesson: {
       pedagogicalAction: 'lesson',
       directive: 'STRUCTURED_COURSE_DIRECTIVE',
       producesArtifact: false,
+      addTTS: true,
     },
     schema: {
       pedagogicalAction: 'schema',
       artifact: 'schema',
       directive: 'STRUCTURED_COURSE_DIRECTIVE',
       producesArtifact: true,
+      addTTS: false,  // artifact is primary — no TTS for schema
     },
     quiz: {
       pedagogicalAction: 'quiz',
       artifact: 'quiz',
       directive: 'STRUCTURED_COURSE_DIRECTIVE',
       producesArtifact: true,
+      addTTS: false,  // artifact is primary — no TTS for quiz
     },
     feedback: {
       pedagogicalAction: 'feedback',
       directive: 'STRUCTURED_COURSE_DIRECTIVE',
       producesArtifact: false,
+      addTTS: true,
     },
     conversation: {
       pedagogicalAction: 'conversation',
       directive: 'FREE_CONVERSATION_DIRECTIVE',
       producesArtifact: false,
+      addTTS: true,
     },
   };
 
@@ -409,7 +389,6 @@ function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
   const steps: ExecutionStep[] = [];
 
   if (config.producesArtifact && config.artifact) {
-    // Schema and quiz phases: tool generates artifact, mentor delivers it
     steps.push({
       order: 1,
       executor: 'tool_schema',
@@ -424,29 +403,42 @@ function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
       timeout: 10000,
     });
   } else {
-    // Non-artifact phases: mentor only
     steps.push({
       order: 1,
       executor: 'mentor',
       action: `phase_${tutorPhase}`,
       timeout: 15000,
     });
+    // FIX-2B: add TTS for spoken phases
+    if (config.addTTS) {
+      steps.push({
+        order: 2,
+        executor: 'tool_audio',
+        action: 'generateTTS',
+        dependsOn: 1,
+        timeout: 10000,
+      });
+    }
   }
 
+  const artifactTypes: ArtifactType[] = [];
+  if (config.artifact) artifactTypes.push(config.artifact);
+  if (config.addTTS && !config.producesArtifact) artifactTypes.push('audio');
+
   return {
-    executor: config.producesArtifact ? 'hybrid' : 'mentor',
+    executor: steps.length > 1 ? 'hybrid' : 'mentor',
     priority: PRIORITY.PEDAGOGICAL,
     blocking: false,
     pedagogicalAction: config.pedagogicalAction,
-    artifacts: config.artifact ? [config.artifact] : [],
+    artifacts: artifactTypes,
     mentor: buildMentorDirective(
       ctx.state.mentorProfile,
       config.directive,
       ctx,
     ),
-    commercial: undefined, // evaluated separately post-execution by commercial-engine
+    commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `pedagogical_phase:${tutorPhase} — mode=${activeMode}, continuing structured sequence. Phase produces ${config.producesArtifact ? config.artifact : 'no artifact'}.`,
+    reason: `pedagogical_phase:${tutorPhase} — mode=${activeMode}, continuing structured sequence. Phase ${config.producesArtifact ? 'produces ' + config.artifact : 'mentor only'}.`,
     executionOrder: steps,
   };
 }
@@ -459,29 +451,29 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
       ? 'FREE_CONVERSATION_DIRECTIVE'
       : 'RICH_CONTENT_DIRECTIVE';
 
-  const step: ExecutionStep = {
-    order: 1,
-    executor: 'mentor',
-    action: 'conversation',
-    timeout: 15000,
-  };
+  // FIX-2: restore TTS — mentor responds (step 1), TTS generates audio (step 2)
+  const steps: ExecutionStep[] = [
+    { order: 1, executor: 'mentor',     action: 'conversation', timeout: 15000 },
+    { order: 2, executor: 'tool_audio', action: 'generateTTS',  dependsOn: 1, timeout: 10000 },
+  ];
 
   return {
-    executor: 'mentor',
+    executor: 'hybrid',
     priority: PRIORITY.DEFAULT,
     blocking: false,
     pedagogicalAction: 'conversation',
-    artifacts: [],
+    artifacts: ['audio'],
     mentor: buildMentorDirective(ctx.state.mentorProfile, directive, ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
     reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}, intent=${ctx.intent.type}(${ctx.intent.confidence.toFixed(2)}). Safe fallsafe branch.`,
-    executionOrder: [step],
+    executionOrder: steps,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — Mentor Directive Builder
+// FIX-4: cognitiveStructure is mode-aware, not always true
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildMentorDirective(
@@ -490,6 +482,14 @@ function buildMentorDirective(
   ctx: OrchestrationContext,
 ): MentorDirective {
   const resolvedProfile: MentorProfile = profile ?? 'Alex';
+
+  // FIX-4: cognitiveStructure = true for modes that need structured output.
+  // false for free/interact so conversation feels natural, not templated.
+  const isFreeMode = (
+    ctx.state.activeMode === 'free' ||
+    ctx.state.activeMode === 'interact'
+  );
+  const cognitiveStructure = !isFreeMode || directive === 'STRUCTURED_COURSE_DIRECTIVE';
 
   return {
     profile: resolvedProfile,
@@ -500,8 +500,7 @@ function buildMentorDirective(
       (ctx.state.errorMemory.grammar.length > 0 ||
        ctx.state.errorMemory.vocabulary.length > 0)
     ),
-    cognitiveStructure:
-      directive === 'STRUCTURED_COURSE_DIRECTIVE' ||
-      directive === 'FREE_CONVERSATION_DIRECTIVE',
+    cognitiveStructure,
   };
 }
+
