@@ -1,21 +1,18 @@
-// =============================================================================
+// ============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.0 — Execution Engine
-// =============================================================================
-// FIX LOG (applied by Consultora Senior 2026-03-25):
-//
-//   FIX-3A  case 'tool_audio': differentiates step.action 'generateTTS' from
-//           'transcribeAudio'. Both now work. Audio from files[] is also
-//           supported (gallery audio path).
-//
-//   FIX-5   case 'tool_schema': topic resolution now uses real content:
-//           request.message (if meaningful) → state.lastConcept →
-//           state.lastUserGoal → priorText → 'Spanish grammar' (safe fallback).
-//           Filters out navigational noise ("continúa", "ok", "next", etc.)
-//           to prevent schema generation on empty or meaningless topics.
-//
-// Everything else is unchanged from the original SEEK 3.0 implementation.
-// =============================================================================
+// LINGORA SEEK 3.1 — Execution Engine
+// FASE 0-A — Estado, Precedencia e Identidad Base
+// BLOQUE 0-A.2 — Alineación de StatePatch con SessionState
+// ============================================================================
+// OBJETIVO: corregir incompatibilidad de tipos entre StatePatch y SessionState,
+//           reemplazando `requestedOperation = null` por `undefined`.
+// ALCANCE: modifica la asignación de requestedOperation en compileResult().
+// EXCLUSIONES: no modifica lógica de evaluación de ejercicio; no implementa
+//              evaluateExercise; no altera flujo pedagógico.
+// COMPATIBILIDAD: sync path; mantiene comportamiento funcional idéntico.
+// DOCTRINA: el estado debe ser consistente entre contratos y ejecución.
+// RIESGO COMPILACIÓN: BAJO — solo cambia null por undefined (mismo efecto).
+// ============================================================================
 
 import {
   ExecutionPlan,
@@ -66,7 +63,7 @@ interface StepOutput {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NAVIGATIONAL NOISE FILTER — FIX-5
+// NAVIGATIONAL NOISE FILTER
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NOISE_PATTERNS = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|go|start|más|mas|seguir|continue|adelante|siguiente módulo|next module|proceed)$/i;
@@ -76,26 +73,21 @@ function resolveSchemaTopicFromState(
   state: SessionState,
   priorText: string,
 ): string {
-  // If message is meaningful and not navigational noise, use it
   const cleanMessage = message?.trim();
   if (cleanMessage && cleanMessage.length > 4 && !NOISE_PATTERNS.test(cleanMessage)) {
     return cleanMessage;
   }
 
-  // Try state fields in order of specificity
   if (state.lastConcept?.trim())   return state.lastConcept;
   if (state.lastUserGoal?.trim())  return state.lastUserGoal;
 
-  // Try curriculum plan topic
   if (state.curriculumPlan?.topic) return state.curriculumPlan.topic;
 
-  // Try prior text from a knowledge step
   const cleanPrior = priorText?.trim();
   if (cleanPrior && cleanPrior.length > 4 && !NOISE_PATTERNS.test(cleanPrior)) {
     return cleanPrior;
   }
 
-  // Safe fallback — always produces a valid schema
   return 'Spanish grammar';
 }
 
@@ -210,7 +202,7 @@ async function dispatchToExecutor(
       return { text };
     }
 
-    // ── Schema generator — FIX-5 ────────────────────────────────────────────
+    // ── Schema generator ────────────────────────────────────────────────────
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
@@ -260,15 +252,11 @@ async function dispatchToExecutor(
       return {};
     }
 
-    // ── Audio toolkit — FIX-3A ───────────────────────────────────────────────
-    // Differentiates TTS generation from audio transcription.
-    // Also supports audio from files[] (gallery audio).
+    // ── Audio toolkit ────────────────────────────────────────────────────────
     case 'tool_audio': {
 
-      // ── TTS path ──────────────────────────────────────────────────────────
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
-        // Text to speak: prior mentor text takes priority over request message
         const textToSpeak = priorText?.trim() || ctx.request.message?.trim();
         if (!textToSpeak) {
           console.warn('[execution-engine] generateTTS: no text to speak — skipping');
@@ -281,26 +269,20 @@ async function dispatchToExecutor(
             dataUrl: result.url,
           }};
         }
-        // TTS failed gracefully — not a fatal error
         console.warn('[execution-engine] generateTTS: speech generation failed:', result);
         return {};
       }
 
-      // ── Transcription path ────────────────────────────────────────────────
       const { transcribeAudio } = await import('../tools/audio-toolkit');
 
-      // FIX-3A: resolve audio data from audioDataUrl (SEEK 3.0 format)
-      // OR from files[] (gallery audio uploaded as attachment)
       let audioData: { data: string; format: string } | null = null;
 
       if (ctx.request.audioDataUrl) {
-        // Primary: audioDataUrl field (sent by sendComposer after FIX-1)
         audioData = {
           data:   ctx.request.audioDataUrl.split(',')[1] || ctx.request.audioDataUrl,
           format: ctx.request.audioMimeType?.split('/')[1] || 'webm',
         };
       } else if (ctx.request.files?.length) {
-        // Fallback: audio file in files[] (gallery audio)
         const audioFile = ctx.request.files.find(
           f => f.type?.startsWith('audio/') || f.type === 'video/webm',
         );
@@ -416,7 +398,6 @@ function compileResult(
   const message = textParts.join('\n\n') ||
     buildFallbackMessage(plan, ctx.state.interfaceLanguage);
 
-  // Tool artifacts take precedence over mentor artifacts
   const toolArtifact = outputs.find(
     o => o.artifact && o.executor !== 'mentor'
   )?.artifact;
@@ -424,11 +405,8 @@ function compileResult(
     o => o.artifact && o.executor === 'mentor'
   )?.artifact;
 
-  // For hybrid plans with both audio and pedagogical artifacts,
-  // prefer the pedagogical artifact (schema/quiz/roadmap) as primary
   let artifact = toolArtifact ?? mentorArtifact;
   if (toolArtifact && mentorArtifact) {
-    // If there's a schema/quiz/roadmap AND audio, schema wins as primary artifact
     const pedagogical = [toolArtifact, mentorArtifact].find(
       a => a && a.type !== 'audio'
     );
@@ -442,8 +420,9 @@ function compileResult(
 
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
+  // FIX 0-A.2: replace null with undefined for type alignment
   if (plan.priority >= 100) {
-    (statePatch as StatePatch).requestedOperation = null;
+    (statePatch as StatePatch).requestedOperation = undefined;
   }
 
   if (!plan.skipPhaseAdvance && ctx.state.activeMode === 'structured') {
@@ -573,3 +552,7 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   return fallbacks[lang] ?? fallbacks['en'];
 }
 
+// ============================================================================
+// COMMIT:
+// fix(execution-engine): replace requestedOperation null reset with undefined
+// ============================================================================
