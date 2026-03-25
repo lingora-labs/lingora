@@ -1,11 +1,27 @@
-// ================================================
-// LINGORA SEEK 3.0 — MENTOR ENGINE
-// Compatible with legacy v10.2 signature + SEEK 3.0 execution engines
-// Adds:
-// - buildMentorPrompt()
-// - getMentorResponse() with dual signature support
-// - getMentorResponseStream()
-// ================================================
+// =============================================================================
+// server/mentors/mentor-engine.ts
+// LINGORA SEEK 3.0 — Mentor Engine
+// =============================================================================
+// FIX LOG (applied by Consultora Senior 2026-03-25):
+//
+//   FIX-6A  buildContext: uses SEEK 3.0 state field names
+//           (interfaceLanguage, mentorProfile, confirmedLevel, currentModuleIndex,
+//            curriculumPlan.topic) with legacy fallbacks — never returns empty context.
+//
+//   FIX-6B  normalizeRuntimeCall: when request.message is empty but priorContext
+//           exists (audio transcription case), falls back to priorContext so the
+//           model never receives user: "" and produces "no message included".
+//
+//   FIX-6C  buildMentorPrompt: injects "Current topic" explicitly so the mentor
+//           always knows what it is responding about.
+//
+//   FIX-6D  buildExecutionDirective: includes the full mentor directive name
+//           AND the action in a way the model understands as a concrete instruction,
+//           not just metadata.
+//
+// Dual signature preserved for backward compatibility with any callers still
+// using the legacy (message, state, systemDirective) form.
+// =============================================================================
 
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
@@ -32,7 +48,12 @@ const FALLBACKS: Record<string, string> = {
   zh: '无法处理您的消息。请重试。',
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY STATE TYPE — supports both SEEK 2.6 and SEEK 3.0 field names
+// ─────────────────────────────────────────────────────────────────────────────
+
 type LegacyMentorState = Partial<SessionState> & {
+  // SEEK 2.6 legacy fields (kept for backward compat)
   mentor?: 'Alex' | 'Sarah' | 'Nick'
   tutorMode?: ContractsTutorMode
   level?: string
@@ -64,6 +85,10 @@ type NormalizedMentorCall = {
   priorContext?: string
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIELD RESOLVERS — SEEK 3.0 fields with SEEK 2.6 fallbacks
+// ─────────────────────────────────────────────────────────────────────────────
+
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
 }
@@ -74,7 +99,6 @@ function resolveMentorName(state: LegacyMentorState): 'Alex' | 'Sarah' | 'Nick' 
 
 function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
   if (state.tutorMode) return state.tutorMode
-
   switch (state.activeMode) {
     case 'structured':
     case 'pdf_course':
@@ -87,22 +111,17 @@ function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
   }
 }
 
-/**
- * Bridges contracts TutorMode to tutorProtocol accepted mode.
- * If tutorProtocol does not expose 'free', we map it safely to
- * conversational instructions while preserving SEEK 3.0 runtime semantics.
- */
 function resolveProtocolMode(mode: ContractsTutorMode): ProtocolTutorMode {
-  if (mode === 'free') {
-    return 'conversational' as ProtocolTutorMode
-  }
+  if (mode === 'free') return 'conversational' as ProtocolTutorMode
   return mode as ProtocolTutorMode
 }
 
+// FIX-6C: resolve topic from all available state fields, SEEK 3.0 + legacy
 function resolveTopic(state: LegacyMentorState): string | null {
   if (state.curriculumPlan?.topic) return state.curriculumPlan.topic
-  if (state.lastConcept) return state.lastConcept
-  if (state.topic) return state.topic
+  if (state.lastConcept)           return state.lastConcept
+  if (state.lastUserGoal)          return state.lastUserGoal
+  if (state.topic)                 return state.topic
   return null
 }
 
@@ -110,33 +129,79 @@ function resolveLevel(state: LegacyMentorState): string | undefined {
   return state.confirmedLevel ?? state.userLevel ?? state.level
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTEXT BUILDER — FIX-6A: uses SEEK 3.0 field names with legacy fallbacks
+// ─────────────────────────────────────────────────────────────────────────────
+
 function buildContext(state: LegacyMentorState): string {
   const parts: string[] = []
 
-  const level = resolveLevel(state)
-  const topic = resolveTopic(state)
-  const lang = resolveInterfaceLanguage(state)
+  const level  = resolveLevel(state)
+  const topic  = resolveTopic(state)
+  const lang   = resolveInterfaceLanguage(state)
 
-  if (level && level !== 'A0') parts.push(`Level: ${level}`)
-  if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
-  if (topic) parts.push(`Topic: ${topic}`)
-  if (lang) parts.push(`Student language: ${lang}`)
-  if (state.lastAction) parts.push(`Last action: ${state.lastAction}`)
+  if (level && level !== 'A0')     parts.push(`Level: ${level}`)
+  if ((state.tokens ?? 0) > 0)    parts.push(`Exchanges: ${state.tokens}`)
+  // FIX-6C: "Current topic" is clearer for the model than "Topic"
+  if (topic)                       parts.push(`Current topic: ${topic}`)
+  if (lang)                        parts.push(`Student interface language: ${lang}`)
 
+  // SEEK 2.6 legacy fields
+  if (state.lastAction)            parts.push(`Last action: ${state.lastAction}`)
+
+  // SEEK 3.0 module index (with 2.6 fallback)
   const lessonIndex = state.currentModuleIndex ?? state.lessonIndex
-  if (lessonIndex && lessonIndex > 0) {
-    parts.push(`Lesson index: ${lessonIndex}`)
-  }
+  if (lessonIndex && lessonIndex > 0) parts.push(`Module index: ${lessonIndex}`)
 
-  if (state.tutorPhase) parts.push(`Current phase: ${state.tutorPhase}`)
-  if (state.courseActive !== undefined) parts.push(`Course active: ${state.courseActive}`)
-  if (state.awaitingQuizAnswer) parts.push(`Awaiting quiz answer: true`)
-  if ((state.samples ?? []).length > 0) parts.push(`Student samples collected: ${state.samples!.length}`)
+  // Phase tracking
+  if (state.tutorPhase)            parts.push(`Current phase: ${state.tutorPhase}`)
+
+  // Course state — derive from curriculumPlan presence (SEEK 3.0) or legacy flag
+  const courseActive = state.curriculumPlan != null || state.courseActive
+  if (courseActive !== undefined)  parts.push(`Course active: ${courseActive}`)
+
+  // Legacy quiz state
+  if (state.awaitingQuizAnswer)    parts.push(`Awaiting quiz answer: true`)
+  if ((state.samples ?? []).length > 0) parts.push(`Student samples collected: ${(state.samples ?? []).length}`)
   if ((state.diagnosticSamples ?? 0) > 0) parts.push(`Diagnostic samples: ${state.diagnosticSamples}`)
+
+  // Error memory summary — helps mentor personalize corrections
+  if (state.errorMemory) {
+    const errs = [
+      ...(state.errorMemory.grammar      ?? []),
+      ...(state.errorMemory.vocabulary   ?? []),
+      ...(state.errorMemory.pronunciation ?? []),
+    ]
+    if (errs.length > 0) parts.push(`Recurring errors: ${errs.slice(0, 3).join(', ')}`)
+  }
 
   return parts.length > 0
     ? '\n\n[Session state: ' + parts.join(' · ') + ']'
     : ''
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXECUTION DIRECTIVE BUILDER — FIX-6D: turns metadata into concrete instruction
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Maps execution directive names to concrete behavioral instructions for the model
+const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
+  RICH_CONTENT_DIRECTIVE:
+    'Respond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. One focused action per response.',
+  STRUCTURED_COURSE_DIRECTIVE:
+    'You are in structured course mode. Follow the pedagogical sequence: guide → lesson → schema → quiz → feedback. Do not skip steps. Do not blend phases. Deliver exactly one phase action per response.',
+  FREE_CONVERSATION_DIRECTIVE:
+    'You are in free conversation mode. Respond naturally. Correct errors inline and briefly — one correction per response maximum. If the student gives a very short or vague message, introduce one concrete topic or micro-action appropriate to their level. Never leave the student without direction.',
+  PDF_COURSE_DIRECTIVE:
+    'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained. Include theory, examples, and exercises.',
+  CORRECTION_ONLY_DIRECTIVE:
+    'The student asked for a correction. Correct exactly what they wrote. List each error with explanation. Do not teach a full lesson. Do not add content beyond the correction.',
+  TRANSLATION_ONLY_DIRECTIVE:
+    'The student asked for a translation. Provide ONLY the translation. No explanation. No pedagogy. No extra content.',
+  FIRST_TURN_DIRECTIVE:
+    'This is the first message of the session. Greet the student warmly and specifically — you already know their topic and language. Ask one concrete opening question to understand their starting point. Do not give a lesson yet.',
+  CURRICULUM_PRESENTER_DIRECTIVE:
+    'Present a full, structured curriculum for the requested topic. Include module titles, learning objectives, and progression logic. Be concrete and specific to the domain. Produce the same quality a domain expert would — not a generic outline.',
 }
 
 function buildExecutionDirective(params: {
@@ -147,46 +212,59 @@ function buildExecutionDirective(params: {
 }): string {
   const parts: string[] = []
 
+  // Legacy system directive (2.6 callers)
   if (params.systemDirective) {
     parts.push(params.systemDirective)
   }
 
+  // FIX-6D: translate directive name into a concrete behavioral instruction
   if (params.plan?.mentor?.directive) {
-    parts.push(`Mentor execution directive: ${params.plan.mentor.directive}`)
+    const instruction = DIRECTIVE_INSTRUCTIONS[params.plan.mentor.directive]
+    if (instruction) {
+      parts.push(`\nINSTRUCTION FOR THIS RESPONSE:\n${instruction}`)
+    } else {
+      parts.push(`Mentor directive: ${params.plan.mentor.directive}`)
+    }
   }
 
-  if (params.action) {
+  // Action context
+  if (params.action && params.action !== 'conversation') {
     parts.push(`Current execution action: ${params.action}`)
   }
 
-  if (params.priorContext && params.priorContext.trim()) {
-    parts.push(`Prior execution context:\n${params.priorContext}`)
+  // Prior context from tool steps (e.g. transcribed audio, RAG result)
+  if (params.priorContext?.trim()) {
+    parts.push(`Prior context for this response:\n${params.priorContext}`)
   }
 
   return parts.length > 0 ? `\n\n${parts.join('\n\n')}` : ''
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPT BUILDER
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function buildMentorPrompt(params: {
-  message: string
-  state?: LegacyMentorState
+  message:         string
+  state?:          LegacyMentorState
   systemDirective?: string
-  priorContext?: string
-  action?: string
-  plan?: ExecutionPlan
+  priorContext?:   string
+  action?:         string
+  plan?:           ExecutionPlan
 }): { system: string; user: string } {
-  const state = params.state ?? {}
-  const mentorName = resolveMentorName(state)
-  const profile = getMentorProfile(mentorName)
-  const mode = resolveTutorMode(state)
+  const state       = params.state ?? {}
+  const mentorName  = resolveMentorName(state)
+  const profile     = getMentorProfile(mentorName)
+  const mode        = resolveTutorMode(state)
   const protocolMode = resolveProtocolMode(mode)
-  const topic = resolveTopic(state)
-  const context = buildContext(state)
-  const modeInstructions = getModeInstruction(protocolMode, topic)
-  const executionDirective = buildExecutionDirective({
+  const topic       = resolveTopic(state)
+  const context     = buildContext(state)
+  const modeInstructions    = getModeInstruction(protocolMode, topic)
+  const executionDirective  = buildExecutionDirective({
     systemDirective: params.systemDirective,
-    plan: params.plan,
-    action: params.action,
-    priorContext: params.priorContext,
+    plan:            params.plan,
+    action:          params.action,
+    priorContext:    params.priorContext,
   })
 
   const system = [
@@ -202,6 +280,10 @@ export function buildMentorPrompt(params: {
   return { system, user }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NORMALIZERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 function normalizeLegacyCall(
   message: string,
   state: LegacyMentorState = {},
@@ -211,22 +293,37 @@ function normalizeLegacyCall(
     message,
     state,
     systemDirective,
-    plan: undefined,
-    action: undefined,
+    plan:         undefined,
+    action:       undefined,
     priorContext: undefined,
   }
 }
 
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
+  // FIX-6B: if message is empty but there is priorContext (e.g. audio transcription
+  // completed and its text is in priorContext), use priorContext as the message.
+  // This prevents the model from receiving user: "" and responding with
+  // "It seems like there was no message included."
+  const rawMessage = params.request?.message?.trim()
+  const message = rawMessage
+    ? rawMessage
+    : params.priorContext?.trim()
+      ? params.priorContext
+      : '[Audio input — respond to the transcription in the prior context]'
+
   return {
-    message: params.request?.message ?? '',
-    state: params.state ?? {},
+    message,
+    state:        params.state ?? {},
     systemDirective: undefined,
-    plan: params.plan,
-    action: params.action,
+    plan:         params.plan,
+    action:       params.action,
     priorContext: params.priorContext,
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC API — dual signature
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function getMentorResponse(
   message: string,
@@ -247,12 +344,12 @@ export async function getMentorResponse(
       : normalizeRuntimeCall(arg1)
 
   const { system, user } = buildMentorPrompt({
-    message: normalized.message,
-    state: normalized.state,
+    message:         normalized.message,
+    state:           normalized.state,
     systemDirective: normalized.systemDirective,
-    plan: normalized.plan,
-    action: normalized.action,
-    priorContext: normalized.priorContext,
+    plan:            normalized.plan,
+    action:          normalized.action,
+    priorContext:    normalized.priorContext,
   })
 
   try {
@@ -265,59 +362,53 @@ export async function getMentorResponse(
         model: 'gpt-4o',
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: user },
+          { role: 'user',   content: user },
         ],
         temperature: 0.7,
-        top_p: 0.88,
-        max_tokens: 650,
+        top_p:       0.88,
+        max_tokens:  650,
       }),
       timeout,
     ])
 
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
+    const msg  = error instanceof Error ? error.message : String(error)
     console.error('[MENTOR] Error:', msg)
     const lang = resolveInterfaceLanguage(normalized.state)
     return FALLBACKS[lang] ?? FALLBACKS.en
   }
 }
 
-/**
- * getMentorResponseStream
- * SEEK 3.0 — Streaming variant of getMentorResponse().
- * Used by execution-engine-stream.ts.
- *
- * Contract:
- * - Input: MentorRuntimeParams
- * - Output: AsyncGenerator<string>
- * - If streaming fails, falls back to one single full-text delta
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// STREAMING VARIANT — used by execution-engine-stream.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function getMentorResponseStream(
   params: MentorRuntimeParams,
 ): Promise<AsyncGenerator<string>> {
   const normalized = normalizeRuntimeCall(params)
 
   const { system, user } = buildMentorPrompt({
-    message: normalized.message,
-    state: normalized.state,
+    message:         normalized.message,
+    state:           normalized.state,
     systemDirective: normalized.systemDirective,
-    plan: normalized.plan,
-    action: normalized.action,
-    priorContext: normalized.priorContext,
+    plan:            normalized.plan,
+    action:          normalized.action,
+    priorContext:    normalized.priorContext,
   })
 
   try {
     const stream = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      stream: true,
+      model:    'gpt-4o',
+      stream:   true,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: user },
+        { role: 'user',   content: user },
       ],
       temperature: 0.7,
-      top_p: 0.88,
-      max_tokens: 650,
+      top_p:       0.88,
+      max_tokens:  650,
     })
 
     return (async function* () {
@@ -329,9 +420,7 @@ export async function getMentorResponseStream(
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.warn('[MENTOR] Streaming unavailable, falling back to single response:', msg)
-
     const fallbackText = await getMentorResponse(params)
-
     return (async function* () {
       if (fallbackText) yield fallbackText
     })()
