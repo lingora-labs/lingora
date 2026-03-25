@@ -78,7 +78,26 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const { message, state: rawState, files, audioDataUrl, audioMimeType } = body;
 
     // ── 2. VALIDATE + REPAIR STATE ────────────────────────────────────────────
-    const baseState: SessionState = rawState ?? DEFAULT_SESSION_STATE;
+    // Defensive normalization: rawState may arrive as null, non-object, or missing.
+    // Never trust the frontend payload shape — always build from safe defaults.
+    const incomingState = (
+      rawState !== null &&
+      rawState !== undefined &&
+      typeof rawState === 'object' &&
+      !Array.isArray(rawState)
+    ) ? rawState : {};
+
+    const baseState: SessionState = {
+      ...DEFAULT_SESSION_STATE,
+      ...(incomingState as Partial<SessionState>),
+      // masteryByModule must always be an object — guard against null/array
+      masteryByModule: (
+        incomingState.masteryByModule &&
+        typeof incomingState.masteryByModule === 'object' &&
+        !Array.isArray(incomingState.masteryByModule)
+      ) ? incomingState.masteryByModule : {},
+    };
+
     callerState                   = baseState;
     const validation              = validateStateInvariants(baseState);
     const state                   = validation.valid
@@ -233,3 +252,4 @@ const NO_CACHE = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   'Content-Type':  'application/json',
 } as const;
+
