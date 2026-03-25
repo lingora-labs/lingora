@@ -26,7 +26,6 @@ import {
   SuggestedAction,
 } from '../../lib/contracts';
 
-import { ExecutionResult }                    from './execution-engine';
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
@@ -385,4 +384,88 @@ async function dispatchSync(
       const { evaluateLevel } = await import('./diagnostics');
       const sampleCount = (state.diagnosticSamples ?? 0) + 1;
       const samples = [
-        request.message
+        request.message,
+        ...(state.lastConcept ? [state.lastConcept] : []),
+        ...(state.lastUserGoal ? [state.lastUserGoal] : []),
+        ...(state.lastMistake ? [state.lastMistake] : []),
+      ];
+      const result = await evaluateLevel(samples);
+      const patch = {
+        diagnosticSamples: sampleCount,
+        ...(result.confidence !== 'insufficient' && result.confidence !== 'low'
+          ? { confirmedLevel: result.level as import('../../lib/contracts').CEFRLevel }
+          : {}),
+      };
+      return { patch };
+    }
+
+    case 'tool_storage':
+    case 'commercial':
+      return {};
+
+    default:
+      console.warn(`[stream] unknown executor "${step.executor}" — skipping`);
+      return {};
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUGGESTED ACTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildSuggestedActions(
+  plan: ExecutionPlan,
+  artifact: ArtifactPayload | undefined,
+  state: SessionState,
+): SuggestedAction[] {
+  const lang = state.interfaceLanguage ?? 'en';
+  const a: SuggestedAction[] = [];
+
+  if (artifact?.type === 'quiz')                                       a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
+  if (artifact?.type === 'schema' || artifact?.type === 'schema_pro') {
+    a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
+    a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
+  }
+  if (artifact?.type === 'roadmap')                                    a.push({ type: 'start_course',    label: loc('start_course', lang) });
+  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured')
+                                                                        a.push({ type: 'next_module',     label: loc('next_module', lang) });
+  if (plan.pedagogicalAction === 'lesson')                             a.push({ type: 'show_schema',     label: loc('show_schema', lang) });
+  if (plan.pedagogicalAction === 'conversation') {
+    a.push({ type: 'show_schema', label: loc('show_schema', lang) });
+    a.push({ type: 'start_quiz',  label: loc('start_quiz',  lang) });
+  }
+  a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
+
+  return a.filter((x, i, arr) => arr.findIndex(b => b.type === x.type) === i);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function collectPriorText(r: Map<number, StepOutput>, order: number): string {
+  return Array.from(r.values())
+    .filter(s => s.stepOrder < order && s.text)
+    .sort((a, b) => a.stepOrder - b.stepOrder)
+    .map(s => s.text!)
+    .join('\n\n');
+}
+
+function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): StepOutput {
+  return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
+}
+
+const LABELS: Record<string, Record<string, string>> = {
+  start_quiz:      { en: 'Take quiz',     es: 'Hacer simulacro',  no: 'Ta quiz'       },
+  export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter PDF' },
+  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul'   },
+  start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs'    },
+  show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema'    },
+};
+function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
+
+// ============================================================================
+// COMMIT:
+// fix(execution-engine-stream): restore truncated diagnostic branch, remove unused import,
+// and align requestedOperation reset with undefined
+// ============================================================================
