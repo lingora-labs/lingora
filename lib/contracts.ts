@@ -8,12 +8,16 @@
 //           tema activo, ejercicio en curso y modo de respuesta esperado.
 // ALCANCE: añade currentLessonTopic, currentExercise, expectedResponseMode,
 //          _exerciseAttemptCount a SessionState y DEFAULT_SESSION_STATE.
-// EXCLUSIONES: no modifica mergeStatePatch; no modifica lógica de evaluación;
+// EXCLUSIONES: no modifica mergeStatePatch (solo se ajusta StatePatch para
+//              alinear tipos); no modifica lógica de evaluación;
 //              no implementa escritura de estos campos en otros archivos;
 //              no afecta frontend rendering.
 // COMPATIBILIDAD: contracts shared by sync and stream; tipado neutro.
 // DOCTRINA: el sistema debe recordar en qué está antes de decidir qué responde.
-// RIESGO COMPILACIÓN: BAJO — solo añade campos opcionales, no rompe tipado.
+// RIESGO COMPILACIÓN: BAJO — solo añade campos opcionales y ajusta StatePatch.
+// ============================================================================
+// FIX 2026-03-25: StatePatch ya no permite null para requestedOperation.
+//                  Alinea con SessionState que usa undefined.
 // ============================================================================
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,7 +323,7 @@ export type ArtifactPayload =
   | DiagnosticReport;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 4 — SESSION STATE (con FASE 0-A)
+// SECTION 4 — SESSION STATE
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface CurriculumModule {
@@ -584,8 +588,10 @@ export interface OrchestrationContext {
 // SECTION 8 — STATE MANAGER CONTRACTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// FIX 2026-03-25: StatePatch ya no permite null para requestedOperation.
+// Alinea con SessionState que usa undefined.
 export type StatePatch = Omit<Partial<SessionState>, 'requestedOperation'> & {
-  requestedOperation?: RequestedOperation | null;
+  requestedOperation?: RequestedOperation;
 };
 
 export interface StateValidationResult {
@@ -677,18 +683,19 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 12 — STATE MERGE FUNCTION (sin modificar en Fase 0-A)
+// SECTION 12 — STATE MERGE FUNCTION
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function mergeStatePatch(current: SessionState, patch: StatePatch): SessionState {
-  // NOTA FASE 0-A: esta función NO se modifica. La protección de campos
-  // críticos se evaluará después de analizar los resets legítimos.
-  // Por ahora, merge simple.
   return { ...current, ...patch };
 }
 
 // ============================================================================
 // COMMIT:
-// feat(state): add semantic session fields for phase 0-a — currentLessonTopic,
-// currentExercise, expectedResponseMode, _exerciseAttemptCount
+// fix(contracts): align StatePatch with SessionState — remove null from requestedOperation
+//
+// - StatePatch requestedOperation now accepts only undefined, not null
+// - Resolves type error: "Type 'null' is not assignable to type 'RequestedOperation | undefined'"
+// - Preserves all FASE 0-A semantic fields (currentLessonTopic, currentExercise,
+//   expectedResponseMode, _exerciseAttemptCount)
 // ============================================================================
