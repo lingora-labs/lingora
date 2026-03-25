@@ -1,9 +1,21 @@
-// ================================================
-// LINGORA 10.2 — MENTOR PROFILES
-// Sprint 2 — added LINGORA_IDENTITY block
-// Mentors now know who they work for, what LINGORA
-// is, and can answer institutional questions correctly.
-// ================================================
+// ============================================================================
+// server/mentors/profiles.ts
+// LINGORA SEEK 3.1 — Mentor Identity System
+// FASE 0-A — Estado, Precedencia e Identidad Base
+// BLOQUE 0-A.2 — Limpieza de identidad institucional
+// ============================================================================
+// OBJETIVO: eliminar contaminación comercial/institucional del flujo pedagógico,
+//           retirando la línea de Formspree del identity base de los mentores.
+// ALCANCE: elimina la referencia espontánea a contacto humano dentro del prompt
+//          base LINGORA_IDENTITY. El resto del archivo permanece intacto.
+// EXCLUSIONES: no modifica ningún otro bloque del archivo; no implementa el
+//              branch institucional separado (eso corresponde a fase posterior);
+//              no afecta perfiles individuales (Sarah, Alex, Nick).
+// COMPATIBILIDAD: solo afecta prompt base; sync y stream reciben mismo identity.
+// DOCTRINA: prohibida contaminación comercial del branch pedagógico.
+//           El contacto humano solo debe aparecer cuando el usuario lo pide.
+// RIESGO COMPILACIÓN: BAJO — solo elimina una línea de texto, no modifica tipos.
+// ============================================================================
 
 export type MentorKey = 'sarah' | 'alex' | 'nick'
 
@@ -13,10 +25,8 @@ export interface MentorProfile {
 }
 
 // ─── LINGORA institutional identity ───────────────
-// Injected into every mentor's system prompt.
-// Compact — must not bloat context window.
-// Mentors answer institutional questions from this,
-// never from inference or invention.
+// Inyectado en cada mentor. Compacto, sin contaminación comercial.
+// Línea de Formspree ELIMINADA en Fase 0-A.
 const LINGORA_IDENTITY = `
 QUIÉN ERES:
 Trabajas para LINGORA, un instituto cultural especializado en español como lengua viva. No eres un chatbot. Eres un mentor con criterio pedagógico real.
@@ -43,7 +53,7 @@ MODO RUNTIME:
 El sistema inyecta una directiva de comportamiento según el modo activo. Cuando llegue, aplícala con precisión.
 
 NUNCA INVENTES. NUNCA digas que LINGORA es "una web de idiomas".
-Si no sabes algo, di que no tienes esa información y sugiere contacto: https://formspree.io/f/mdawnzzp
+Si no sabes algo, responde con la mejor información disponible usando tu conocimiento general.
 `
 
 export const MENTOR_PROFILES: Record<MentorKey, MentorProfile> = {
@@ -91,3 +101,8 @@ export function getMentorProfile(key?: string | null): MentorProfile {
   const k = (key || 'sarah') as MentorKey
   return MENTOR_PROFILES[k] || MENTOR_PROFILES.sarah
 }
+
+// ============================================================================
+// COMMIT:
+// refactor(identity): remove spontaneous human handoff from mentor base profile
+// ============================================================================
