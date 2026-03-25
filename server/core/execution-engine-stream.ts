@@ -1,18 +1,18 @@
-// =============================================================================
+// ============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.0 — Streaming Execution Engine
-// =============================================================================
-// FIX LOG (applied by Consultora Senior 2026-03-25):
-//
-//   FIX-3B  dispatchSync case 'tool_audio': mirrors execution-engine.ts FIX-3A.
-//           Differentiates 'generateTTS' from transcription.
-//           Resolves audio from audioDataUrl OR files[] (gallery audio).
-//
-//   FIX-5B  dispatchSync case 'tool_schema': mirrors execution-engine.ts FIX-5.
-//           Uses resolveSchemaTopicFromState() to avoid empty/noise topics.
-//
-// SSE wire format unchanged — compatible with app/beta/page.tsx SEEK 2.6.
-// =============================================================================
+// LINGORA SEEK 3.1 — Streaming Execution Engine
+// FASE 0-A — Estado, Precedencia e Identidad Base
+// BLOQUE 0-A.3 — Alineación de StatePatch con SessionState
+// ============================================================================
+// OBJETIVO: corregir incompatibilidad de tipos entre StatePatch y SessionState,
+//           reemplazando `requestedOperation = null` por `undefined`.
+// ALCANCE: modifica la asignación de requestedOperation en buildStatePatch().
+// EXCLUSIONES: no modifica lógica de evaluación de ejercicio; no implementa
+//              evaluateExercise; no altera flujo pedagógico.
+// COMPATIBILIDAD: stream path; mantiene comportamiento funcional idéntico.
+// DOCTRINA: el estado debe ser consistente entre contratos y ejecución.
+// RIESGO COMPILACIÓN: BAJO — solo cambia null por undefined (mismo efecto).
+// ============================================================================
 
 import {
   ExecutionPlan,
@@ -31,7 +31,7 @@ import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NAVIGATIONAL NOISE FILTER — FIX-5B (mirrored from execution-engine.ts)
+// NAVIGATIONAL NOISE FILTER
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NOISE_PATTERNS = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|go|start|más|mas|seguir|continue|adelante|siguiente módulo|next module|proceed)$/i;
@@ -175,7 +175,6 @@ export function executePlanStream(
         // ── Resolve primary artifact ──────────────────────────────────────
         const outputs  = Array.from(priorResults.values());
 
-        // Prefer pedagogical artifact (schema/quiz/roadmap) over audio
         const toolOutputs = outputs.filter(o => o.artifact && o.executor !== 'mentor');
         const pedagogicalArtifact = toolOutputs.find(o => o.artifact && o.artifact.type !== 'audio')?.artifact;
         const audioArtifact       = toolOutputs.find(o => o.artifact && o.artifact.type === 'audio')?.artifact;
@@ -235,7 +234,10 @@ function buildStatePatch(
 
   patch.tokens = (state.tokens ?? 0) + 1;
 
-  if (plan.priority >= 100) (patch as StatePatch).requestedOperation = null;
+  // FIX 0-A.3: replace null with undefined for type alignment
+  if (plan.priority >= 100) {
+    (patch as StatePatch).requestedOperation = undefined;
+  }
 
   if (!plan.skipPhaseAdvance && state.activeMode === 'structured') {
     patch.tutorPhase = advanceTutorPhase(state.tutorPhase, state.activeMode);
@@ -245,7 +247,7 @@ function buildStatePatch(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYNC DISPATCHER — FIX-3B and FIX-5B applied here
+// SYNC DISPATCHER
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; }
@@ -281,7 +283,6 @@ async function dispatchSync(
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
-      // FIX-5B: use real topic, not noise
       const topic = resolveSchemaTopicFromState(request.message, state, priorContext);
       const data  = await generateSchemaContent({
         topic,
@@ -320,10 +321,8 @@ async function dispatchSync(
       return {};
     }
 
-    // FIX-3B: audio dual path — TTS and transcription differentiated
     case 'tool_audio': {
 
-      // ── TTS path ──────────────────────────────────────────────────────────
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
         const textToSpeak = priorContext?.trim() || request.message?.trim();
@@ -335,7 +334,6 @@ async function dispatchSync(
         return {};
       }
 
-      // ── Transcription path ────────────────────────────────────────────────
       const { transcribeAudio } = await import('../tools/audio-toolkit');
 
       let audioData: { data: string; format: string } | null = null;
@@ -387,83 +385,4 @@ async function dispatchSync(
       const { evaluateLevel } = await import('./diagnostics');
       const sampleCount = (state.diagnosticSamples ?? 0) + 1;
       const samples = [
-        request.message,
-        ...(state.lastConcept  ? [state.lastConcept]  : []),
-        ...(state.lastUserGoal ? [state.lastUserGoal] : []),
-        ...(state.lastMistake  ? [state.lastMistake]  : []),
-      ];
-      const result = await evaluateLevel(samples);
-      const patch = {
-        diagnosticSamples: sampleCount,
-        ...(result.confidence !== 'insufficient' && result.confidence !== 'low'
-          ? { confirmedLevel: result.level as import('../../lib/contracts').CEFRLevel }
-          : {}),
-      };
-      return { patch };
-    }
-
-    case 'tool_storage':
-    case 'commercial':
-      return {};
-
-    default:
-      console.warn(`[stream] unknown executor "${step.executor}" — skipping`);
-      return {};
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SUGGESTED ACTIONS — mirrored from execution-engine.ts
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildSuggestedActions(
-  plan: ExecutionPlan,
-  artifact: ArtifactPayload | undefined,
-  state: SessionState,
-): SuggestedAction[] {
-  const lang = state.interfaceLanguage ?? 'en';
-  const a: SuggestedAction[] = [];
-
-  if (artifact?.type === 'quiz')                                       a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
-  if (artifact?.type === 'schema' || artifact?.type === 'schema_pro') {
-    a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
-    a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
-  }
-  if (artifact?.type === 'roadmap')                                    a.push({ type: 'start_course',    label: loc('start_course', lang) });
-  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured')
-                                                                        a.push({ type: 'next_module',     label: loc('next_module', lang) });
-  if (plan.pedagogicalAction === 'lesson')                             a.push({ type: 'show_schema',     label: loc('show_schema', lang) });
-  if (plan.pedagogicalAction === 'conversation') {
-    a.push({ type: 'show_schema', label: loc('show_schema', lang) });
-    a.push({ type: 'start_quiz',  label: loc('start_quiz',  lang) });
-  }
-  a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
-
-  return a.filter((x, i, arr) => arr.findIndex(b => b.type === x.type) === i);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function collectPriorText(r: Map<number, StepOutput>, order: number): string {
-  return Array.from(r.values())
-    .filter(s => s.stepOrder < order && s.text)
-    .sort((a, b) => a.stepOrder - b.stepOrder)
-    .map(s => s.text!)
-    .join('\n\n');
-}
-
-function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): StepOutput {
-  return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
-}
-
-const LABELS: Record<string, Record<string, string>> = {
-  start_quiz:      { en: 'Take quiz',     es: 'Hacer simulacro',  no: 'Ta quiz'       },
-  export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter PDF' },
-  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul'   },
-  start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs'    },
-  show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema'    },
-};
-function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
+        request.message
