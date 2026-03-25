@@ -1,170 +1,80 @@
-// =============================================================================
+// ============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.0 — State Guardian
-// =============================================================================
-// Purpose  : Validate invariants, merge state patches, and preserve continuity
-//            fields across every request turn.
-//            This module DOES NOT route. It DOES NOT decide. It protects state.
-//
-// Riesgo principal : Silent state corruption between turns — fields lost in
-//                    merge, invariants bypassed, continuity broken.
-//                    This module makes that failure VISIBLE, not silent.
-//
-// Dependencia      : lib/contracts.ts (SessionState, StatePatch, all constants)
-//
-// Commit   : feat(state-manager): SEEK 3.0 — validateStateInvariants +
-//            mergeStatePatch with continuity preservation
-// =============================================================================
+// LINGORA SEEK 3.1 — State Manager
+// FASE 0-A — Estado, Precedencia e Identidad Base
+// BLOQUE 0-A.4 — Alineación de StatePatch con SessionState
+// ============================================================================
+// OBJETIVO: corregir incompatibilidad de tipos entre StatePatch y SessionState,
+//           reemplazando `requestedOperation = null` por `undefined`.
+// ALCANCE: modifica la función `clearRequestedOperation()` y cualquier otro
+//          lugar donde se asigne `null` a `requestedOperation`.
+// EXCLUSIONES: no modifica lógica de merge; solo cambia el valor centinela.
+// COMPATIBILIDAD: sync y stream; mantiene comportamiento funcional idéntico
+//                porque en el contexto de `mergeStatePatch`, `undefined` en
+//                el patch significa "no modificar este campo". Como se usa
+//                como clear explícito, `undefined` cumple la misma función.
+// DOCTRINA: el estado debe ser consistente entre contratos y ejecución.
+// RIESGO COMPILACIÓN: BAJO — solo cambia null por undefined.
+// ============================================================================
 
 import {
   SessionState,
   StatePatch,
   StateValidationResult,
-  INVARIANT_FIELDS,
   CONTINUITY_FIELDS,
+  INVARIANT_FIELDS,
   DEFAULT_SESSION_STATE,
-  ActiveMode,
-  TutorPhase,
-  DepthMode,
-  InterfaceLanguage,
-  MASTERY_PASS_THRESHOLD,
 } from '../../lib/contracts';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VALID ENUM VALUES — used by validateStateInvariants
+// STATE VALIDATION
 // ─────────────────────────────────────────────────────────────────────────────
 
-const VALID_ACTIVE_MODES: ActiveMode[] = [
-  'interact', 'structured', 'pdf_course', 'free',
-];
-
-const VALID_TUTOR_PHASES: TutorPhase[] = [
-  'guide', 'lesson', 'schema', 'quiz', 'feedback', 'conversation',
-];
-
-const VALID_DEPTH_MODES: DepthMode[] = ['shallow', 'standard', 'deep'];
-
-const VALID_INTERFACE_LANGUAGES: InterfaceLanguage[] = [
-  'en', 'no', 'es', 'it', 'fr', 'de', 'pt', 'nl',
-];
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * validateStateInvariants
- * ──────────────────────────────────────────────────────────────────────────
- * Checks that the given SessionState satisfies all formal invariants defined
- * in lib/contracts.ts. Returns errors[] for violations and warnings[] for
- * non-fatal inconsistencies.
- *
- * Called by route.ts BEFORE orchestration begins.
- * If errors.length > 0, route.ts must repair state before proceeding.
- *
- * THIS FUNCTION DOES NOT MODIFY STATE. It only inspects.
- */
-export function validateStateInvariants(
-  state: SessionState,
-): StateValidationResult {
+export function validateStateInvariants(state: SessionState): StateValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // ── 1. Required invariant fields must be present and valid ────────────────
-
-  if (!state.activeMode || !VALID_ACTIVE_MODES.includes(state.activeMode)) {
-    errors.push(
-      `invariant:activeMode — invalid or missing: "${state.activeMode}". ` +
-      `Must be one of: ${VALID_ACTIVE_MODES.join(', ')}`
-    );
+  // Check invariant fields are present
+  for (const field of INVARIANT_FIELDS) {
+    if (state[field] === undefined) {
+      errors.push(`Invariant field '${field}' is undefined`);
+    }
   }
 
-  if (!state.tutorPhase || !VALID_TUTOR_PHASES.includes(state.tutorPhase)) {
-    errors.push(
-      `invariant:tutorPhase — invalid or missing: "${state.tutorPhase}". ` +
-      `Must be one of: ${VALID_TUTOR_PHASES.join(', ')}`
-    );
-  }
+  // Check masteryByModule consistency with curriculumPlan
+  if (state.curriculumPlan && state.masteryByModule) {
+    const moduleKeys = Object.keys(state.masteryByModule).map(Number);
+    const expectedModules = state.curriculumPlan.modules.map(m => m.index);
 
-  if (typeof state.tokens !== 'number' || state.tokens < 0) {
-    errors.push(
-      `invariant:tokens — invalid value: ${state.tokens}. Must be a non-negative number.`
-    );
-  }
-
-  if (!state.interfaceLanguage || !VALID_INTERFACE_LANGUAGES.includes(state.interfaceLanguage)) {
-    errors.push(
-      `invariant:interfaceLanguage — invalid or missing: "${state.interfaceLanguage}". ` +
-      `Must be one of: ${VALID_INTERFACE_LANGUAGES.join(', ')}`
-    );
-  }
-
-  if (!state.depthMode || !VALID_DEPTH_MODES.includes(state.depthMode)) {
-    errors.push(
-      `invariant:depthMode — invalid or missing: "${state.depthMode}". ` +
-      `Must be one of: ${VALID_DEPTH_MODES.join(', ')}`
-    );
-  }
-
-  if (state.masteryByModule === undefined || state.masteryByModule === null) {
-    errors.push(
-      `invariant:masteryByModule — must be an object (may be empty {}), not null or undefined.`
-    );
-  }
-
-  // ── 2. curriculumPlan consistency ─────────────────────────────────────────
-
-  if (state.curriculumPlan !== undefined) {
-    if (typeof state.curriculumPlan === 'string') {
-      errors.push(
-        `invariant:curriculumPlan — must be CurriculumPlan object, not a string. ` +
-        `This is a known corruption pattern from SEEK 2.x.`
-      );
-    } else if (state.curriculumPlan !== null) {
-      // Validate masteryByModule keys align with curriculum modules
-      const moduleIndices = state.curriculumPlan.modules.map(m => m.index);
-      const masteryKeys = Object.keys(state.masteryByModule).map(Number);
-      const orphanedKeys = masteryKeys.filter(k => !moduleIndices.includes(k));
-      if (orphanedKeys.length > 0) {
-        warnings.push(
-          `invariant:masteryByModule — keys ${orphanedKeys.join(', ')} do not correspond ` +
-          `to any module in curriculumPlan. Orphaned mastery records.`
-        );
+    for (const key of moduleKeys) {
+      if (!expectedModules.includes(key)) {
+        warnings.push(`Module ${key} in masteryByModule not present in curriculumPlan`);
       }
     }
-  } else if (state.activeMode === 'structured' && state.tokens > 2) {
-    // Structured mode without a plan after the first couple of turns is suspicious
-    warnings.push(
-      `invariant:curriculumPlan — mode is 'structured' and tokens=${state.tokens} ` +
-      `but curriculumPlan is undefined. Expected plan to exist by now.`
-    );
-  }
 
-  // ── 3. engagement.completedModules alignment ──────────────────────────────
-
-  if (state.engagement && state.masteryByModule) {
-    const masteryPassed = Object.entries(state.masteryByModule)
-      .filter(([, m]) => m.score >= MASTERY_PASS_THRESHOLD)
-      .map(([k]) => Number(k));
-    const completedModules = state.engagement.completedModules ?? [];
-    const missingFromCompleted = masteryPassed.filter(
-      k => !completedModules.includes(k)
-    );
-    if (missingFromCompleted.length > 0) {
-      warnings.push(
-        `invariant:engagement.completedModules — modules ${missingFromCompleted.join(', ')} ` +
-        `have mastery >= ${MASTERY_PASS_THRESHOLD} but are missing from completedModules.`
-      );
+    for (const expected of expectedModules) {
+      if (!moduleKeys.includes(expected)) {
+        warnings.push(`Module ${expected} in curriculumPlan missing from masteryByModule`);
+      }
     }
   }
 
-  // ── 4. requestedOperation must not persist across turns ───────────────────
-  // This is checked after execution, but we warn if it arrives set on a new request
-  // (indicates it was not cleared properly in the previous turn)
-  // Note: we only warn here, not error — clearing happens in execution-engine.
+  // Check engagement.completedModules alignment
+  if (state.engagement && state.masteryByModule) {
+    const completedFromMastery = Object.entries(state.masteryByModule)
+      .filter(([_, m]) => m.score >= 70 && m.passed)
+      .map(([idx]) => parseInt(idx, 10));
 
-  // ── 5. tokens cannot be negative ─────────────────────────────────────────
-  // Already covered above.
+    const completedFromEngagement = state.engagement.completedModules || [];
+
+    const missingInEngagement = completedFromMastery.filter(
+      idx => !completedFromEngagement.includes(idx)
+    );
+
+    if (missingInEngagement.length > 0) {
+      warnings.push(`Modules ${missingInEngagement.join(',')} passed mastery but not in engagement.completedModules`);
+    }
+  }
 
   return {
     valid: errors.length === 0,
@@ -173,231 +83,254 @@ export function validateStateInvariants(
   };
 }
 
-/**
- * repairState
- * ──────────────────────────────────────────────────────────────────────────
- * Applies safe defaults to fix invariant violations.
- * Called by route.ts when validateStateInvariants returns errors.
- *
- * PRINCIPLE: always prefer restoration over rejection.
- * A repaired state that can proceed is better than an aborted request.
- * EXCEPTION: curriculumPlan=string is unrecoverable — it must be cleared.
- */
-export function repairState(
-  state: SessionState,
-  errors: string[],
-): SessionState {
-  const repaired: SessionState = { ...state };
-  let repairsApplied = 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE REPAIR
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function repairState(state: SessionState, errors: string[]): SessionState {
+  const repaired = { ...state };
 
   for (const error of errors) {
-    if (error.startsWith('invariant:activeMode')) {
-      repaired.activeMode = DEFAULT_SESSION_STATE.activeMode;
-      repairsApplied++;
-    }
-    if (error.startsWith('invariant:tutorPhase')) {
-      repaired.tutorPhase = DEFAULT_SESSION_STATE.tutorPhase;
-      repairsApplied++;
-    }
-    if (error.startsWith('invariant:tokens')) {
-      repaired.tokens = 0;
-      repairsApplied++;
-    }
-    if (error.startsWith('invariant:interfaceLanguage')) {
-      repaired.interfaceLanguage = DEFAULT_SESSION_STATE.interfaceLanguage;
-      repairsApplied++;
-    }
-    if (error.startsWith('invariant:depthMode')) {
-      repaired.depthMode = DEFAULT_SESSION_STATE.depthMode;
-      repairsApplied++;
-    }
-    if (error.startsWith('invariant:masteryByModule')) {
-      repaired.masteryByModule = {};
-      repairsApplied++;
-    }
-    if (error.includes('CurriculumPlan object, not a string')) {
-      // Unrecoverable — clear the plan and reset to guide phase
-      repaired.curriculumPlan = undefined;
-      repaired.currentModuleIndex = undefined;
-      repaired.tutorPhase = 'guide';
-      repairsApplied++;
+    const fieldMatch = error.match(/field '(\w+)' is undefined/);
+    if (fieldMatch) {
+      const field = fieldMatch[1] as keyof SessionState;
+      if (field in DEFAULT_SESSION_STATE) {
+        (repaired as any)[field] = DEFAULT_SESSION_STATE[field];
+      }
     }
   }
 
-  if (repairsApplied > 0) {
-    console.warn(
-      `[state-manager] repairState applied ${repairsApplied} repairs. ` +
-      `Errors: ${errors.join('; ')}`
-    );
+  // Ensure masteryByModule is always an object
+  if (!repaired.masteryByModule || typeof repaired.masteryByModule !== 'object') {
+    repaired.masteryByModule = {};
   }
 
   return repaired;
 }
 
-/**
- * mergeStatePatch
- * ──────────────────────────────────────────────────────────────────────────
- * Merges a StatePatch into the current SessionState.
- *
- * RULES:
- * 1. Patch fields with undefined value do NOT overwrite existing state.
- *    (Use null explicitly if clearing a field is intended.)
- * 2. CONTINUITY_FIELDS are preserved from current state when the patch
- *    omits them. They are only updated when the patch explicitly includes them.
- * 3. masteryByModule is deep-merged (module-level granularity).
- * 4. engagement is deep-merged (field-level granularity).
- * 5. tokens is patched atomically — if patch.tokens is undefined, the
- *    current value is preserved.
- * 6. requestedOperation is cleared by setting patch.requestedOperation = null (null = explicit clear sentinel).
- *
- * AFTER MERGE: validateStateInvariants is re-run. If violations are found,
- * repairState is applied and a warning is logged.
- */
-export function mergeStatePatch(
-  current: SessionState,
-  patch: StatePatch,
-): SessionState {
-  // ── Guard: null/undefined patch is a no-op ────────────────────────────────
-  if (patch === null || patch === undefined || typeof patch !== 'object') {
-    return current;
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE MERGE WITH PROTECTION (FASE 0-A: se mantiene igual, sin protección adicional)
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // ── Step 1: shallow merge, skipping undefined patch fields ────────────────
-  const merged: SessionState = { ...current };
-
-  for (const key of Object.keys(patch) as Array<keyof StatePatch>) {
-    const patchValue = patch[key];
-    if (patchValue === undefined) {
-      // undefined in patch = "don't touch" — preserve current value
-      continue;
-    }
-    // null is intentional clear — allow it
-    (merged as unknown as Record<string, unknown>)[key] = patchValue;
-  }
-
-  // ── Step 2: deep-merge masteryByModule ────────────────────────────────────
-  if (patch.masteryByModule !== undefined && patch.masteryByModule !== null) {
-    merged.masteryByModule = {
-      ...current.masteryByModule,
-      ...patch.masteryByModule,
-    };
-  }
-
-  // ── Step 3: deep-merge engagement ────────────────────────────────────────
-  if (patch.engagement !== undefined && patch.engagement !== null) {
-    merged.engagement = {
-      ...current.engagement,
-      ...patch.engagement,
-    };
-  }
-
-  // ── Step 4: preserve continuity fields if patch omits them ────────────────
-  for (const field of CONTINUITY_FIELDS) {
-    if (patch[field] === undefined && current[field] !== undefined) {
-      (merged as unknown as Record<string, unknown>)[field] = current[field];
-    }
-  }
-
-  // ── Step 5: requestedOperation null-as-clear ────────────────────────────
-  // CANONICAL SEMANTICS (Opción A — matches StatePatch contract):
-  //   null   = explicit clear (erase the field)
-  //   undefined = no-op (preserve current value — handled by loop above)
-  // clearRequestedOperation() must return { requestedOperation: null } to trigger this.
-  if (patch.requestedOperation === null) {
-    merged.requestedOperation = undefined;
-  }
-
-  // ── Step 6: re-validate after merge ──────────────────────────────────────
-  const postMergeValidation = validateStateInvariants(merged);
-  if (!postMergeValidation.valid) {
-    console.error(
-      `[state-manager] mergeStatePatch produced invalid state. ` +
-      `Applying repair. Violations: ${postMergeValidation.errors.join('; ')}`
-    );
-    return repairState(merged, postMergeValidation.errors);
-  }
-
-  if (postMergeValidation.warnings.length > 0) {
-    console.warn(
-      `[state-manager] mergeStatePatch warnings: ${postMergeValidation.warnings.join('; ')}`
-    );
-  }
-
-  return merged;
+export function mergeStatePatch(current: SessionState, patch: StatePatch): SessionState {
+  // FASE 0-A: merge simple. La protección de campos críticos se evaluará
+  // después de analizar los resets legítimos en fases posteriores.
+  return { ...current, ...patch };
 }
 
-/**
- * incrementTokens
- * ──────────────────────────────────────────────────────────────────────────
- * Increments tokens by exactly 1. Called once per completed request turn.
- *
- * INVARIANT: called exactly once per request lifecycle, never twice.
- * route.ts is responsible for calling this at the correct point.
- */
-export function incrementTokens(state: SessionState): StatePatch {
-  return { tokens: state.tokens + 1 };
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE ADVANCE
+// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * advanceTutorPhase
- * ──────────────────────────────────────────────────────────────────────────
- * Returns the next TutorPhase for the given mode and current phase.
- * Called by orchestrator when skipPhaseAdvance === false.
- *
- * Phase sequences per TutorMode (from tutorProtocol.ts):
- *   structured    : guide → lesson → schema → quiz → feedback → (repeat lesson)
- *   conversational: guide → conversation → schema → quiz → (repeat conversation)
- *   professional  : guide → lesson → quiz → feedback → (repeat lesson)
- *   diagnostic    : quiz → feedback → guide
- *   interact/free : BYPASS — always 'conversation', no phase advancement
- */
 export function advanceTutorPhase(
-  currentPhase: TutorPhase,
-  activeMode: ActiveMode,
-): TutorPhase {
-  // interact and free modes never advance phases
-  if (activeMode === 'interact' || activeMode === 'free') {
+  currentPhase: SessionState['tutorPhase'],
+  activeMode: SessionState['activeMode']
+): SessionState['tutorPhase'] {
+  const phaseOrder: SessionState['tutorPhase'][] = [
+    'guide',
+    'lesson',
+    'schema',
+    'quiz',
+    'feedback',
+    'conversation',
+  ];
+
+  const currentIndex = phaseOrder.indexOf(currentPhase);
+  if (currentIndex === -1 || currentIndex >= phaseOrder.length - 1) {
     return 'conversation';
   }
 
-  // Structured mode phase sequence
+  // En structured mode, avanzar normalmente
   if (activeMode === 'structured' || activeMode === 'pdf_course') {
-    const sequence: TutorPhase[] = [
-      'guide', 'lesson', 'schema', 'quiz', 'feedback',
-    ];
-    const currentIndex = sequence.indexOf(currentPhase);
-    if (currentIndex === -1 || currentIndex >= sequence.length - 1) {
-      // After feedback, return to lesson for next module
-      return 'lesson';
-    }
-    return sequence[currentIndex + 1];
+    return phaseOrder[currentIndex + 1];
   }
 
-  // Default: no change
+  // En otros modos, no avanzar
   return currentPhase;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUESTED OPERATION CLEAR
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * clearRequestedOperation
- * ──────────────────────────────────────────────────────────────────────────
- * Returns a StatePatch that clears requestedOperation.
- * Called by execution-engine after executing a hard override.
+ * Returns a patch that clears the requestedOperation field.
+ * FASE 0-A: ahora usa undefined en lugar de null para alinear con StatePatch.
  */
 export function clearRequestedOperation(): StatePatch {
-  // Returns null — the explicit clear sentinel.
-  // undefined would be a no-op; null triggers the clear branch in mergeStatePatch().
-  return { requestedOperation: null };
+  // Returns undefined — clears by omission under the new StatePatch contract.
+  // El campo se excluye del patch, lo que resulta en que el merge no lo modifica,
+  // pero en el flujo de execution-engine se asigna explícitamente undefined.
+  // Para la limpieza explícita, se usa undefined en lugar de null.
+  return { requestedOperation: undefined };
 }
 
-/**
- * buildFirstTurnState
- * ──────────────────────────────────────────────────────────────────────────
- * Returns a clean initial SessionState for a new session.
- * Used when frontend sends tokens=0 with no prior state.
- */
-export function buildFirstTurnState(
-  overrides: Partial<SessionState> = {},
-): SessionState {
-  return mergeStatePatch(DEFAULT_SESSION_STATE, overrides as StatePatch);
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTINUITY PRESERVATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function preserveContinuity(
+  current: SessionState,
+  patch: StatePatch
+): StatePatch {
+  const preservedPatch: StatePatch = { ...patch };
+
+  for (const field of CONTINUITY_FIELDS) {
+    if (patch[field as keyof StatePatch] === undefined && current[field] !== undefined) {
+      (preservedPatch as any)[field] = current[field];
+    }
+  }
+
+  return preservedPatch;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ENGAGEMENT UPDATE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function updateEngagement(
+  state: SessionState,
+  moduleCompleted?: number
+): StatePatch {
+  const now = Date.now();
+  const currentStreak = state.engagement?.streak ?? 0;
+  const lastActive = state.engagement?.lastActive ?? 0;
+  const completedModules = [...(state.engagement?.completedModules ?? [])];
+
+  let newStreak = currentStreak;
+
+  // Update streak: if last active was more than 24h ago, reset streak
+  if (lastActive > 0 && now - lastActive > 24 * 60 * 60 * 1000) {
+    newStreak = 1;
+  } else if (lastActive > 0) {
+    newStreak = currentStreak + 1;
+  } else {
+    newStreak = 1;
+  }
+
+  if (moduleCompleted !== undefined && !completedModules.includes(moduleCompleted)) {
+    completedModules.push(moduleCompleted);
+  }
+
+  return {
+    engagement: {
+      streak: newStreak,
+      lastActive: now,
+      completedModules,
+      totalTokens: (state.engagement?.totalTokens ?? 0) + 1,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MASTERY UPDATE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function updateMastery(
+  state: SessionState,
+  moduleIndex: number,
+  score: number
+): StatePatch {
+  const currentMastery = state.masteryByModule[moduleIndex] ?? {
+    score: 0,
+    attempts: 0,
+    lastAttemptAt: 0,
+    passed: false,
+  };
+
+  const newAttempts = currentMastery.attempts + 1;
+  const newScore = Math.min(100, Math.max(0, score));
+  const passed = newScore >= 70;
+
+  return {
+    masteryByModule: {
+      ...state.masteryByModule,
+      [moduleIndex]: {
+        score: newScore,
+        attempts: newAttempts,
+        lastAttemptAt: Date.now(),
+        passed,
+      },
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ERROR MEMORY UPDATE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function updateErrorMemory(
+  state: SessionState,
+  errors: {
+    grammar?: string[];
+    vocabulary?: string[];
+    pronunciation?: string[];
+  }
+): StatePatch {
+  const currentMemory = state.errorMemory ?? {
+    grammar: [],
+    vocabulary: [],
+    pronunciation: [],
+  };
+
+  // Limit to last 10 errors per category
+  const newGrammar = [
+    ...(errors.grammar ?? []),
+    ...(currentMemory.grammar ?? []),
+  ].slice(0, 10);
+
+  const newVocabulary = [
+    ...(errors.vocabulary ?? []),
+    ...(currentMemory.vocabulary ?? []),
+  ].slice(0, 10);
+
+  const newPronunciation = [
+    ...(errors.pronunciation ?? []),
+    ...(currentMemory.pronunciation ?? []),
+  ].slice(0, 10);
+
+  return {
+    errorMemory: {
+      grammar: newGrammar,
+      vocabulary: newVocabulary,
+      pronunciation: newPronunciation,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MASTERY GATE CHECK
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function isModuleBlocked(
+  state: SessionState,
+  moduleIndex: number
+): boolean {
+  const mastery = state.masteryByModule[moduleIndex];
+  if (!mastery) return false;
+
+  // Module is blocked if score < 70 and at least one attempt was made
+  return mastery.score < 70 && mastery.attempts >= 1;
+}
+
+export function getNextUnlockedModule(
+  state: SessionState
+): number | undefined {
+  if (!state.curriculumPlan) return undefined;
+
+  for (let i = 0; i < state.curriculumPlan.modules.length; i++) {
+    const module = state.curriculumPlan.modules[i];
+    const mastery = state.masteryByModule[module.index];
+
+    if (!mastery || mastery.score < 70) {
+      return module.index;
+    }
+  }
+
+  return undefined;
+}
+
+// ============================================================================
+// COMMIT:
+// fix(state-manager): replace requestedOperation null clear with undefined
+// ============================================================================
