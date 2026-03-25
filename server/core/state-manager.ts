@@ -257,6 +257,11 @@ export function mergeStatePatch(
   current: SessionState,
   patch: StatePatch,
 ): SessionState {
+  // ── Guard: null/undefined patch is a no-op ────────────────────────────────
+  if (patch === null || patch === undefined || typeof patch !== 'object') {
+    return current;
+  }
+
   // ── Step 1: shallow merge, skipping undefined patch fields ────────────────
   const merged: SessionState = { ...current };
 
@@ -395,3 +400,4 @@ export function buildFirstTurnState(
 ): SessionState {
   return mergeStatePatch(DEFAULT_SESSION_STATE, overrides as StatePatch);
 }
+
