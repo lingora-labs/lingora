@@ -661,16 +661,25 @@ function ArtifactRender({ a }: { a: Artifact }) {
           typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
         ) : 0,
     }))
-    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
-    return (
-      <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
-        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
-          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
-        </div>
-        <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
-      </div>
-    )
+    const qc = {
+  title:
+    typeof qa.title === 'string'
+      ? qa.title
+      : typeof (a.content as Record<string, unknown>)?.title === 'string'
+        ? ((a.content as Record<string, unknown>).title as string)
+        : '',
+  questions,
+}
+
+return (
+  <div style={{ marginTop:10, width:'100%', maxWidth:540 }}>
+    <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
+      <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
+      <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
+    </div>
+    <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
+  </div>
+)
   }
   if (a.type === 'illustration' && a.url) return (
     <div style={{ marginTop:8 }}>
