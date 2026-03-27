@@ -145,6 +145,14 @@ export interface SchemaBlock {
   tone?: 'ok' | 'danger' | 'warn' | 'info' | 'highlight';
 }
 
+// SchemaQuizItem: structured quiz question from schema-generator
+// Backward compatible with legacy string[] format
+export interface SchemaQuizItem {
+  question: string;
+  options: string[];
+  correct: number; // index 0-3
+}
+
 export interface SchemaArtifact {
   type: 'schema';
   title: string;
@@ -152,14 +160,26 @@ export interface SchemaArtifact {
   objective?: string;
   sections: SchemaBlock[];
   erroresFrecuentes?: string[];
-  quiz?: string[];
+  // FIX-9F: quiz as structured items (not flattened strings) to enable interactive renderer
+  quiz?: Array<SchemaQuizItem | string>;
 }
+
+// SchemaProBlock — discriminated union for rich schema blocks
+// Used by execution-engine (generator) and page.tsx (SchemaProBlock renderer)
+export type SchemaProBlockItem =
+  | { type: 'concept';    title: string; body: string; tone?: string }
+  | { type: 'bullets';    title: string; items: string[] }
+  | { type: 'highlight';  text: string;  tone?: string; label?: string }
+  | { type: 'flow';       steps: string[] }
+  | { type: 'comparison'; left: string;  right: string; label?: string }
+  | { type: 'table';      columns: string[]; rows: string[][] };
 
 export interface SchemaProArtifact {
   type: 'schema_pro';
   title: string;
+  subtitle?: string;        // FIX-B2: added to match execution-engine output
   level?: CEFRLevel;
-  blocks: SchemaBlock[];
+  blocks: SchemaProBlockItem[];
   cita?: string;
 }
 
@@ -505,6 +525,8 @@ export interface AttachedFile {
 
 export interface ChatRequest {
   message: string;
+  // FIX-B4: optional transcript for PDF export — populated by doExportPdfBackend in page.tsx
+  exportTranscript?: string;
   state: SessionState;
   files?: AttachedFile[];
   audioDataUrl?: string;
