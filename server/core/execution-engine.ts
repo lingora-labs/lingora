@@ -287,13 +287,33 @@ async function dispatchToExecutor(
         }
 
         case 'generateSchemaPro': {
-          // SchemaProArtifact requires blocks[] not sections[].
-          // schema-generator produces SchemaContent; adapter produces SchemaArtifact (type:'schema').
-          // Until a dedicated schemaPro generator exists, produce SchemaArtifact and log.
-          // This is declared, not silent — the caller receives a valid schema, not a random artifact.
-          console.warn('[execution-engine] generateSchemaPro: no dedicated generator — producing SchemaArtifact');
+          // FIX-B2: convert SchemaContent → real SchemaProArtifact with blocks[]
+          // No dedicated generator needed — we map SchemaContent fields to SBlock format
           const data = await generateSchemaContent({ topic, level, uiLanguage });
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel) };
+          // F-B2: use SchemaProBlockItem[] — now the canonical contract type
+          const blocks: import('../../lib/contracts').SchemaProBlockItem[] = [];
+
+          if (data.keyConcepts?.length) {
+            blocks.push({ type: 'bullets', title: 'Conceptos clave', items: data.keyConcepts });
+          }
+          for (const sub of (data.subtopics ?? [])) {
+            blocks.push({ type: 'concept', title: sub.title, body: sub.keyTakeaway ? `${sub.content}\n→ ${sub.keyTakeaway}` : sub.content });
+          }
+          if (data.tableRows?.length) {
+            blocks.push({ type: 'table', columns: ['Forma', 'Valor'], rows: data.tableRows.map(r => [r.left, r.right]) });
+          }
+          if (data.summary) {
+            blocks.push({ type: 'highlight', tone: 'ok', label: 'Regla 80/20', text: data.summary });
+          }
+
+          const artifact: import('../../lib/contracts').SchemaProArtifact = {
+            type:     'schema_pro',
+            title:    data.title,
+            subtitle: data.objective,
+            level:    ctx.state.confirmedLevel ?? ctx.state.userLevel,
+            blocks,
+          };
+          return { artifact };
         }
 
         case 'generateQuiz': {
@@ -312,8 +332,8 @@ async function dispatchToExecutor(
             };
             return { artifact };
           }
-          console.warn('[execution-engine] generateQuiz: no quiz in schema output — producing SchemaArtifact');
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel) };
+          console.error('[execution-engine] generateQuiz: no quiz in schema output — returning empty, not wrong artifact');
+          return {};
         }
 
         case 'generateTable': {
@@ -327,8 +347,8 @@ async function dispatchToExecutor(
             };
             return { artifact };
           }
-          console.warn('[execution-engine] generateTable: no tableRows — producing SchemaArtifact');
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel) };
+          console.error('[execution-engine] generateTable: no tableRows in output — returning empty, not wrong artifact');
+          return {};
         }
 
         case 'generateTableMatrix': {
@@ -346,15 +366,28 @@ async function dispatchToExecutor(
             };
             return { artifact };
           }
-          console.warn('[execution-engine] generateTableMatrix: no tableRows — producing SchemaArtifact');
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel) };
+          console.error('[execution-engine] generateTableMatrix: no tableRows in output — returning empty, not wrong artifact');
+          return {};
         }
 
         case 'buildRoadmapArtifact': {
-          // FIX: if no curriculumPlan exists, fail explicitly — do NOT degrade to schema
+          // FIX-B3: if no curriculumPlan, produce a minimal topic-based roadmap
+          // instead of returning empty — gives the user something useful
           if (!ctx.state.curriculumPlan) {
-            console.error('[execution-engine] buildRoadmapArtifact: no curriculumPlan in state — cannot produce roadmap');
-            return {};  // empty — no artifact, no silent substitution
+            const topicFallback = resolveSchemaTopicFromState(ctx.request.message, ctx.state, '') || topic;
+            const fallbackModules = [
+              { index: 0, title: 'Diagnóstico de nivel',            focus: 'Evaluación inicial',      completed: false, current: true },
+              { index: 1, title: `Fundamentos: ${topicFallback}`,   focus: 'Conceptos clave',         completed: false, current: false },
+              { index: 2, title: 'Práctica guiada',                 focus: 'Ejercicios aplicados',    completed: false, current: false },
+              { index: 3, title: 'Errores frecuentes',              focus: 'Corrección',              completed: false, current: false },
+              { index: 4, title: 'Simulacro final',                 focus: 'Evaluación de dominio',   completed: false, current: false },
+            ];
+            const artifact: import('../../lib/contracts').RoadmapBlock = {
+              type:    'roadmap',
+              title:   topicFallback,
+              modules: fallbackModules,
+            };
+            return { artifact };
           }
           const artifact: import('../../lib/contracts').RoadmapBlock = {
             type:    'roadmap',
@@ -381,7 +414,29 @@ async function dispatchToExecutor(
     // ── PDF generator ────────────────────────────────────────────────────────
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
-      const title  = ctx.state.lastConcept ?? 'LINGORA Study Guide';
+      const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
+
+      // FIX-EE1: discriminate by step.action so artifact type matches orchestrator contract
+      if (step.action === 'exportChatPdf') {
+        // FIX-B4: use exportTranscript (full chat history) if provided by frontend
+        // falls back to request.message if not present
+        const content = ctx.request.exportTranscript || ctx.request.message;
+        const result = await generatePDF({ title: 'Chat Export', content });
+        const artifact = result.success
+          ? { type: 'pdf_chat' as const, url: result.url }
+          : undefined;
+        return { artifact };
+      }
+
+      if (step.action === 'generateCoursePdf') {
+        const result = await generatePDF({ title, content: ctx.request.message });
+        const artifact = result.success
+          ? { type: 'course_pdf' as const, title, url: result.url, modules: [] }
+          : undefined;
+        return { artifact };
+      }
+
+      // Default: generic PDF
       const result = await generatePDF({ title, content: ctx.request.message });
       const artifact = result.success
         ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
@@ -411,7 +466,13 @@ async function dispatchToExecutor(
       // SEEK 3.1: discriminate by step.action
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
-        const textToSpeak = priorText?.trim() || ctx.request.message?.trim();
+        // FIX-EE3: use only the most recent mentor text for TTS
+        // priorText includes ALL prior steps (transcription + mentor response)
+        // TTS should speak only the mentor response — not echo the user's own words
+        const mentorPriorText = Array.from(ctx.priorResults.values())
+          .filter(r => r.executor === 'mentor' && r.text)
+          .sort((a, b) => b.stepOrder - a.stepOrder)[0]?.text;
+        const textToSpeak = (mentorPriorText ?? priorText)?.trim() || ctx.request.message?.trim();
         if (!textToSpeak) return {};
         const result = await generateSpeech(textToSpeak, { voice: 'nova' });
         if (result?.success && result.url) {
@@ -701,3 +762,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
