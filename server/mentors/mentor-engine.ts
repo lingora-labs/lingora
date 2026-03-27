@@ -206,7 +206,11 @@ function buildExecutionDirective(params: {
   // FIX-7B — SEEK 3.1 Fase 0-A: inject exercise context when available
   // plan.mentor.activeExercise and plan.mentor.activeTopic are set by orchestrator
   // when building the EXERCISE_FEEDBACK_DIRECTIVE plan. They must reach the LLM.
-  const mentor = params.plan?.mentor as (typeof params.plan.mentor & {
+  // FIX: use NonNullable<ExecutionPlan['mentor']> to avoid unsafe typeof on optional plan
+  const mentor: (NonNullable<ExecutionPlan['mentor']> & {
+    activeExercise?: string
+    activeTopic?: string
+  }) | undefined = params.plan?.mentor as (NonNullable<ExecutionPlan['mentor']> & {
     activeExercise?: string
     activeTopic?: string
   }) | undefined
