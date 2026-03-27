@@ -2,21 +2,21 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.0 — Beta Tutor Interface
+// LINGORA SEEK 3.1 — Beta Tutor Interface
 // =============================================================================
-// FIX LOG (applied by Consultora Senior 2026-03-25):
-//
-//   FIX-1   sendComposer: audio payload aligned with SEEK 3.0 route.ts.
-//           Sends audioDataUrl + audioMimeType instead of legacy payload.audio.
-//
-//   FIX-1B  audio artifact renderer: supports root-level dataUrl returned by
-//           execution-engine TTS artifacts.
-//
-//   FIX-1C  SuggestedActionBar handler accepts both legacy action and SEEK 3.0
-//           type fields for compatibility with current backend contracts.
-//
-// UI remains compatible with SEEK 3.0 orchestrator, execution-engine,
-// execution-engine-stream, and mentor-engine.
+// FIX LOG:
+//   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
+//   FIX-1B   audio artifact renderer: supports root-level dataUrl.
+//   FIX-1C   SuggestedActionBar: accepts both legacy action and SEEK 3.0 type.
+//   FIX-8A   SEEK 3.1 Fase 0-A: SS type extended with semantic state fields.
+//   FIX-8B   SEEK 3.1 Fase 0-A: callAPI sends currentLessonTopic,
+//            currentExercise, expectedResponseMode, _exerciseAttemptCount
+//            so the orchestrator exercise lock receives correct state.
+//   FIX-8C   SEEK 3.1 Fase 0-A: reset button clears Fase 0-A fields to
+//            prevent stale exercise state contaminating new sessions.
+//   FIX-8D   SEEK 3.1 Fase 0-A: ArtifactRender roadmap case updated to
+//            handle RoadmapBlock contract (modules[]) from execution-engine,
+//            with backward-compatible fallback for legacy steps[] shape.
 // =============================================================================
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
@@ -47,6 +47,7 @@ interface Msg {
 }
 type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 
+// FIX-8A: extended with SEEK 3.1 Fase 0-A semantic state fields
 interface SS {
   lang: Lang; mentor: MK; topic: TK; level: string; tokens: number
   samples: string[]; sessionId: string; commercialOffers: unknown[]
@@ -57,11 +58,16 @@ interface SS {
   courseActive?:       boolean
   lastAction?:         string | null
   awaitingQuizAnswer?: boolean
-  activeMode?:     ActiveMode
-  learningStage?:  string
-  currentModule?:  number
-  score?:          number
-  pdfCourseActive?: boolean
+  activeMode?:         ActiveMode
+  learningStage?:      string
+  currentModule?:      number
+  score?:              number
+  pdfCourseActive?:    boolean
+  // SEEK 3.1 Fase 0-A — semantic state fields
+  currentLessonTopic?:    string
+  currentExercise?:       string
+  expectedResponseMode?:  'exercise_answer' | 'free' | 'quiz_answer'
+  _exerciseAttemptCount?: number
 }
 interface TableRow { left: string; right: string }
 interface QuizQ    { question: string; options: string[]; correct: number; explanation?: string }
@@ -240,11 +246,7 @@ function SL({ children }: { children: ReactNode }) {
 
 function TableBlock({ rows }: { rows: TableRow[] }) {
   if (!rows.length) return null
-  const content = {
-    columns: ['Forma', 'Valor'],
-    rows:    rows.map(r => [r.left, r.right]),
-    tone:    'comparison' as const,
-  }
+  const content = { columns: ['Forma', 'Valor'], rows: rows.map(r => [r.left, r.right]), tone: 'comparison' as const }
   return <TableArtifactBlock content={content} />
 }
 
@@ -276,11 +278,7 @@ function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
                   ? <span style={{ color:'var(--teal)' }}>✅ Correcto</span>
                   : <span style={{ color:'var(--coral)' }}>❌ Incorrecto — la respuesta correcta es: <strong style={{ color:'#fff' }}>{q.options[q.correct]}</strong></span>
                 }
-                {(q as QuizQ & { explanation?: string }).explanation && (
-                  <span style={{ color:'var(--muted)', fontWeight:400, fontSize:11 }}>
-                    {(q as QuizQ & { explanation?: string }).explanation}
-                  </span>
-                )}
+                {q.explanation && <span style={{ color:'var(--muted)', fontWeight:400, fontSize:11 }}>{q.explanation}</span>}
               </div>
             )}
           </div>
@@ -292,12 +290,10 @@ function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
 
 function SchemaBlock({ content }: { content: Record<string, unknown> }) {
   const s = useMemo(() => normSchema(content), [content])
-
   const exportTxt = () => {
     const lines = ['LINGORA Schema', s.title, '', s.objective, '', s.keyConcepts.length ? 'Conceptos: ' + s.keyConcepts.join(', ') : '', '', ...s.tableRows.map(r => `${r.left}: ${r.right}`), '', ...s.subtopics.map(sub => `${sub.title}\n${sub.content}${sub.keyTakeaway ? '\n80/20: ' + sub.keyTakeaway : ''}`), '', ...s.examples, '', s.summary ? '80/20: ' + s.summary : '', '', '--- SIMULACRO ---', ...s.quiz.map((q,i) => `${i+1}. ${q.question}\n${q.options.map((o,oi) => `  ${'ABCD'[oi]}) ${o}${oi===q.correct?' ✓':''}`).join('\n')}`)].filter(Boolean)
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'})); a.download = 'lingora-schema.txt'; a.click()
   }
-
   return (
     <div style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:20, overflow:'hidden', background:'linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018))', border:'1px solid var(--border)', boxShadow:'0 12px 36px rgba(0,0,0,.22)' }}>
       <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, background:'rgba(255,255,255,.02)' }}>
@@ -316,8 +312,7 @@ function SchemaBlock({ content }: { content: Record<string, unknown> }) {
         {s.keyConcepts.length > 0 && <div><SL>Conceptos clave</SL><div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>{s.keyConcepts.map((c,i) => <Badge key={i} t="teal">{c}</Badge>)}</div></div>}
         {s.tableRows.length > 0 && <div><SL>Cuadro visual</SL><TableBlock rows={s.tableRows} /></div>}
         {s.subtopics.length > 0 && (
-          <div>
-            <SL>Desarrollo</SL>
+          <div><SL>Desarrollo</SL>
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
               {s.subtopics.map((sub, i) => (
                 <div key={i} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
@@ -330,34 +325,19 @@ function SchemaBlock({ content }: { content: Record<string, unknown> }) {
           </div>
         )}
         {s.examples.length > 0 && (
-          <div>
-            <SL>Ejemplos</SL>
+          <div><SL>Ejemplos</SL>
             <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
               {s.examples.map((ex, i) => <div key={i} style={{ fontSize:14, lineHeight:1.6, color:'#fff', padding:'9px 12px', borderRadius:12, background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.05)' }}>{ex}</div>)}
             </div>
           </div>
         )}
-        {(s.errors?.length > 0 || s.keyConcepts.some(c => c.toLowerCase().includes('error'))) && (
+        {s.errors?.length > 0 && (
           <div style={{ background:'linear-gradient(180deg,rgba(255,107,107,.09),rgba(255,107,107,.04))', border:'1px solid rgba(255,107,107,.22)', borderRadius:14, padding:14 }}>
             <SL>⚠️ Errores frecuentes</SL>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              {(s.errors?.length > 0 ? s.errors : s.keyConcepts.filter(c => c.toLowerCase().includes('error'))
-              ).map((e: string, i: number) => (
+              {s.errors.map((e, i) => (
                 <div key={i} style={{ fontSize:13, color:'var(--coral)', display:'flex', gap:6, alignItems:'flex-start' }}>
                   <span style={{ flexShrink:0 }}>❌</span><span>{e}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {s.subtopics.some(sub => sub.title.toLowerCase().includes('error') || sub.content.toLowerCase().includes('❌')) && (
-          <div style={{ background:'rgba(255,107,107,.06)', border:'1px solid rgba(255,107,107,.18)', borderRadius:14, padding:14 }}>
-            <SL>⚠️ Errores frecuentes</SL>
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {s.subtopics.filter(sub => sub.title.toLowerCase().includes('error') || sub.content.toLowerCase().includes('❌')).map((sub,i) => (
-                <div key={i}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'var(--coral)', marginBottom:3 }}>{sub.title}</div>
-                  <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.5 }}>{sub.content}</div>
                 </div>
               ))}
             </div>
@@ -381,9 +361,7 @@ function SchemaBlock({ content }: { content: Record<string, unknown> }) {
 function TableArtifactBlock({ content }: { content: Record<string, unknown> }) {
   const c = content as { title?: string; subtitle?: string; columns: string[]; rows: string[][]; tone?: string }
   if (!c.columns?.length || !c.rows?.length) return null
-  const toneColors: Record<string, string> = {
-    comparison:'#0891b2', conjugation:'#7c3aed', vocabulary:'#00c9a7', exam:'#d97706',
-  }
+  const toneColors: Record<string, string> = { comparison:'#0891b2', conjugation:'#7c3aed', vocabulary:'#00c9a7', exam:'#d97706' }
   const accentColor = toneColors[c.tone ?? 'comparison'] ?? 'var(--teal)'
   return (
     <div style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:16, overflow:'hidden', border:`1px solid ${accentColor}33`, background:'rgba(255,255,255,.03)' }}>
@@ -398,9 +376,7 @@ function TableArtifactBlock({ content }: { content: Record<string, unknown> }) {
           <thead>
             <tr style={{ background:`${accentColor}15` }}>
               {c.columns.map((col, i) => (
-                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700, color:accentColor, fontSize:11, letterSpacing:'.06em', textTransform:'uppercase', borderBottom:`1px solid ${accentColor}22`, whiteSpace:'nowrap' }}>
-                  {col}
-                </th>
+                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700, color:accentColor, fontSize:11, letterSpacing:'.06em', textTransform:'uppercase', borderBottom:`1px solid ${accentColor}22`, whiteSpace:'nowrap' }}>{col}</th>
               ))}
             </tr>
           </thead>
@@ -408,9 +384,7 @@ function TableArtifactBlock({ content }: { content: Record<string, unknown> }) {
             {c.rows.map((row, ri) => (
               <tr key={ri} style={{ borderBottom: ri < c.rows.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none', background: ri % 2 === 0 ? 'transparent' : 'rgba(255,255,255,.02)' }}>
                 {row.map((cell, ci) => (
-                  <td key={ci} style={{ padding:'9px 12px', color: ci === 0 ? 'var(--silver)' : 'var(--muted)', fontWeight: ci === 0 ? 600 : 400, verticalAlign:'top' }}>
-                    {cell}
-                  </td>
+                  <td key={ci} style={{ padding:'9px 12px', color: ci === 0 ? 'var(--silver)' : 'var(--muted)', fontWeight: ci === 0 ? 600 : 400, verticalAlign:'top' }}>{cell}</td>
                 ))}
               </tr>
             ))}
@@ -423,7 +397,7 @@ function TableArtifactBlock({ content }: { content: Record<string, unknown> }) {
 
 function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
   type RCell = { text: string; icon?: string; tone?: string; bold?: boolean; align?: string }
-  const c = content as { title?: string; subtitle?: string; layout?: string; columns: Array<{key:string;label:string;width?:string}>; rows: RCell[][] }
+  const c = content as { title?: string; subtitle?: string; columns: Array<{key:string;label:string;width?:string}>; rows: RCell[][] }
   if (!c.columns?.length || !c.rows?.length) return null
   const toneStyle: Record<string, { color: string; bg: string }> = {
     ok:     { color:'#00c9a7', bg:'rgba(0,201,167,.1)' },
@@ -445,9 +419,7 @@ function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
           <thead>
             <tr style={{ background:'rgba(255,255,255,.04)' }}>
               {c.columns.map((col, i) => (
-                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700, color:'var(--teal)', fontSize:11, letterSpacing:'.06em', textTransform:'uppercase', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap', width: col.width }}>
-                  {col.label}
-                </th>
+                <th key={i} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700, color:'var(--teal)', fontSize:11, letterSpacing:'.06em', textTransform:'uppercase', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap', width: col.width }}>{col.label}</th>
               ))}
             </tr>
           </thead>
@@ -515,9 +487,7 @@ function renderSBlock(b: SBlock, i: number): ReactNode {
       return (
         <div key={i} style={{ background:`linear-gradient(180deg,${ts.bg},${ts.bg.replace('.09','.04')})`, border:`1px solid ${ts.border}`, borderRadius:14, padding:14 }}>
           {b.label && <div style={{ fontSize:11, fontWeight:800, color:ts.color, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5 }}>{b.label}</div>}
-          <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>
-            {ts.icon} {b.text}
-          </div>
+          <div style={{ fontSize:14, color:'#fff', lineHeight:1.6, fontWeight:600 }}>{ts.icon} {b.text}</div>
         </div>
       )
     }
@@ -561,8 +531,7 @@ function renderSBlock(b: SBlock, i: number): ReactNode {
 function isValidSBlock(raw: unknown): raw is SBlock {
   if (!raw || typeof raw !== 'object') return false
   const b = raw as Record<string, unknown>
-  return typeof b.type === 'string' &&
-    ['concept','bullets','highlight','flow','comparison','table'].includes(b.type)
+  return typeof b.type === 'string' && ['concept','bullets','highlight','flow','comparison','table'].includes(b.type)
 }
 
 function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
@@ -591,26 +560,20 @@ function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
 
 // ─── SuggestedActionBar ───────────────────────────
 type SuggestedAction = {
-  id?:     string
-  label:   string
-  action:  string
-  type?:   string
+  id?:      string
+  label:    string
+  action:   string
+  type?:    string
   payload?: Record<string, unknown>
-  tone?:   'primary' | 'secondary' | 'warning'
-  emoji?:  string
+  tone?:    'primary' | 'secondary' | 'warning'
+  emoji?:   string
 }
 
-function SuggestedActionBar({
-  actions,
-  onAction,
-}: {
-  actions:  SuggestedAction[]
-  onAction: (action: SuggestedAction) => void
-}) {
+function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAction[]; onAction: (action: SuggestedAction) => void }) {
   if (!actions?.length) return null
   const toneStyle = (tone?: string) => {
-    if (tone === 'primary')  return { bg: 'rgba(0,201,167,.15)', border: 'rgba(0,201,167,.35)', color: 'var(--teal)' }
-    if (tone === 'warning')  return { bg: 'rgba(255,107,107,.1)', border: 'rgba(255,107,107,.3)', color: 'var(--coral)' }
+    if (tone === 'primary') return { bg: 'rgba(0,201,167,.15)', border: 'rgba(0,201,167,.35)', color: 'var(--teal)' }
+    if (tone === 'warning') return { bg: 'rgba(255,107,107,.1)', border: 'rgba(255,107,107,.3)', color: 'var(--coral)' }
     return { bg: 'rgba(255,255,255,.05)', border: 'var(--border)', color: 'var(--muted)' }
   }
   return (
@@ -618,19 +581,10 @@ function SuggestedActionBar({
       {actions.map((a, idx) => {
         const s = toneStyle(a.tone)
         return (
-          <button
-            key={a.id ?? idx}
-            onClick={() => onAction(a)}
-            style={{
-              display:'flex', alignItems:'center', gap:5,
-              padding:'5px 11px', borderRadius:20,
-              border:`1px solid ${s.border}`, background:s.bg,
-              color:s.color, fontSize:12, fontWeight:600, cursor:'pointer',
-              transition:'all .15s',
-            }}
+          <button key={a.id ?? idx} onClick={() => onAction(a)}
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 11px', borderRadius:20, border:`1px solid ${s.border}`, background:s.bg, color:s.color, fontSize:12, fontWeight:600, cursor:'pointer', transition:'all .15s' }}
             onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
-            onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
-          >
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}>
             {a.emoji && <span style={{ fontSize:13 }}>{a.emoji}</span>}
             {a.label}
           </button>
@@ -644,25 +598,13 @@ function SuggestedActionBar({
 function CopyBlock({ text, children }: { text: string; children: React.ReactNode }) {
   const [copied, setCopied] = React.useState(false)
   const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    }).catch(() => {})
+    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800) }).catch(() => {})
   }
   return (
     <div style={{ position:'relative', width:'100%' }}>
       {children}
-      <button
-        onClick={copy}
-        title="Copiar"
-        style={{
-          position:'absolute', top:6, right:6,
-          padding:'3px 8px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)',
-          background:'rgba(0,201,167,.08)', color:'var(--teal)',
-          fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4,
-          transition:'all .15s', opacity: copied ? 1 : 0.7,
-        }}
-      >
+      <button onClick={copy} title="Copiar"
+        style={{ position:'absolute', top:6, right:6, padding:'3px 8px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)', background:'rgba(0,201,167,.08)', color:'var(--teal)', fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4, transition:'all .15s', opacity: copied ? 1 : 0.7 }}>
         {copied ? '✓ Copiado' : '⎘ Copiar'}
       </button>
     </div>
@@ -697,9 +639,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
           <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
         </div>
-        <div style={{ padding:14 }}>
-          <QuizBlock quiz={qc.questions} />
-        </div>
+        <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
       </div>
     )
   }
@@ -725,9 +665,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
           </div>
         </div>
         <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
-          {mods.slice(0, 6).map((m: string, i: number) => (
-            <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {m}</div>
-          ))}
+          {mods.slice(0, 6).map((m: string, i: number) => <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {m}</div>)}
           <a href={cp.url} download target="_blank" rel="noopener"
             style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:4, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.12)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700, width:'fit-content' }}>
             📄 Descargar curso PDF
@@ -749,7 +687,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
     )
   }
   if (a.type === 'simulacro_result' && a.content) {
-    const r = a.content as { score: number; total: number; feedback: string; recommendation: string; retry?: boolean }
+    const r = a.content as { score: number; total: number; feedback: string; recommendation: string }
     const pct = Math.round((r.score / (r.total || 10)) * 100)
     const color = pct >= 80 ? 'var(--teal)' : pct >= 60 ? 'var(--gold)' : 'var(--coral)'
     return (
@@ -800,44 +738,74 @@ function ArtifactRender({ a }: { a: Artifact }) {
       </div>
     )
   }
+
+  // FIX-8D: Updated roadmap renderer — handles RoadmapBlock (modules[]) from execution-engine
+  // with backward-compatible fallback for legacy steps[] shape.
   if (a.type === 'roadmap' && a.content) {
-    const r = a.content as { mode: string; mentor: string; topic: string; level: string; steps: string[]; first: string }
-    const modeEmoji: Record<string, string> = { interact:'🧠', structured:'🎓', pdf_course:'📄', free:'💬' }
-    const modeLabel: Record<string, string> = { interact:'Interacción inteligente', structured:'Curso estructurado', pdf_course:'Curso PDF', free:'Conversación libre' }
+    const r = a.content as {
+      title?: string
+      modules?: Array<{ index: number; title: string; focus: string; completed: boolean; current: boolean }>
+      // legacy shape fallback
+      steps?: string[]
+      first?: string
+      mode?: string
+      mentor?: string
+      topic?: string
+      level?: string
+    }
+    const hasModules = Array.isArray(r.modules) && r.modules.length > 0
+    const hasSteps   = Array.isArray(r.steps)   && r.steps.length   > 0
+    if (!hasModules && !hasSteps) return null
     return (
       <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:16 }}>{modeEmoji[r.mode] ?? '🎓'}</span>
+          <span style={{ fontSize:16 }}>🎓</span>
           <div>
-            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{modeLabel[r.mode] ?? r.mode}</div>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>{r.mentor?.toUpperCase()} · {r.topic} · {r.level}</div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{r.title ?? r.topic ?? 'Ruta de aprendizaje'}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>
+              {hasModules ? `${r.modules!.length} módulos` : `${r.steps!.length} pasos`}
+              {r.mentor && ` · ${r.mentor.toUpperCase()}`}
+              {r.level  && ` · ${r.level}`}
+            </div>
           </div>
         </div>
         <div style={{ padding:'12px 14px' }}>
-          <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>Ruta de hoy</div>
+          <div style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:8 }}>
+            {hasModules ? 'Módulos' : 'Ruta de hoy'}
+          </div>
           <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-            {(r.steps ?? []).map((step: string, i: number) => (
-              <button
-                key={i}
-                onClick={() => {
-                  const evt = new CustomEvent('lingora-step-select', { detail: { step, index: i } })
-                  window.dispatchEvent(evt)
-                }}
-                style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color:'var(--silver)', background:'transparent', border:'none', cursor:'pointer', textAlign:'left', padding:'4px 0', width:'100%', transition:'color .15s' }}
-                onMouseEnter={e => (e.currentTarget.style.color = 'var(--teal)')}
-                onMouseLeave={e => (e.currentTarget.style.color = 'var(--silver)')}
-              >
-                <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'var(--teal)', flexShrink:0 }}>{i+1}</span>
-                {step}
-                <span style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', opacity:.6 }}>›</span>
-              </button>
-            ))}
+            {hasModules
+              ? r.modules!.map((mod, i) => (
+                  <button key={i}
+                    onClick={() => window.dispatchEvent(new CustomEvent('lingora-step-select', { detail: { step: mod.title, index: mod.index } }))}
+                    style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color: mod.current ? 'var(--teal)' : mod.completed ? 'var(--muted)' : 'var(--silver)', background:'transparent', border:'none', cursor:'pointer', textAlign:'left', padding:'4px 0', width:'100%', transition:'color .15s' }}>
+                    <span style={{ width:20, height:20, borderRadius:'50%', background: mod.completed ? 'rgba(0,201,167,.3)' : mod.current ? 'rgba(0,201,167,.15)' : 'rgba(255,255,255,.06)', border:`1px solid ${mod.current ? 'var(--teal)' : 'var(--border)'}`, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color: mod.completed ? '#fff' : 'var(--teal)', flexShrink:0 }}>
+                      {mod.completed ? '✓' : mod.index + 1}
+                    </span>
+                    <span style={{ flex:1 }}>{mod.title}</span>
+                    {mod.focus && <span style={{ fontSize:11, color:'var(--muted)', marginLeft:4, flexShrink:0 }}>{mod.focus}</span>}
+                    <span style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', opacity:.6 }}>›</span>
+                  </button>
+                ))
+              : r.steps!.map((step, i) => (
+                  <button key={i}
+                    onClick={() => window.dispatchEvent(new CustomEvent('lingora-step-select', { detail: { step, index: i } }))}
+                    style={{ display:'flex', gap:8, alignItems:'center', fontSize:13, color:'var(--silver)', background:'transparent', border:'none', cursor:'pointer', textAlign:'left', padding:'4px 0', width:'100%', transition:'color .15s' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = 'var(--teal)')}
+                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--silver)')}>
+                    <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(0,201,167,.15)', border:'1px solid var(--teal)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'var(--teal)', flexShrink:0 }}>{i+1}</span>
+                    {step}
+                    <span style={{ marginLeft:'auto', fontSize:11, color:'var(--teal)', opacity:.6 }}>›</span>
+                  </button>
+                ))
+            }
           </div>
           {r.first && <div style={{ marginTop:10, fontSize:13, color:'var(--teal)', fontWeight:700 }}>→ {r.first}</div>}
         </div>
       </div>
     )
   }
+
   if (a.type === 'score_report' && a.content) {
     const r = a.content as { score: number; total: number; feedback: string; recommendation: string; nextStep: string }
     const pct = Math.round(((r.score ?? 0) / Math.max(r.total ?? 10, 1)) * 100)
@@ -889,9 +857,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
           <div style={{ fontSize:13, color:'var(--silver)' }}>{r.instructions}</div>
           {(r.exercises ?? []).length > 0 && (
             <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-              {(r.exercises ?? []).map((ex: string, i: number) => (
-                <div key={i} style={{ fontSize:12, color:'var(--muted)' }}>• {ex}</div>
-              ))}
+              {(r.exercises ?? []).map((ex, i) => <div key={i} style={{ fontSize:12, color:'var(--muted)' }}>• {ex}</div>)}
             </div>
           )}
         </div>
@@ -910,9 +876,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
         <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
           {(r.corrections ?? []).length > 0 && (
             <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-              {(r.corrections ?? []).map((c: string, i: number) => (
-                <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>✗ {c}</div>
-              ))}
+              {r.corrections.map((c, i) => <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>✗ {c}</div>)}
             </div>
           )}
           <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
@@ -960,13 +924,8 @@ function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
         </div>
       </div>
       {!isUser && (msg.suggestedActions?.length ?? 0) > 0 && (
-        <SuggestedActionBar
-          actions={msg.suggestedActions!}
-          onAction={(a) => {
-            const evt = new CustomEvent('lingora-suggested-action', { detail: a })
-            window.dispatchEvent(evt)
-          }}
-        />
+        <SuggestedActionBar actions={msg.suggestedActions!}
+          onAction={(a) => window.dispatchEvent(new CustomEvent('lingora-suggested-action', { detail: a }))} />
       )}
     </>
   )
@@ -993,35 +952,22 @@ function doExportTxt(msgs: Msg[]) {
 async function doExportPdfBackend(msgs: Msg[], ss: SS) {
   if (!msgs.length) return
   const lines = msgs
-    .map(m => ({
-      sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
-      text:   (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
-    }))
+    .map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }))
     .filter(l => l.text.length > 0)
   const transcript = lines.map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
   const exportMessage = `pdf: Genera el documento PDF de esta sesión de tutoría LINGORA.\nMentor: ${ss.mentor} · Nivel: ${ss.level} · Tema: ${ss.topic}\n\n${transcript}`
   try {
     const res = await fetch('/api/chat', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        message:   exportMessage,
-        exportPdf: true,
-        state:     { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic },
-      }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: exportMessage, exportPdf: true, state: { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic } }),
     })
     const data = await res.json()
     if (data.artifact?.type === 'pdf' && data.artifact?.url) {
-      const a = document.createElement('a')
-      a.href = data.artifact.url
-      a.download = `lingora-session-${Date.now()}.pdf`
-      a.click()
+      const a = document.createElement('a'); a.href = data.artifact.url; a.download = `lingora-session-${Date.now()}.pdf`; a.click()
       return
     }
     doExportTxt(msgs)
-  } catch {
-    doExportTxt(msgs)
-  }
+  } catch { doExportTxt(msgs) }
 }
 
 // ─── Main ─────────────────────────────────────────
@@ -1101,15 +1047,21 @@ export default function BetaPage() {
           ttsRequested: true,
           state: {
             ...sessionRef.current,
-            mentor:           mentorRef.current,
-            lang:             langRef.current,
-            topic:            topicRef.current,
-            activeMentor:     mentorRef.current,
+            mentor:            mentorRef.current,
+            lang:              langRef.current,
+            topic:             topicRef.current,
+            activeMentor:      mentorRef.current,
             topicSystemPrompt: TSYS[topicRef.current],
-            activeMode:       sessionRef.current.activeMode,
+            activeMode:        sessionRef.current.activeMode,
             // SEEK 3.0 fields
-            mentorProfile:    mentorRef.current,
+            mentorProfile:     mentorRef.current,
             interfaceLanguage: langRef.current,
+            // FIX-8B: SEEK 3.1 Fase 0-A — semantic state must travel with every request
+            // so the orchestrator exercise lock has currentExercise and expectedResponseMode
+            currentLessonTopic:    sessionRef.current.currentLessonTopic,
+            currentExercise:       sessionRef.current.currentExercise,
+            expectedResponseMode:  sessionRef.current.expectedResponseMode,
+            _exerciseAttemptCount: sessionRef.current._exerciseAttemptCount,
           }
         }),
         signal: ctrl.signal,
@@ -1142,20 +1094,13 @@ export default function BetaPage() {
               if (parsed.done) {
                 if (parsed.state) {
                   setSession(s => {
-                    const n = {
-                      ...s, ...parsed.state,
-                      samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))],
-                      sessionId: s.sessionId,
-                    }
+                    const n = { ...s, ...parsed.state, samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
                     sessionRef.current = n
                     return n
                   })
                 }
                 if (parsed.artifact || parsed.suggestedActions) {
-                  setMsgs(prev => prev.map(m => m.id === streamId
-                    ? { ...m, artifact: parsed.artifact ?? null, suggestedActions: parsed.suggestedActions }
-                    : m
-                  ))
+                  setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, artifact: parsed.artifact ?? null, suggestedActions: parsed.suggestedActions } : m))
                 }
               }
             } catch { /* partial chunk */ }
@@ -1168,11 +1113,7 @@ export default function BetaPage() {
       const data = await res.json()
       if (data.state) {
         setSession(s => {
-          const n = {
-            ...s, ...data.state,
-            samples: [...(s.samples ?? []), ...((data.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))],
-            sessionId: s.sessionId,
-          }
+          const n = { ...s, ...data.state, samples: [...(s.samples ?? []), ...((data.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
           sessionRef.current = n
           return n
         })
@@ -1180,13 +1121,7 @@ export default function BetaPage() {
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
-      addMsg({
-        sender: mentorRef.current,
-        text: text || 'Material listo:',
-        artifact: data.artifact ?? null,
-        score: data.pronunciationScore,
-        suggestedActions: data.suggestedActions ?? undefined,
-      })
+      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore, suggestedActions: data.suggestedActions ?? undefined })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó demasiado. Intenta de nuevo.' : 'Error de conexión. Intenta de nuevo.' })
@@ -1199,39 +1134,23 @@ export default function BetaPage() {
       const a = (e as CustomEvent).detail as { action: string; type?: string; label: string; payload?: Record<string, unknown> }
       if (!a || loading) return
       const actionMessages: Record<string, string> = {
-        show_schema:         'Hazme un esquema completo de este tema',
-        show_table:          'Hazme una tabla comparativa de este tema',
-        show_matrix:         'Hazme una matriz de análisis',
-        start_quiz:          'Hazme un simulacro de este tema',
-        retry_quiz:          'Dame otro simulacro más difícil',
-        retry_module:        'Repite este módulo',
-        practice_examples:   'Dame 3 ejemplos guiados para practicar',
-        pronunciation_drill: 'Quiero practicar la pronunciación',
-        request_pronunciation:'Evalúa mi pronunciación',
-        deepen_topic:        'Profundiza más en este tema',
-        request_explanation: 'Explícame esto con más detalle',
-        next_module:         'Siguiente bloque',
-        continue_lesson:     'Continúa con la lección',
-        switch_mode:         'Cambiar a curso estructurado',
-        switch_mentor:       'Cambiar de mentor',
-        change_depth:        'Cambia la profundidad',
-        download_pdf:        'Genera el PDF de este material',
-        export_chat_pdf:     'Exporta esta conversación a PDF',
-        download_course_pdf: 'Descarga el curso completo en PDF',
-        review_errors:       'Repasa mis errores recurrentes',
-        request_correction:  'Corrige lo que he escrito',
-        request_translation: 'Traduce esto',
-        hear_audio:          'Lee esto en voz alta',
-        show_schema_pro:     'Hazme un esquema avanzado',
-        show_image:          'Genera un diagrama visual de este tema',
-        start_course:        'Empezamos el curso',
-        resume_course:       'Continúa el curso donde lo dejamos',
-        choose_examples:     'Ver ejemplos reales',
-        choose_exercise:     'Hacer un ejercicio',
-        request_immersion:   'Cuéntame sobre la inmersión',
-        diagnostic_start:    'Evalúa mi nivel de español',
+        show_schema: 'Hazme un esquema completo de este tema', show_table: 'Hazme una tabla comparativa de este tema',
+        show_matrix: 'Hazme una matriz de análisis', start_quiz: 'Hazme un simulacro de este tema',
+        retry_quiz: 'Dame otro simulacro más difícil', retry_module: 'Repite este módulo',
+        practice_examples: 'Dame 3 ejemplos guiados para practicar', pronunciation_drill: 'Quiero practicar la pronunciación',
+        request_pronunciation: 'Evalúa mi pronunciación', deepen_topic: 'Profundiza más en este tema',
+        request_explanation: 'Explícame esto con más detalle', next_module: 'Siguiente bloque',
+        continue_lesson: 'Continúa con la lección', switch_mode: 'Cambiar a curso estructurado',
+        switch_mentor: 'Cambiar de mentor', change_depth: 'Cambia la profundidad',
+        download_pdf: 'Genera el PDF de este material', export_chat_pdf: 'Exporta esta conversación a PDF',
+        download_course_pdf: 'Descarga el curso completo en PDF', review_errors: 'Repasa mis errores recurrentes',
+        request_correction: 'Corrige lo que he escrito', request_translation: 'Traduce esto',
+        hear_audio: 'Lee esto en voz alta', show_schema_pro: 'Hazme un esquema avanzado',
+        show_image: 'Genera un diagrama visual de este tema', start_course: 'Empezamos el curso',
+        resume_course: 'Continúa el curso donde lo dejamos', choose_examples: 'Ver ejemplos reales',
+        choose_exercise: 'Hacer un ejercicio', request_immersion: 'Cuéntame sobre la inmersión',
+        diagnostic_start: 'Evalúa mi nivel de español',
       }
-      // Support both 'action' (legacy) and 'type' (SEEK 3.0) fields
       const actionKey = a.action ?? a.type ?? ''
       const msg = actionMessages[actionKey] ?? a.label
       addMsg({ sender: 'user', text: msg })
@@ -1277,30 +1196,22 @@ export default function BetaPage() {
       const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno', 'corrige mi pronunciación']
       const inPronMode   = sessionRef.current.tutorPhase === 'pronunciation' || sessionRef.current.lastAction === 'pronunciation'
       const userWantsEval = evalKeywords.some(k => msg.toLowerCase().includes(k))
-
       if ((inPronMode || userWantsEval) && msgs.length > 0) {
         const lastMentorMsg = [...msgs].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln' && m.text?.length > 10)
         if (lastMentorMsg?.text) {
           const rawTarget     = lastMentorMsg.text.replace(/<[^>]+>/g, '').trim()
           const firstSentence = rawTarget.split(/[.!?]/)[0]?.trim()
-          const target        = firstSentence && firstSentence.length > 5 && firstSentence.length < 120
-            ? firstSentence
-            : rawTarget.slice(0, 120)
+          const target        = firstSentence && firstSentence.length > 5 && firstSentence.length < 120 ? firstSentence : rawTarget.slice(0, 120)
           if (target.length > 5) payload.pronunciationTarget = target
         }
       }
     }
 
-    // FIX-1: align audio payload with SEEK 3.0 route.ts
-    // route.ts expects audioDataUrl + audioMimeType, NOT audio.data + audio.format
     if (hasAudio && pendingAudioBlob) {
       if (!hasText) addMsg({ sender:'user', text:'🎤 Audio enviado', audioUrl: pendingAudioUrl ?? undefined })
       else setMsgs(prev => prev.map(m => m.id === prev[prev.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m))
-
       const audioDataUrl = await new Promise<string>(res => {
-        const r = new FileReader()
-        r.onload = () => res(r.result as string)
-        r.readAsDataURL(pendingAudioBlob)
+        const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(pendingAudioBlob)
       })
       payload.audioDataUrl  = audioDataUrl
       payload.audioMimeType = pendingAudioBlob.type || 'audio/webm'
@@ -1310,16 +1221,11 @@ export default function BetaPage() {
       const imageFile = pendingFiles.find(f => f.type.startsWith('image/'))
       const imageUrl  = imageFile ? `data:${imageFile.type};base64,${imageFile.data}` : undefined
       if (!hasText && !hasAudio) addMsg({ sender:'user', text:`📎 ${pendingFiles.map(f=>f.name).join(', ')}`, imageUrl })
-      else if (imageUrl) {
-        setMsgs(prev => prev.map((m, i) => i === prev.length-1 ? { ...m, imageUrl } : m))
-      }
+      else if (imageUrl) setMsgs(prev => prev.map((m, i) => i === prev.length-1 ? { ...m, imageUrl } : m))
       payload.files = pendingFiles
     }
 
-    setPendingAudioBlob(null)
-    setPendingAudioUrl(null)
-    setPendingFiles([])
-
+    setPendingAudioBlob(null); setPendingAudioUrl(null); setPendingFiles([])
     await callAPI(payload)
   }, [input, loading, pendingAudioBlob, pendingAudioUrl, pendingFiles, msgs, addMsg, callAPI])
 
@@ -1328,28 +1234,18 @@ export default function BetaPage() {
     mentorRef.current = m; topicRef.current = t; langRef.current = l
     setSession(s => { const n = {...s, mentor:m, topic:t, lang:l}; sessionRef.current = n; return n })
     const c = COPY[l] ?? COPY.en
-    setSplashMsg(c.lnw)
-    setSplashRev(false)
-    setPhase('splash')
-    setTimeout(() => { setSplashRev(true) }, 1800)
-    setTimeout(() => { setPhase('mode') }, 3600)
+    setSplashMsg(c.lnw); setSplashRev(false); setPhase('splash')
+    setTimeout(() => setSplashRev(true), 1800)
+    setTimeout(() => setPhase('mode'), 3600)
   }, [])
 
   const selectMode = useCallback((mode: ActiveMode) => {
     setActiveMode(mode)
-    setSession(s => {
-      const n = { ...s, activeMode: mode }
-      sessionRef.current = n
-      return n
-    })
+    setSession(s => { const n = { ...s, activeMode: mode }; sessionRef.current = n; return n })
     setPhase('chat')
-    const m   = mentorRef.current
-    const l   = langRef.current
+    const m = mentorRef.current; const l = langRef.current
     const modeLabels: Record<ActiveMode, string> = {
-      interact:   '🧠 Interacción inteligente',
-      structured: '🎓 Curso estructurado',
-      pdf_course: '📄 Curso PDF',
-      free:       '💬 Conversación libre',
+      interact: '🧠 Interacción inteligente', structured: '🎓 Curso estructurado', pdf_course: '📄 Curso PDF', free: '💬 Conversación libre',
     }
     if (mode === 'structured' || mode === 'pdf_course') {
       setMsgs([{ id:'init', sender:m, text:`${modeLabels[mode]} activado. Preparando tu ruta...` }])
@@ -1359,19 +1255,13 @@ export default function BetaPage() {
       }, 400)
     } else {
       const greeting = GREETINGS[m][l] ?? GREETINGS[m].en ?? GREETINGS[m].es ?? ''
-      const modeNote = mode === 'free'
-        ? ''
-        : '\n\n_Modo interacción inteligente activo — respondo con tablas y esquemas cuando el contenido lo merece._'
+      const modeNote = mode === 'free' ? '' : '\n\n_Modo interacción inteligente activo — respondo con tablas y esquemas cuando el contenido lo merece._'
       setMsgs([{ id:'init', sender:m, text: greeting + (mode !== 'free' ? modeNote : '') }])
     }
   }, [callAPI])
 
   const toggleRec = useCallback(async () => {
-    if (recording) {
-      mrRef.current?.stop()
-      setRecording(false)
-      return
-    }
+    if (recording) { mrRef.current?.stop(); setRecording(false); return }
     if (pendingAudioUrl) { URL.revokeObjectURL(pendingAudioUrl); setPendingAudioUrl(null) }
     setPendingAudioBlob(null)
     try {
@@ -1383,8 +1273,7 @@ export default function BetaPage() {
         stream.getTracks().forEach(t => t.stop())
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
         const url  = URL.createObjectURL(blob)
-        setPendingAudioBlob(blob)
-        setPendingAudioUrl(url)
+        setPendingAudioBlob(blob); setPendingAudioUrl(url)
       }
       rec.start(); mrRef.current = rec; setRecording(true)
     } catch (e) { addMsg({ sender:'ln', text:`Micrófono no disponible: ${e instanceof Error ? e.message : String(e)}` }) }
@@ -1393,12 +1282,8 @@ export default function BetaPage() {
   const handleFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     const r = new FileReader()
-    r.onload = () => {
-      const b64 = (r.result as string).split(',')[1] || ''
-      setPendingFiles(prev => [...prev, { name: file.name, type: file.type, data: b64, size: file.size }])
-    }
-    r.readAsDataURL(file)
-    e.target.value = ''
+    r.onload = () => { const b64 = (r.result as string).split(',')[1] || ''; setPendingFiles(prev => [...prev, { name: file.name, type: file.type, data: b64, size: file.size }]) }
+    r.readAsDataURL(file); e.target.value = ''
   }, [])
 
   // ─── Render ──────────────────────────────────────
@@ -1406,12 +1291,7 @@ export default function BetaPage() {
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700;800&display=swap');
-        :root {
-          --navy:#080f1f; --navy2:#0d1828; --navy3:#132035;
-          --teal:#00c9a7; --coral:#ff6b6b; --gold:#f5c842;
-          --silver:rgba(255,255,255,.88); --muted:rgba(255,255,255,.50);
-          --dim:rgba(255,255,255,.22); --border:rgba(255,255,255,.08); --card:rgba(255,255,255,.04);
-        }
+        :root { --navy:#080f1f; --navy2:#0d1828; --navy3:#132035; --teal:#00c9a7; --coral:#ff6b6b; --gold:#f5c842; --silver:rgba(255,255,255,.88); --muted:rgba(255,255,255,.50); --dim:rgba(255,255,255,.22); --border:rgba(255,255,255,.08); --card:rgba(255,255,255,.04); }
         *, *::before, *::after { box-sizing:border-box; margin:0; padding:0 }
         html, body { height:100%; overflow:hidden }
         body { font-family:'DM Sans',system-ui,sans-serif; background:radial-gradient(circle at top,#0a1730 0%,#081120 55%,#050b15 100%); color:var(--silver); }
@@ -1424,13 +1304,11 @@ export default function BetaPage() {
         textarea:focus, button:focus, input:focus, select:focus { outline:none }
       `}</style>
 
-      {/* ── MODE CHOOSER ──────────────────────────────────────────────────── */}
+      {/* ── MODE CHOOSER ─────────────────────────────────────────────────── */}
       {phase === 'mode' && (
         <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:42, height:42, borderRadius:'50%', background:mm.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#fff' }}>
-              {mm.code}
-            </div>
+            <div style={{ width:42, height:42, borderRadius:'50%', background:mm.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#fff' }}>{mm.code}</div>
             <div>
               <div style={{ fontSize:16, fontWeight:800, color:'#fff' }}>{mm.name}</div>
               <div style={{ fontSize:12, color:'var(--muted)' }}>{mm.spec}</div>
@@ -1447,17 +1325,8 @@ export default function BetaPage() {
               { key:'pdf_course' as ActiveMode, emoji:'📄', title:'Curso PDF con entregas',   desc:'Material descargable. Entregas y corrección por el tutor.' },
               { key:'free'       as ActiveMode, emoji:'💬', title:'Conversación libre',       desc:'Habla con naturalidad. Correcciones oportunistas.' },
             ] as Array<{key:ActiveMode;emoji:string;title:string;desc:string}>).map(({ key, emoji, title, desc }) => (
-              <button
-                key={key}
-                onClick={() => selectMode(key)}
-                style={{
-                  display:'flex', alignItems:'center', gap:14, padding:'14px 16px',
-                  borderRadius:16,
-                  border: activeMode === key ? '1px solid rgba(0,201,167,.4)' : '1px solid var(--border)',
-                  background: activeMode === key ? 'rgba(0,201,167,.1)' : 'rgba(255,255,255,.02)',
-                  cursor:'pointer', textAlign:'left', transition:'all .15s', width:'100%',
-                }}
-              >
+              <button key={key} onClick={() => selectMode(key)}
+                style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 16px', borderRadius:16, border: activeMode === key ? '1px solid rgba(0,201,167,.4)' : '1px solid var(--border)', background: activeMode === key ? 'rgba(0,201,167,.1)' : 'rgba(255,255,255,.02)', cursor:'pointer', textAlign:'left', transition:'all .15s', width:'100%' }}>
                 <span style={{ fontSize:22, flexShrink:0 }}>{emoji}</span>
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:14, fontWeight:700, color:'#fff', marginBottom:2 }}>{title}</div>
@@ -1470,14 +1339,12 @@ export default function BetaPage() {
         </div>
       )}
 
-      {/* ── ONBOARDING ────────────────────────────────────────────────────── */}
+      {/* ── ONBOARDING ───────────────────────────────────────────────────── */}
       {phase === 'onboarding' && (
         <div style={{ position:'fixed', inset:0, overflowY:'auto', display:'flex', justifyContent:'center', padding:'32px 20px 48px' }}>
           <div style={{ width:'100%', maxWidth:620, animation:'fadeIn .4s ease both' }}>
             <div style={{ textAlign:'center', marginBottom:32, paddingTop:8 }}>
-              <div style={{ fontFamily:'"DM Serif Display",serif', fontSize:'clamp(2.5rem,6vw,3.8rem)', fontWeight:400, letterSpacing:'-.03em', background:'linear-gradient(135deg,#fff 38%,var(--teal))', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', marginBottom:8 }}>
-                LINGORA
-              </div>
+              <div style={{ fontFamily:'"DM Serif Display",serif', fontSize:'clamp(2.5rem,6vw,3.8rem)', fontWeight:400, letterSpacing:'-.03em', background:'linear-gradient(135deg,#fff 38%,var(--teal))', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', marginBottom:8 }}>LINGORA</div>
               <div style={{ fontSize:13, color:'var(--muted)', letterSpacing:'.04em' }}>{copy.tg}</div>
             </div>
             <div style={{ background:'rgba(255,255,255,.03)', border:'1px solid var(--border)', borderRadius:24, padding:'28px 24px', display:'flex', flexDirection:'column', gap:28 }}>
@@ -1536,7 +1403,7 @@ export default function BetaPage() {
         </div>
       )}
 
-      {/* ── SPLASH ───────────────────────────────────────────────────────── */}
+      {/* ── SPLASH ──────────────────────────────────────────────────────── */}
       {phase === 'splash' && (
         <div style={{ position:'fixed', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem', animation:'fadeIn .4s ease both' }}>
           <div style={{ marginBottom:28, display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
@@ -1546,14 +1413,10 @@ export default function BetaPage() {
           <p style={{ fontSize:16, color:'var(--muted)', textAlign:'center', maxWidth:400, lineHeight:1.7, marginBottom:40 }}>{splashMsg}</p>
           {splashRev && (
             <div style={{ animation:'fadeUp .5s ease both', textAlign:'center', display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
-              <div style={{ width:72, height:72, borderRadius:'50%', background:mm.bg, border:`2px solid ${mm.color}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:28, boxShadow:`0 0 28px ${mm.color}44` }}>
-                {mm.emoji}
-              </div>
+              <div style={{ width:72, height:72, borderRadius:'50%', background:mm.bg, border:`2px solid ${mm.color}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:28, boxShadow:`0 0 28px ${mm.color}44` }}>{mm.emoji}</div>
               <div style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:mm.color }}>{mm.code} · LINGORA</div>
               <div style={{ fontFamily:'"DM Serif Display",serif', fontSize:24, color:'#fff' }}>{mm.name}</div>
-              <div style={{ fontSize:13, color:'var(--muted)', maxWidth:300, lineHeight:1.6 }}>
-                {copy.bio[MENTOR_KEYS.indexOf(mentor)] ?? mm.spec}
-              </div>
+              <div style={{ fontSize:13, color:'var(--muted)', maxWidth:300, lineHeight:1.6 }}>{copy.bio[MENTOR_KEYS.indexOf(mentor)] ?? mm.spec}</div>
             </div>
           )}
           <div style={{ position:'absolute', bottom:40, display:'flex', gap:6 }}>
@@ -1562,7 +1425,7 @@ export default function BetaPage() {
         </div>
       )}
 
-      {/* ── CHAT ─────────────────────────────────────────────────────────── */}
+      {/* ── CHAT ────────────────────────────────────────────────────────── */}
       {phase === 'chat' && (
         <div style={{ display:'flex', flexDirection:'column', height:'100dvh', maxWidth:760, margin:'0 auto' }}>
           {/* Header */}
@@ -1574,11 +1437,9 @@ export default function BetaPage() {
                 <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:999, background:mm.bg, color:mm.color, border:`1px solid ${mm.color}33` }}>{mm.code}</span>
               </div>
               {(() => {
-                const tok    = session.tokens ?? 0
-                const lesson = (session.lessonIndex ?? 0) + 1
-                const inLesson = tok % 10
-                const pct    = Math.min(100, Math.round((inLesson / 10) * 100))
-                const ph     = session.tutorPhase ?? 'guide'
+                const tok = session.tokens ?? 0; const lesson = (session.lessonIndex ?? 0) + 1
+                const inLesson = tok % 10; const pct = Math.min(100, Math.round((inLesson / 10) * 100))
+                const ph = session.tutorPhase ?? 'guide'
                 return (
                   <div style={{ marginTop:4 }}>
                     <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
@@ -1607,9 +1468,21 @@ export default function BetaPage() {
                   </div>
                 )}
               </div>
+              {/* FIX-8C: reset clears SEEK 3.1 Fase 0-A semantic state fields */}
               <button onClick={() => {
                 setMsgs([])
-                setSession(s => ({...s,tokens:0,level:'A0',samples:[],lastTask:null,lastArtifact:null,tutorPhase:'guide',lessonIndex:0,courseActive:false,lastAction:null,awaitingQuizAnswer:false,activeMode:undefined,learningStage:undefined,currentModule:undefined,score:undefined,pdfCourseActive:false}))
+                setSession(s => ({
+                  ...s,
+                  tokens:0, level:'A0', samples:[], lastTask:null, lastArtifact:null,
+                  tutorPhase:'guide', lessonIndex:0, courseActive:false, lastAction:null,
+                  awaitingQuizAnswer:false, activeMode:undefined, learningStage:undefined,
+                  currentModule:undefined, score:undefined, pdfCourseActive:false,
+                  // SEEK 3.1 Fase 0-A — must be cleared to prevent stale exercise state
+                  currentLessonTopic:   undefined,
+                  currentExercise:      undefined,
+                  expectedResponseMode: undefined,
+                  _exerciseAttemptCount:undefined,
+                }))
                 setActiveMode('interact')
                 setPhase('onboarding')
               }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>↺</button>
@@ -1669,8 +1542,7 @@ export default function BetaPage() {
                 onFocus={e => (e.target.style.borderColor = 'rgba(0,201,167,.4)')}
                 onBlur={e  => (e.target.style.borderColor = 'var(--border)')}
               />
-              <button
-                onClick={() => void sendComposer()}
+              <button onClick={() => void sendComposer()}
                 disabled={loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0)}
                 title="Enviar"
                 style={{ width:38, height:38, borderRadius:'50%', border:'none', fontSize:16, cursor: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'default' : 'pointer', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all .2s' }}>
@@ -1683,4 +1555,3 @@ export default function BetaPage() {
     </>
   )
 }
-
