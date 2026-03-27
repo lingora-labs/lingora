@@ -135,6 +135,11 @@ const HARD_OVERRIDE_RULES: PatternRule[] = [
       /\bcourse pdf\b/i,
       /\bgenera(te)?\b.*\bcourse\b.*\bpdf\b/i,
       /\bexport(a|ar)?\b.*\bcurso\b/i,
+      // FIX-9C: user asks for a lesson/content in PDF format
+      /\b(lecci[oó]n|material|contenido).*\bpdf\b/i,
+      /\bpdf\b.*(lecci[oó]n|material|completo|nivel)/i,
+      /\ben pdf\b/i,
+      /\b(dame|quiero|genera|crea)\b.*\bpdf\b/i,
     ],
   },
 ];
@@ -472,4 +477,3 @@ export function isStrongCurriculumRequest(intent: IntentResult): boolean {
 export function isFastPathArtifact(intent: IntentResult): boolean {
   return intent.type === 'artifact' && intent.confidence >= 0.85;
 }
-
