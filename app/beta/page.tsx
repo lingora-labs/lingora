@@ -21,6 +21,12 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
 
+
+// FIX-6: map UI langs not in InterfaceLanguage contract to 'en'
+// ar, ja, zh are valid UI display langs but not yet in backend InterfaceLanguage
+const BACKEND_LANG = (l: Lang): string =>
+  (['ar', 'ja', 'zh'] as Lang[]).includes(l) ? 'en' : l
+
 // ─── Types ───────────────────────────────────────
 type MK = 'sarah' | 'alex' | 'nick'
 type TK = 'conversation' | 'structured' | 'cervantes' | 'business' | 'travel' | 'course' | 'leveltest'
@@ -31,7 +37,9 @@ interface Artifact {
   type: 'schema' | 'quiz' | 'table' | 'table_matrix' | 'schema_pro' |
         'illustration' | 'pdf' | 'course_pdf' | 'pdf_chat' | 'audio' |
         'pronunciation_report' | 'simulacro_result' | 'audio_transcript' |
-        'roadmap' | 'score_report' | 'lesson_module' | 'pdf_assignment' | 'submission_feedback'
+        'roadmap' | 'score_report' | 'lesson_module' | 'pdf_assignment' | 'submission_feedback' |
+        // IS-C2: types present in backend contracts but missing from frontend union
+        'diagnostic_report' | 'rich_content'
   url?: string
   dataUrl?: string
   content?: Record<string, unknown>
@@ -176,8 +184,14 @@ const sa = (v: unknown): string[] => Array.isArray(v) ? v.map(ss).filter(Boolean
 
 function normSchema(c?: Record<string, unknown>): Norm {
   const r = c ?? {}
-  const subtopics: Sub[] = (Array.isArray(r.subtopics) ? r.subtopics : [])
-    .map((i: unknown) => { const o = i as Record<string,unknown>; return { title: ss(o.title), content: ss(o.content), keyTakeaway: ss(o.keyTakeaway) } })
+  // FIX-9E: read 'sections' (SchemaArtifact contract) as fallback for subtopics
+  const rawSubtopics = Array.isArray(r.subtopics) ? r.subtopics
+    : Array.isArray(r.sections) ? r.sections : []
+  const subtopics: Sub[] = rawSubtopics
+    .map((i: unknown) => {
+      const o = i as Record<string,unknown>
+      return { title: ss(o.title) || ss(o.label), content: ss(o.content) || ss(o.body), keyTakeaway: ss(o.keyTakeaway) }
+    })
     .filter(s => s.title || s.content)
   const quiz: QuizQ[] = (Array.isArray(r.quiz) ? r.quiz : [])
     .map((i: unknown) => { const o = i as Record<string,unknown>; return { question: ss(o.question), options: Array.isArray(o.options) ? o.options.map(ss).filter(Boolean) : [], correct: typeof o.correct === 'number' ? o.correct : 0 } })
@@ -188,7 +202,7 @@ function normSchema(c?: Record<string, unknown>): Norm {
     const inferred = subtopics.filter(s => s.title.length < 40 && s.content.length < 80).map(s => ({ left: s.title, right: s.content }))
     if (inferred.length >= 3) tableRows = inferred
   }
-  const errors: string[] = Array.isArray(r.errors) ? r.errors.map(ss).filter(Boolean) : []
+  const errors: string[] = Array.isArray(r.errors) ? r.errors.map(ss).filter(Boolean) : Array.isArray(r.erroresFrecuentes) ? (r.erroresFrecuentes as unknown[]).map(ss).filter(Boolean) : []
   return { title: ss(r.title) || 'LINGORA Schema', objective: ss(r.objective), block: ss(r.block) || 'LINGORA', keyConcepts: sa(r.keyConcepts), subtopics, quiz, tableRows, summary: ss(r.summary) || ss(r.globalTakeaway) || ss(r.keyTakeaway), examples: sa(r.examples), errors }
 }
 
@@ -627,12 +641,27 @@ function isCopyable(text: string): boolean {
 }
 
 function ArtifactRender({ a }: { a: Artifact }) {
-  if (a.type === 'schema'       && a.content) return <SchemaBlock content={a.content} />
-  if (a.type === 'schema_pro'   && a.content) return <SchemaProBlock content={a.content} />
-  if (a.type === 'table'        && a.content) return <TableArtifactBlock content={a.content} />
-  if (a.type === 'table_matrix' && a.content) return <MatrixTableBlock content={a.content} />
-  if (a.type === 'quiz' && a.content) {
-    const qc = a.content as { title: string; questions: Array<{ question: string; options: string[]; correct: number }> }
+  // FIX-9D: SchemaArtifact/TableArtifact/QuizArtifact carry their data at top level
+  // NOT in a.content — pass the artifact itself as the data source.
+  if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
+  if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
+  if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
+  if (a.type === 'table_matrix') return <MatrixTableBlock content={a as unknown as Record<string, unknown>} />
+  if (a.type === 'quiz') {
+    // Support QuizArtifact (questions[]) and legacy {content: {questions[]}}
+    const qa = a as unknown as { title?: string; questions?: Array<{question:string; options: unknown[]; correct?: number}> }
+    const rawQ = qa.questions ?? (a.content as Record<string,unknown>)?.questions as unknown[] ?? []
+    const questions = (rawQ as Array<{question:string;options:unknown[];correct?:number}>).map(q => ({
+      question: q.question,
+      options: Array.isArray(q.options) ? q.options.map((o: unknown) =>
+        typeof o === 'object' && o !== null && 'text' in o ? (o as {text:string}).text : String(o)
+      ) : [],
+      correct: typeof q.correct === 'number' ? q.correct :
+        Array.isArray(q.options) ? q.options.findIndex((o: unknown) =>
+          typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
+        ) : 0,
+    }))
+    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
     return (
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
@@ -649,34 +678,41 @@ function ArtifactRender({ a }: { a: Artifact }) {
       <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-block', marginTop:5, fontSize:12, color:'var(--teal)', fontWeight:700 }}>↓ Descargar imagen</a>
     </div>
   )
-  if (a.type === 'pdf' && a.url) return (
-    <a href={a.url} download="lingora.pdf" target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📄 Descargar PDF</a>
-  )
-  if (a.type === 'course_pdf') {
-    const cp = a as unknown as { url: string; title?: string; modules?: string[] | number }
-    const mods = Array.isArray(cp.modules) ? cp.modules as string[] : []
-    return (
-      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(245,200,66,.25)', background:'rgba(245,200,66,.05)' }}>
-        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(245,200,66,.15)', display:'flex', alignItems:'center', gap:8 }}>
-          <span>📚</span>
-          <div>
-            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{cp.title ?? 'Curso PDF'}</div>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>Documento descargable</div>
+  // FIX-PAGE-B: accept any PDF artifact with a url — covers fallback from execution-engine
+  if ((a.type === 'pdf' || a.type === 'pdf_chat' || a.type === 'course_pdf') && (a.url || (a as unknown as {url?:string}).url)) {
+    const pdfUrl = a.url ?? (a as unknown as {url:string}).url
+    const isPdfChat   = a.type === 'pdf_chat'
+    const isCoursePdf = a.type === 'course_pdf'
+    if (isCoursePdf) {
+      const cp = a as unknown as { url: string; title?: string; modules?: string[] }
+      const mods = Array.isArray(cp.modules) ? cp.modules : []
+      return (
+        <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(245,200,66,.25)', background:'rgba(245,200,66,.05)' }}>
+          <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(245,200,66,.15)', display:'flex', alignItems:'center', gap:8 }}>
+            <span>📚</span>
+            <div>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{cp.title ?? 'Curso PDF'}</div>
+              <div style={{ fontSize:11, color:'var(--muted)' }}>Documento descargable</div>
+            </div>
+          </div>
+          <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
+            {mods.slice(0, 6).map((m: string, i: number) => <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {m}</div>)}
+            <a href={pdfUrl} download target="_blank" rel="noopener"
+              style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:4, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.12)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700, width:'fit-content' }}>
+              📄 Descargar curso PDF
+            </a>
           </div>
         </div>
-        <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
-          {mods.slice(0, 6).map((m: string, i: number) => <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {m}</div>)}
-          <a href={cp.url} download target="_blank" rel="noopener"
-            style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:4, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.12)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700, width:'fit-content' }}>
-            📄 Descargar curso PDF
-          </a>
-        </div>
-      </div>
+      )
+    }
+    if (isPdfChat) return (
+      <a href={pdfUrl} download={`lingora-chat-${Date.now()}.pdf`} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📋 Descargar historial PDF</a>
+    )
+    return (
+      <a href={pdfUrl} download="lingora.pdf" target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📄 Descargar PDF</a>
     )
   }
-  if (a.type === 'pdf_chat' && a.url) return (
-    <a href={a.url} download={`lingora-chat-${Date.now()}.pdf`} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>📋 Descargar historial PDF</a>
-  )
+  // course_pdf and pdf_chat handled in unified PDF block above
   if (a.type === 'audio' && (a.dataUrl || a.url || (a.content as Record<string,unknown>)?.dataUrl)) {
     const src = a.dataUrl ?? a.url ?? (a.content as Record<string,unknown>)?.dataUrl as string
     return (
@@ -741,8 +777,9 @@ function ArtifactRender({ a }: { a: Artifact }) {
 
   // FIX-8D: Updated roadmap renderer — handles RoadmapBlock (modules[]) from execution-engine
   // with backward-compatible fallback for legacy steps[] shape.
-  if (a.type === 'roadmap' && a.content) {
-    const r = a.content as {
+  if (a.type === 'roadmap') {
+    // FIX-PAGE-A: RoadmapBlock arrives with fields at top level — not inside a.content
+    const r = (a.content ?? a) as {
       title?: string
       modules?: Array<{ index: number; title: string; focus: string; completed: boolean; current: boolean }>
       // legacy shape fallback
@@ -829,15 +866,30 @@ function ArtifactRender({ a }: { a: Artifact }) {
       </div>
     )
   }
-  if (a.type === 'lesson_module' && a.content) {
-    const r = a.content as { module: number; title: string; stage: string }
-    const stageLabel: Record<string, string> = { diagnosis:'Diagnóstico', schema:'Esquema', examples:'Ejemplos', quiz:'Simulacro', score:'Puntuación', next:'Siguiente' }
+  if (a.type === 'lesson_module') {
+    // IS-C3: aligned with LessonModule contract: moduleIndex, title, content, examples[]
+    // also supports legacy shape: module, title, stage (backward compat)
+    const raw = (a.content ?? a) as Record<string, unknown>
+    const moduleNum = (raw.moduleIndex ?? raw.module ?? 0) as number
+    const title     = (raw.title ?? '') as string
+    const content   = (raw.content ?? '') as string
+    const examples  = Array.isArray(raw.examples) ? raw.examples as string[] : []
     return (
-      <div style={{ marginTop:6, padding:'8px 12px', borderRadius:10, border:'1px solid rgba(0,201,167,.2)', background:'rgba(0,201,167,.05)', display:'flex', alignItems:'center', gap:10 }}>
-        <span style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em' }}>Módulo {r.module}</span>
-        <span style={{ fontSize:11, color:'var(--muted)' }}>·</span>
-        <span style={{ fontSize:11, color:'var(--muted)' }}>{r.title}</span>
-        <span style={{ marginLeft:'auto', fontSize:11, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', color:'var(--teal)', fontWeight:700 }}>{stageLabel[r.stage] ?? r.stage}</span>
+      <div style={{ marginTop:8, borderRadius:14, border:'1px solid rgba(0,201,167,.2)', background:'rgba(0,201,167,.04)', overflow:'hidden' }}>
+        <div style={{ padding:'8px 12px', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:11, fontWeight:800, color:'var(--teal)', textTransform:'uppercase', letterSpacing:'.06em', flexShrink:0 }}>Módulo {moduleNum + 1}</span>
+          <span style={{ fontSize:11, color:'var(--muted)', flex:1 }}>{title}</span>
+        </div>
+        {content && (
+          <div style={{ padding:'0 12px 10px', fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{content}</div>
+        )}
+        {examples.length > 0 && (
+          <div style={{ padding:'0 12px 10px', display:'flex', flexDirection:'column', gap:4 }}>
+            {examples.slice(0, 3).map((ex, i) => (
+              <div key={i} style={{ fontSize:12, color:'var(--muted)' }}>• {ex}</div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
@@ -955,15 +1007,22 @@ async function doExportPdfBackend(msgs: Msg[], ss: SS) {
     .map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }))
     .filter(l => l.text.length > 0)
   const transcript = lines.map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
-  const exportMessage = `pdf: Genera el documento PDF de esta sesión de tutoría LINGORA.\nMentor: ${ss.mentor} · Nivel: ${ss.level} · Tema: ${ss.topic}\n\n${transcript}`
+  // FIX-PAGE-C: align with SEEK 3.1 intent-router — use a phrase that classifies
+  // as hard_override:export_chat_pdf via the pattern /exporta esta conversaci[oó]n/i
+  // Pass transcript as a dedicated field so execution-engine can use it directly
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: exportMessage, exportPdf: true, state: { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic } }),
+      body: JSON.stringify({
+        message: 'Exporta esta conversación a PDF',
+        exportTranscript: transcript,
+        state: { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic, interfaceLanguage: BACKEND_LANG(ss.lang) },
+      }),
     })
     const data = await res.json()
-    if (data.artifact?.type === 'pdf' && data.artifact?.url) {
-      const a = document.createElement('a'); a.href = data.artifact.url; a.download = `lingora-session-${Date.now()}.pdf`; a.click()
+    const artifactUrl = data.artifact?.url
+    if (artifactUrl && ['pdf', 'pdf_chat'].includes(data.artifact?.type)) {
+      const a = document.createElement('a'); a.href = artifactUrl; a.download = `lingora-session-${Date.now()}.pdf`; a.click()
       return
     }
     doExportTxt(msgs)
@@ -987,7 +1046,7 @@ export default function BetaPage() {
 
   const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob | null>(null)
   const [pendingAudioUrl,  setPendingAudioUrl]  = useState<string | null>(null)
-  const [pendingFiles,     setPendingFiles]      = useState<Array<{ name: string; type: string; data: string; size: number }>>([])
+  const [pendingFiles,     setPendingFiles]      = useState<Array<{ name: string; type: string; base64: string; size: number }>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [session, setSession] = useState<SS>({
@@ -1044,7 +1103,6 @@ export default function BetaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
-          ttsRequested: true,
           state: {
             ...sessionRef.current,
             mentor:            mentorRef.current,
@@ -1055,7 +1113,7 @@ export default function BetaPage() {
             activeMode:        sessionRef.current.activeMode,
             // SEEK 3.0 fields
             mentorProfile:     mentorRef.current,
-            interfaceLanguage: langRef.current,
+            interfaceLanguage: BACKEND_LANG(langRef.current),
             // FIX-8B: SEEK 3.1 Fase 0-A — semantic state must travel with every request
             // so the orchestrator exercise lock has currentExercise and expectedResponseMode
             currentLessonTopic:    sessionRef.current.currentLessonTopic,
@@ -1219,7 +1277,7 @@ export default function BetaPage() {
 
     if (hasFiles) {
       const imageFile = pendingFiles.find(f => f.type.startsWith('image/'))
-      const imageUrl  = imageFile ? `data:${imageFile.type};base64,${imageFile.data}` : undefined
+      const imageUrl  = imageFile ? `data:${imageFile.type};base64,${imageFile.base64}` : undefined
       if (!hasText && !hasAudio) addMsg({ sender:'user', text:`📎 ${pendingFiles.map(f=>f.name).join(', ')}`, imageUrl })
       else if (imageUrl) setMsgs(prev => prev.map((m, i) => i === prev.length-1 ? { ...m, imageUrl } : m))
       payload.files = pendingFiles
@@ -1282,7 +1340,7 @@ export default function BetaPage() {
   const handleFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     const r = new FileReader()
-    r.onload = () => { const b64 = (r.result as string).split(',')[1] || ''; setPendingFiles(prev => [...prev, { name: file.name, type: file.type, data: b64, size: file.size }]) }
+    r.onload = () => { const b64 = (r.result as string).split(',')[1] || ''; setPendingFiles(prev => [...prev, { name: file.name, type: file.type, base64: b64, size: file.size }]) }
     r.readAsDataURL(file); e.target.value = ''
   }, [])
 
@@ -1475,7 +1533,7 @@ export default function BetaPage() {
                   ...s,
                   tokens:0, level:'A0', samples:[], lastTask:null, lastArtifact:null,
                   tutorPhase:'guide', lessonIndex:0, courseActive:false, lastAction:null,
-                  awaitingQuizAnswer:false, activeMode:undefined, learningStage:undefined,
+                  awaitingQuizAnswer:false, activeMode:'interact' as ActiveMode, learningStage:undefined,
                   currentModule:undefined, score:undefined, pdfCourseActive:false,
                   // SEEK 3.1 Fase 0-A — must be cleared to prevent stale exercise state
                   currentLessonTopic:   undefined,
