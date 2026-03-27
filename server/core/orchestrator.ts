@@ -204,7 +204,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       executor: 'tool_audio',
       action: 'transcribeAudio',
       pedagogicalAction: 'transcription_only',
-      artifacts: [],
+      artifacts: ['audio'],  // FIX-9B: TTS step produces audio artifact
     },
     export_chat_pdf: {
       executor: 'tool_pdf',
@@ -240,15 +240,50 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     blocking: true,
     pedagogicalAction: config.pedagogicalAction,
     artifacts: config.artifacts,
+    // F-B4: directive per hard override subtype — not a single CORRECTION_ONLY for all
     mentor: config.executor === 'mentor'
-      ? buildMentorDirective(ctx.state.mentorProfile, 'CORRECTION_ONLY_DIRECTIVE', ctx)
+      ? buildMentorDirective(
+          ctx.state.mentorProfile,
+          subtype === 'translate' ? 'TRANSLATION_ONLY_DIRECTIVE'
+          : subtype === 'correct' ? 'CORRECTION_ONLY_DIRECTIVE'
+          : 'RICH_CONTENT_DIRECTIVE',
+          ctx,
+        )
       : undefined,
     commercial: undefined, // hard overrides never trigger commercial
     skipPhaseAdvance: true,
     reason: `hard_override:${subtype} — user explicitly requested ${subtype}. Bypasses all pedagogy. Matched pattern: ${ctx.intent.matchedPattern ?? 'unknown'}`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: [step],
+    executionOrder: buildHardOverrideSteps(subtype, step),
   };
+}
+
+// FIX-9B: build multi-step execution for transcribe (transcribe → mentor → TTS)
+// Other hard overrides remain single-step
+function buildHardOverrideSteps(
+  subtype: string,
+  step1: ExecutionStep,
+): ExecutionStep[] {
+  if (subtype === 'transcribe') {
+    return [
+      step1,
+      {
+        order: 2,
+        executor: 'mentor' as ExecutorType,
+        action: 'respondToTranscription',
+        dependsOn: 1,
+        timeout: 12000,
+      },
+      {
+        order: 3,
+        executor: 'tool_audio' as ExecutorType,
+        action: 'generateTTS',
+        dependsOn: 2,
+        timeout: 10000,
+      },
+    ];
+  }
+  return [step1];
 }
 
 // ── STEP 2: First Turn ────────────────────────────────────────────────────
@@ -386,7 +421,7 @@ function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
 
   const artifactMap: Record<string, ArtifactConfig> = {
     table_matrix:   { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
-    schema_pro:     { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema'     },  // routes to schema until dedicated schema_pro generator exists
+    schema_pro:     { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro' },  // FIX-B2: routes to generateSchemaPro → artifact schema_pro
     table:          { executor: 'tool_schema', action: 'generateTable',        artifact: 'table' },
     schema:         { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema' },
     quiz:           { executor: 'tool_schema', action: 'generateQuiz',         artifact: 'quiz' },
@@ -592,4 +627,3 @@ function buildMentorDirective(
     }),
   };
 }
-
