@@ -1,17 +1,16 @@
 // =============================================================================
 // server/tools/schema-adapter.ts
-// LINGORA SEEK 3.0 — SchemaContent → SchemaArtifact Adapter
+// LINGORA SEEK 3.1 — SchemaContent → SchemaArtifact Adapter
 // =============================================================================
-// Purpose  : Explicit, formal translation from the rich SchemaContent produced
-//            by schema-generator.ts into the SchemaArtifact shape consumed by
-//            the frontend renderer. Single authoritative adapter — no other
-//            module may perform this translation inline.
+// FIX-9F: quiz field now passes through as SchemaQuizItem[] (structured)
+// instead of flattening to string[] — enables interactive QuizBlock renderer
 // =============================================================================
 
 import type {
   SchemaContent,
   SchemaArtifact,
   SchemaBlock,
+  SchemaQuizItem,
   CEFRLevel,
 } from '../../lib/contracts';
 
@@ -53,14 +52,18 @@ export function adaptSchemaToArtifact(
   }
 
   if (data.summary) {
-    sections.push({ label: 'Resumen', content: data.summary, tone: 'highlight' });
+    sections.push({ label: 'Regla 80/20', content: data.summary, tone: 'highlight' });
   }
 
-  const quiz = data.quiz?.map(q => {
-    const letters = ['A', 'B', 'C', 'D'];
-    const opts = q.options.map((o, i) => `${letters[i]}) ${o}`).join('  ');
-    return `${q.question} — ${opts}`;
-  });
+  // FIX-9F: preserve quiz as structured items — do NOT flatten to strings
+  // SchemaContent.quiz = [{question, options:string[], correct:number}]
+  // SchemaArtifact.quiz = Array<SchemaQuizItem | string> (updated in contracts)
+  // normSchema reads these as QuizQ[] → QuizBlock renders interactive simulacro
+  const quiz: SchemaQuizItem[] | undefined = data.quiz?.map(q => ({
+    question: q.question,
+    options:  q.options,
+    correct:  typeof q.correct === 'number' ? q.correct : 0,
+  }));
 
   return {
     type:      'schema',
@@ -71,4 +74,3 @@ export function adaptSchemaToArtifact(
     quiz,
   };
 }
-
