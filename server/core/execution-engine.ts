@@ -372,7 +372,7 @@ async function dispatchToExecutor(
 
         default: {
           // FIX: unknown action → explicit error, no schema substitution
-          console.error(\`[execution-engine] tool_schema: unsupported action "\${step.action}" — no artifact produced\`);
+          console.error(`[execution-engine] tool_schema: unsupported action "\${step.action}" — no artifact produced\`);
           return {};  // empty — caller sees no artifact, no silent schema
         }
       }
