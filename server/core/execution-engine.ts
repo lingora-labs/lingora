@@ -422,9 +422,9 @@ async function dispatchToExecutor(
         // falls back to request.message if not present
         const content = ctx.request.exportTranscript || ctx.request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount = request.exportTranscript
-  ? request.exportTranscript.split(/\n\s*\n/).filter(Boolean).length
-  : (request.message ? 1 : 0);
+        const messageCount = ctx.request.exportTranscript
+  ? ctx.request.exportTranscript.split(/\n\s*\n/).filter(Boolean).length
+  : (ctx.request.message ? 1 : 0);
 
 const artifact = result.success
   ? {
