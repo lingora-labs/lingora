@@ -333,8 +333,6 @@ async function dispatchSync(
 
       if (step.action === 'exportChatPdf') {
         const content = request.exportTranscript || request.message;
-        const result = await generatePDF({ title: 'Chat Export', content });
-        const content = request.exportTranscript || request.message;
 const result = await generatePDF({ title: 'Chat Export', content });
 
 const messageCount = content
