@@ -1,18 +1,64 @@
-// ============================================================================
+// =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.1 — Streaming Execution Engine
-// FASE 0-A — Estado, Precedencia e Identidad Base
-// BLOQUE 0-A.3 — Alineación de StatePatch con SessionState
-// ============================================================================
-// OBJETIVO: corregir incompatibilidad de tipos entre StatePatch y SessionState,
-//           reemplazando `requestedOperation = null` por `undefined`.
-// ALCANCE: modifica la asignación de requestedOperation en buildStatePatch().
-// EXCLUSIONES: no modifica lógica de evaluación de ejercicio; no implementa
-//              evaluateExercise; no altera flujo pedagógico.
-// COMPATIBILIDAD: stream path; mantiene comportamiento funcional idéntico.
-// DOCTRINA: el estado debe ser consistente entre contratos y ejecución.
-// RIESGO COMPILACIÓN: BAJO — solo cambia null por undefined (mismo efecto).
-// ============================================================================
+// LINGORA SEEK 3.0 — Streaming Execution Engine
+// =============================================================================
+//
+// ── SSE CONTRACT (verified against app/beta/page.tsx SEEK 2.6) ───────────────
+//
+//   Frontend accumulates text from: { delta: string }
+//   Frontend applies state from:    { done: true, state, artifact?, suggestedActions? }
+//
+//   This engine emits:
+//     data: {"delta":"...partial mentor text..."}\n\n    (0–N times)
+//     data: {"delta":"...commercial suffix..."}\n\n      (0–1 times, if triggered)
+//     data: {"done":true,"state":{...},...}\n\n          (exactly once)
+//
+//   Commercial parity:
+//     The commercial suffix is emitted as a FINAL delta event, immediately
+//     before the terminal done. This ensures it is accumulated by the frontend
+//     into the same message as the mentor text — identical to the JSON branch
+//     where it is appended to result.message before returning.
+//
+//     JSON:  message = mentorText + "\n\n" + commercialSuffix  →  in ChatResponse.message
+//     SSE:   delta(mentorText) + delta(commercialSuffix)        →  accumulated in frontend
+//     Result: user sees same content in both branches. ✅
+//
+// ── getMentorResponseStream — REQUIRED EXTENSION ────────────────────────────
+//
+//   SEEK 2.6 mentor-engine.ts only exports getMentorResponse() (non-streaming).
+//   The streaming branch requires getMentorResponseStream() which must be added
+//   to mentor-engine.ts as part of Sprint 2.7.
+//
+//   Required contract (formal declaration):
+//
+//     export async function getMentorResponseStream(params: {
+//       request:      ChatRequest;
+//       state:        SessionState;
+//       plan:         ExecutionPlan;
+//       priorContext: string;
+//       action:       string;
+//     }): Promise<AsyncGenerator<string>>
+//
+//   Until getMentorResponseStream() is implemented in mentor-engine.ts,
+//   the stream engine falls back to getMentorResponse() and emits the complete
+//   text as a single delta. This preserves the SSE wire format contract and
+//   keeps the frontend compatible, at the cost of no incremental streaming
+//   for the mentor text. The fallback is declared explicitly and logs a warning.
+//
+// ── INVARIANTS ────────────────────────────────────────────────────────────────
+//   1. ORDER: Steps walk executionOrder ascending. No grouping by executor.
+//   2. DEPENDSON: Failure → visible degraded step, not silent skip.
+//   3. MENTOR GATE: executor='mentor' always runs. plan.mentor is metadata only.
+//   4. PATCH/STATE: buildStatePatch() → StatePatch (delta).
+//                   mergeStatePatch() → updatedState (final).
+//                   Terminal done emits updatedState, not statePatch.
+//   5. COMMERCIAL: Emitted as final delta before done (observable in UI).
+//                  Evaluated with post-merge updatedState — same as JSON branch.
+//
+// Commit   : fix(execution-engine-stream): commercial as final delta for UI
+//            observability; getMentorResponseStream formally declared;
+//            fallback to getMentorResponse if stream variant unavailable
+// =============================================================================
 
 import {
   ExecutionPlan,
@@ -26,36 +72,12 @@ import {
   SuggestedAction,
 } from '../../lib/contracts';
 
+import { ExecutionResult }                    from './execution-engine';
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NAVIGATIONAL NOISE FILTER
-// ─────────────────────────────────────────────────────────────────────────────
-
-const NOISE_PATTERNS = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|go|start|más|mas|seguir|continue|adelante|siguiente módulo|next module|proceed)$/i;
-
-function resolveSchemaTopicFromState(
-  message: string,
-  state: SessionState,
-  priorText: string,
-): string {
-  const cleanMessage = message?.trim();
-  if (cleanMessage && cleanMessage.length > 4 && !NOISE_PATTERNS.test(cleanMessage)) {
-    return cleanMessage;
-  }
-  if (state.lastConcept?.trim())   return state.lastConcept;
-  if (state.lastUserGoal?.trim())  return state.lastUserGoal;
-  if (state.curriculumPlan?.topic) return state.curriculumPlan.topic;
-  const cleanPrior = priorText?.trim();
-  if (cleanPrior && cleanPrior.length > 4 && !NOISE_PATTERNS.test(cleanPrior)) {
-    return cleanPrior;
-  }
-  return 'Spanish grammar';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SSE WIRE FORMAT
+// SSE WIRE FORMAT — exactly what app/beta/page.tsx SEEK 2.6 consumes
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SSEDelta { delta: string; }
@@ -107,8 +129,10 @@ export function executePlanStream(
           (a, b) => a.order - b.order,
         );
 
+        // ── Walk steps in exact plan order ────────────────────────────────
         for (const step of orderedSteps) {
 
+          // dependsOn resolution
           if (step.dependsOn !== undefined) {
             const dep = priorResults.get(step.dependsOn);
             if (!dep || !dep.success) {
@@ -120,7 +144,7 @@ export function executePlanStream(
 
           const priorText = collectPriorText(priorResults, step.order);
 
-          // ── MENTOR STEP ───────────────────────────────────────────────────
+          // ── MENTOR STEP — always executes; streams if possible ────────────
           if (step.executor === 'mentor') {
             if (!plan.mentor) {
               console.warn(`[stream] step ${step.order}: plan.mentor missing — will use default directive`);
@@ -130,24 +154,29 @@ export function executePlanStream(
               const { getMentorResponseStream, getMentorResponse } = await import('../mentors/mentor-engine');
 
               if (typeof getMentorResponseStream === 'function') {
+                // ── Streaming path (Sprint 2.7+ when getMentorResponseStream exists) ──
                 const stream = await getMentorResponseStream({
                   request, state, plan, priorContext: priorText, action: step.action,
                 });
                 let fullText = '';
                 for await (const delta of stream) {
                   fullText += delta;
-                  emit({ delta });
+                  emit({ delta }); // frontend accumulates
                 }
                 priorResults.set(step.order, {
                   stepOrder: step.order, executor: 'mentor',
                   text: fullText, durationMs: Date.now() - start, success: true,
                 });
+
               } else {
+                // ── Fallback path (SEEK 2.6 mentor-engine without stream variant) ──
+                // Emits complete mentor text as a single delta.
+                // SSE wire format is preserved; incremental streaming is not available.
                 console.warn(`[stream] getMentorResponseStream not found — falling back to getMentorResponse`);
                 const fullText = await getMentorResponse({
                   request, state, plan, priorContext: priorText, action: step.action,
                 });
-                emit({ delta: fullText });
+                emit({ delta: fullText }); // single delta — still valid SSE
                 priorResults.set(step.order, {
                   stepOrder: step.order, executor: 'mentor',
                   text: fullText, durationMs: Date.now() - start, success: true,
@@ -160,39 +189,45 @@ export function executePlanStream(
               priorResults.set(step.order, degradedStep(step, msg));
             }
 
-          // ── NON-MENTOR STEP ───────────────────────────────────────────────
+          // ── NON-MENTOR STEP — execute synchronously ───────────────────────
           } else {
             const output = await executeSyncStep(step, request, state, priorText);
             priorResults.set(step.order, output);
+            // Non-mentor artifacts travel in terminal done event — not mid-stream
           }
         }
 
-        // ── Build state patch ─────────────────────────────────────────────
+        // ── Build statePatch (delta) ───────────────────────────────────────
         const statePatch   = buildStatePatch(plan, state, priorResults);
+
+        // ── Merge → updatedState (final) ──────────────────────────────────
+        // These two are kept separate throughout.
+        // Terminal event emits updatedState (not statePatch).
         const updatedState = mergeStatePatch(state, statePatch);
 
-        // ── Resolve primary artifact ──────────────────────────────────────
-        const outputs  = Array.from(priorResults.values());
-
-        const toolOutputs = outputs.filter(o => o.artifact && o.executor !== 'mentor');
-        const pedagogicalArtifact = toolOutputs.find(o => o.artifact && o.artifact.type !== 'audio')?.artifact;
-        const audioArtifact       = toolOutputs.find(o => o.artifact && o.artifact.type === 'audio')?.artifact;
-        const mentorArtifact      = outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
-
-        const artifact = pedagogicalArtifact ?? audioArtifact ?? mentorArtifact;
+        // ── Artifact ──────────────────────────────────────────────────────
+        const outputs = Array.from(priorResults.values());
+        const artifact =
+          outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact
+          ?? outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
 
         // ── Suggested actions ─────────────────────────────────────────────
         const suggestedActions = buildSuggestedActions(plan, artifact, updatedState);
 
-        // ── Commercial suffix ─────────────────────────────────────────────
+        // ── Commercial — evaluated post-merge with updatedState ───────────
+        // Parity: same evaluateCommercial(), same updatedState, same timing as JSON.
+        // Observable: emitted as a final DELTA before done, so frontend accumulates
+        // it into the same message as mentor text — identical user experience to JSON.
         if (!plan.blocking) {
           const commercial = await evaluateCommercial(updatedState, plan);
           if (commercial.triggered && commercial.message) {
+            // Emit as final delta: "\n\n" + suffix — same separator as JSON branch
             emit({ delta: `\n\n${commercial.message}` });
           }
         }
 
-        // ── Terminal event ────────────────────────────────────────────────
+        // ── Terminal event — frontend wire format ─────────────────────────
+        // state: updatedState (already merged) — not statePatch
         const donePayload: SSEDone = {
           done:  true,
           state: updatedState,
@@ -205,6 +240,7 @@ export function executePlanStream(
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Stream error';
         console.error('[stream] fatal:', msg);
+        // Terminal event even on fatal — frontend must not hang
         emit({
           done:  true,
           state: mergeStatePatch(state, { tokens: (state.tokens ?? 0) + 1 }),
@@ -217,6 +253,7 @@ export function executePlanStream(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE PATCH BUILDER
+// Mirrors execution-engine.ts compileResult() lines 381–408 exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildStatePatch(
@@ -233,10 +270,7 @@ function buildStatePatch(
 
   patch.tokens = (state.tokens ?? 0) + 1;
 
-  // FIX 0-A.3: replace null with undefined for type alignment
-  if (plan.priority >= 100) {
-    (patch as StatePatch).requestedOperation = undefined;
-  }
+  if (plan.priority >= 100) (patch as StatePatch).requestedOperation = null;
 
   if (!plan.skipPhaseAdvance && state.activeMode === 'structured') {
     patch.tutorPhase = advanceTutorPhase(state.tutorPhase, state.activeMode);
@@ -246,7 +280,7 @@ function buildStatePatch(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYNC DISPATCHER
+// SYNC DISPATCHER — mirrors execution-engine.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; }
@@ -278,11 +312,10 @@ async function dispatchSync(
   priorContext: string,
 ): Promise<SyncOut> {
   switch (step.executor) {
-
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
-      const topic = resolveSchemaTopicFromState(request.message, state, priorContext);
+      const topic = priorContext || request.message;
       const data  = await generateSchemaContent({
         topic,
         level:      state.confirmedLevel ?? state.userLevel ?? 'B1',
@@ -294,17 +327,22 @@ async function dispatchSync(
       );
       return { artifact };
     }
-
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
-      const title  = state.lastConcept ?? 'LINGORA Study Guide';
-      const result = await generatePDF({ title, content: request.message });
-      const artifact = result.success
-        ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
-        : undefined;
-      return { artifact };
-    }
+      const title = state.lastConcept ?? 'LINGORA Study Guide';
 
+      if (step.action === 'exportChatPdf') {
+        const content = request.exportTranscript || request.message;
+        const result = await generatePDF({ title: 'Chat Export', content });
+        return { artifact: result.success ? { type: 'pdf_chat' as const, url: result.url } : undefined };
+      }
+      if (step.action === 'generateCoursePdf') {
+        const result = await generatePDF({ title, content: request.message });
+        return { artifact: result.success ? { type: 'course_pdf' as const, title, url: result.url, modules: [] } : undefined };
+      }
+      const result = await generatePDF({ title, content: request.message });
+      return { artifact: result.success ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url } : undefined };
+    }
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
       const prompt = priorContext || request.message;
@@ -319,9 +357,9 @@ async function dispatchSync(
       }
       return {};
     }
-
     case 'tool_audio': {
 
+      // FIX-EE3 (stream): generateTTS step — speak only the mentor response (priorContext)
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
         const textToSpeak = priorContext?.trim() || request.message?.trim();
@@ -333,22 +371,19 @@ async function dispatchSync(
         return {};
       }
 
+      // default: transcribe audio input
       const { transcribeAudio } = await import('../tools/audio-toolkit');
 
       let audioData: { data: string; format: string } | null = null;
-
       if (request.audioDataUrl) {
         audioData = {
           data:   request.audioDataUrl.split(',')[1] || request.audioDataUrl,
           format: request.audioMimeType?.split('/')[1] || 'webm',
         };
       } else if (request.files?.length) {
-        const audioFile = request.files.find(
-          f => f.type?.startsWith('audio/') || f.type === 'video/webm',
-        );
+        const audioFile = request.files.find(f => f.type?.startsWith('audio/') || f.type === 'video/webm');
         if (audioFile) {
-          const raw = audioFile.base64
-            ?? (audioFile.dataUrl ? audioFile.dataUrl.split(',')[1] ?? audioFile.dataUrl : '');
+          const raw = audioFile.base64 ?? (audioFile.dataUrl ? audioFile.dataUrl.split(',')[1] ?? audioFile.dataUrl : '');
           audioData = { data: raw, format: audioFile.type?.split('/')[1] || 'webm' };
         }
       }
@@ -357,9 +392,9 @@ async function dispatchSync(
       const result = await transcribeAudio(audioData);
       return { text: result.success ? result.text : undefined };
     }
-
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
+      // Map AttachedFile[] to the shape processAttachment expects
       const filesToProcess = (request.files ?? []).map(f => ({
         name: f.name,
         type: f.type,
@@ -373,21 +408,19 @@ async function dispatchSync(
       const text = r?.extractedTexts?.[0] ?? undefined;
       return { text };
     }
-
     case 'knowledge': {
       const { getRagContext } = await import('../knowledge/rag');
       const result = await getRagContext(request.message);
       return { text: result?.text ?? undefined };
     }
-
     case 'diagnostic': {
       const { evaluateLevel } = await import('./diagnostics');
       const sampleCount = (state.diagnosticSamples ?? 0) + 1;
       const samples = [
         request.message,
-        ...(state.lastConcept ? [state.lastConcept] : []),
+        ...(state.lastConcept  ? [state.lastConcept]  : []),
         ...(state.lastUserGoal ? [state.lastUserGoal] : []),
-        ...(state.lastMistake ? [state.lastMistake] : []),
+        ...(state.lastMistake  ? [state.lastMistake]  : []),
       ];
       const result = await evaluateLevel(samples);
       const patch = {
@@ -398,11 +431,9 @@ async function dispatchSync(
       };
       return { patch };
     }
-
     case 'tool_storage':
     case 'commercial':
       return {};
-
     default:
       console.warn(`[stream] unknown executor "${step.executor}" — skipping`);
       return {};
@@ -410,7 +441,7 @@ async function dispatchSync(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SUGGESTED ACTIONS
+// SUGGESTED ACTIONS — identical to execution-engine.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildSuggestedActions(
@@ -421,21 +452,13 @@ function buildSuggestedActions(
   const lang = state.interfaceLanguage ?? 'en';
   const a: SuggestedAction[] = [];
 
-  if (artifact?.type === 'quiz')                                       a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
-  if (artifact?.type === 'schema' || artifact?.type === 'schema_pro') {
-    a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
-    a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
-  }
-  if (artifact?.type === 'roadmap')                                    a.push({ type: 'start_course',    label: loc('start_course', lang) });
+  if (artifact?.type === 'quiz')                                         a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
+  if (artifact?.type === 'schema' || artifact?.type === 'schema_pro')    a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
+  if (artifact?.type === 'roadmap')                                      a.push({ type: 'start_course',    label: loc('start_course', lang) });
   if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured')
-                                                                        a.push({ type: 'next_module',     label: loc('next_module', lang) });
-  if (plan.pedagogicalAction === 'lesson')                             a.push({ type: 'show_schema',     label: loc('show_schema', lang) });
-  if (plan.pedagogicalAction === 'conversation') {
-    a.push({ type: 'show_schema', label: loc('show_schema', lang) });
-    a.push({ type: 'start_quiz',  label: loc('start_quiz',  lang) });
-  }
+                                                                          a.push({ type: 'next_module',     label: loc('next_module', lang) });
+  if (plan.pedagogicalAction === 'lesson')                               a.push({ type: 'show_schema',     label: loc('show_schema', lang) });
   a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
-
   return a.filter((x, i, arr) => arr.findIndex(b => b.type === x.type) === i);
 }
 
@@ -456,16 +479,10 @@ function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): Step
 }
 
 const LABELS: Record<string, Record<string, string>> = {
-  start_quiz:      { en: 'Take quiz',     es: 'Hacer simulacro',  no: 'Ta quiz'       },
-  export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter PDF' },
-  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul'   },
-  start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs'    },
-  show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema'    },
+  start_quiz:      { en: 'Start quiz',    es: 'Empezar quiz',     no: 'Start quiz' },
+  export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter som PDF' },
+  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul' },
+  start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs' },
+  show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
-// ============================================================================
-// COMMIT:
-// fix(execution-engine-stream): restore truncated diagnostic branch, remove unused import,
-// and align requestedOperation reset with undefined
-// ============================================================================
