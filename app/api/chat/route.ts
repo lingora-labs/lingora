@@ -1,6 +1,6 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.1 — Thin Router (Entry Point)
+// LINGORA SEEK 3.2 — Thin Router (Entry Point)
 // =============================================================================
 // FIX-9A: *1357*# diagnostic response now includes 'message' field so
 //         page.tsx callAPI renders JSON instead of "No se recibió respuesta".
