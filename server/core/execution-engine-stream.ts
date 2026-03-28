@@ -337,17 +337,16 @@ async function dispatchSync(
         const messageCount = content
   ? content.split(/\n\s*\n/).filter(Boolean).length
   : 0;
+const artifact = result.success
+  ? {
+      type: 'pdf_chat' as const,
+      url: result.url,
+      messageCount,
+    }
+  : undefined;
 
-return {
-  artifact: result.success
-    ? {
-        type: 'pdf_chat' as const,
-        url: result.url,
-        messageCount,
-      }
-    : undefined,
-};
-      }
+return { artifact };
+      }      
       if (step.action === 'generateCoursePdf') {
         const result = await generatePDF({ title, content: request.message });
         return { artifact: result.success ? { type: 'course_pdf' as const, title, url: result.url, modules: [] } : undefined };
