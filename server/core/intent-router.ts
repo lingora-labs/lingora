@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/intent-router.ts
-// LINGORA SEEK 3.0 — Deterministic Intent Classifier
+// LINGORA SEEK 3.2 — Deterministic Intent Classifier
 // =============================================================================
 // Purpose  : Classify user intent deterministically before orchestration.
 //            Returns an IntentResult that the orchestrator uses to choose
@@ -437,6 +437,50 @@ export function classifyIntent(
   }
 
   // ── Default: conversation fallthrough ─────────────────────────────────────
+  // ── P1: PRONUNCIATION EVALUATION ────────────────────────────────────────
+  // Must be checked before conversation fallback.
+  // evaluatePronunciation is a hard_override — blocks all pedagogy.
+  const pronunciationPatterns = [
+    /\bcalifica?\s+(mi\s+)?pronunciaci[oó]n\b/i,
+    /\bc[oó]mo\s+(sueno|pronuncio)\b/i,
+    /\beval[uú]a\s+(mi\s+)?(pronunciaci[oó]n|acento)\b/i,
+    /\bcorrige\s+mi\s+pronunciaci[oó]n\b/i,
+    /\b(pronunciation|pronounce)\s+(check|eval|feedback)\b/i,
+    /\bhow\s+(do\s+i\s+sound|is\s+my\s+pronunciation)\b/i,
+    /\brate\s+my\s+(pronunciation|accent)\b/i,
+    /\bvurder\s+uttalen?\s+(min(e)?)\b/i,
+  ];
+  if (pronunciationPatterns.some(p => p.test(message))) {
+    return {
+      type: 'hard_override',
+      subtype: 'pronunciation_eval',
+      explicit: true,
+      confidence: 0.93,
+      matchedPattern: 'pronunciation_eval',
+    };
+  }
+
+  // ── P3: RICH TABLE / TABLE_MATRIX ────────────────────────────────────────
+  // "tabla de 8 columnas", "tabla con emojis/vectores", verb conjugation tables
+  // Must be checked BEFORE the generic 'table' artifact rule above.
+  const richTablePatterns = [
+    /\btabla\b.*\b\d+\s*colum/i,
+    /\btabla\b.*(emoji|vector|color|icon)/i,
+    /\btabla\b.*(irregulares|irregular|conjugaci)/i,
+    /\btabla\b.*(personas|yo.*t[uú].*[eé]l)/i,
+    /\btabla\b.*(completa|completo|todas\s+las\s+personas)/i,
+    /\bmatriz\s+(de\s+)?(verbos?|tiempos?|conjugaci)/i,
+  ];
+  if (richTablePatterns.some(p => p.test(message))) {
+    return {
+      type: 'artifact',
+      subtype: 'table_matrix',
+      explicit: true,
+      confidence: 0.95,
+      matchedPattern: 'rich_table_matrix',
+    };
+  }
+
   // Safe default. Orchestrator handles context-based routing from here.
   return {
     type: 'conversation',
