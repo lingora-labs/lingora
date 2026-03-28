@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.0 — Sole Decision Authority
+// LINGORA SEEK 3.2 — Sole Decision Authority
 // =============================================================================
 // Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
 //            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
@@ -29,7 +29,7 @@
 //
 // Dependencia      : lib/contracts.ts, server/core/intent-router.ts
 //
-// Commit   : feat(orchestrator): SEEK 3.0 — sole decision authority,
+// Commit   : feat(orchestrator): SEEK 3.2 — sole decision authority,
 //            6-step constitutional evaluation, auditable ExecutionPlan
 // =============================================================================
 
@@ -218,6 +218,14 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       pedagogicalAction: 'generate_course_pdf',
       artifacts: ['course_pdf'],
     },
+    pronunciation_eval: {
+      // 2.8-A: 3-step plan — transcribe → mentor evaluates → TTS
+      // executor is hybrid because it combines tool_audio + mentor + TTS
+      executor: 'hybrid',
+      action: 'evaluatePronunciation',
+      pedagogicalAction: 'pronunciation_feedback',
+      artifacts: ['pronunciation_report', 'audio'],
+    },
   };
 
   const config = overrideMap[subtype] ?? {
@@ -240,12 +248,14 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     blocking: true,
     pedagogicalAction: config.pedagogicalAction,
     artifacts: config.artifacts,
-    // F-B4: directive per hard override subtype — not a single CORRECTION_ONLY for all
-    mentor: config.executor === 'mentor'
+    // F-B4: directive per hard override subtype
+    // Also set for hybrid executor (pronunciation_eval) — mentor step needs it
+    mentor: (config.executor === 'mentor' || config.executor === 'hybrid')
       ? buildMentorDirective(
           ctx.state.mentorProfile,
-          subtype === 'translate' ? 'TRANSLATION_ONLY_DIRECTIVE'
-          : subtype === 'correct' ? 'CORRECTION_ONLY_DIRECTIVE'
+          subtype === 'translate'          ? 'TRANSLATION_ONLY_DIRECTIVE'
+          : subtype === 'correct'          ? 'CORRECTION_ONLY_DIRECTIVE'
+          : subtype === 'pronunciation_eval' ? 'PRONUNCIATION_EVAL_DIRECTIVE'
           : 'RICH_CONTENT_DIRECTIVE',
           ctx,
         )
@@ -267,20 +277,19 @@ function buildHardOverrideSteps(
   if (subtype === 'transcribe') {
     return [
       step1,
-      {
-        order: 2,
-        executor: 'mentor' as ExecutorType,
-        action: 'respondToTranscription',
-        dependsOn: 1,
-        timeout: 12000,
-      },
-      {
-        order: 3,
-        executor: 'tool_audio' as ExecutorType,
-        action: 'generateTTS',
-        dependsOn: 2,
-        timeout: 10000,
-      },
+      { order: 2, executor: 'mentor' as ExecutorType, action: 'respondToTranscription', dependsOn: 1, timeout: 12000 },
+      { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 10000 },
+    ];
+  }
+  // 2.8-A: pronunciation_eval — transcribe audio → mentor evaluates → TTS feedback
+  if (subtype === 'pronunciation_eval') {
+    return [
+      // Step 1: transcribe what the user said
+      { order: 1, executor: 'tool_audio' as ExecutorType, action: 'transcribeAudio', timeout: 10000 },
+      // Step 2: mentor evaluates pronunciation against last mentor phrase
+      { order: 2, executor: 'mentor' as ExecutorType, action: 'evaluatePronunciation', dependsOn: 1, timeout: 12000 },
+      // Step 3: speak the corrected pronunciation so user can hear it
+      { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 8000 },
     ];
   }
   return [step1];
@@ -335,19 +344,23 @@ function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
 }
 
 function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
-  const step: ExecutionStep = {
-    order: 1,
-    executor: 'mentor',
-    action: 'firstTurnGreeting',
-    timeout: 10000,
-  };
+  const isStructured = ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course';
+
+  // P2: in structured/pdf_course mode, first turn includes TTS so user
+  // hears the mentor's introduction while reading — mandatory for the product experience
+  const steps: ExecutionStep[] = [
+    { order: 1, executor: 'mentor', action: 'firstTurnGreeting', timeout: 12000 },
+  ];
+  if (isStructured) {
+    steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
+  }
 
   return {
-    executor: 'mentor',
+    executor: isStructured ? 'hybrid' : 'mentor',
     priority: PRIORITY.FIRST_TURN,
     blocking: true,
     pedagogicalAction: 'first_turn_greeting',
-    artifacts: [],
+    artifacts: isStructured ? ['audio'] : [],
     mentor: buildMentorDirective(
       ctx.state.mentorProfile,
       'FIRST_TURN_DIRECTIVE',
@@ -355,9 +368,9 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     ),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `first_turn — tokens=0, session start. Mentor delivers situated greeting for language=${ctx.interfaceLanguage}, mentor=${ctx.state.mentorProfile ?? 'Alex'}`,
+    reason: `first_turn — tokens=0, session start. Mentor delivers situated greeting${isStructured ? ' + TTS audio' : ''}. language=${ctx.interfaceLanguage}, mentor=${ctx.state.mentorProfile ?? 'Alex'}`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: [step],
+    executionOrder: steps,
   };
 }
 
@@ -627,3 +640,4 @@ function buildMentorDirective(
     }),
   };
 }
+
