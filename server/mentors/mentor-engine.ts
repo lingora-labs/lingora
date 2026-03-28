@@ -1,14 +1,14 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// LINGORA SEEK 3.1 — Mentor Engine
+// LINGORA SEEK 3.2 — Mentor Engine
 // =============================================================================
 // FIX LOG:
 //   FIX-6A  buildContext: uses SEEK 3.0 state field names with legacy fallbacks
 //   FIX-6B  normalizeRuntimeCall: audio fallback to priorContext
 //   FIX-6C  buildMentorPrompt: injects "Current topic" explicitly
 //   FIX-6D  buildExecutionDirective: directive names → concrete instructions
-//   FIX-7A  SEEK 3.1 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
-//   FIX-7B  SEEK 3.1 Fase 0-A: activeExercise + activeTopic injected into prompt
+//   FIX-7A  SEEK 3.2 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
+//   FIX-7B  SEEK 3.2 Fase 0-A: activeExercise + activeTopic injected into prompt
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -180,6 +180,19 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
     '  4. One memory tip if useful.\n' +
     'DO NOT: start a new lesson. Do not change the topic. Do not ask what they want to study.\n' +
     'The exercise and topic context are provided below.',
+
+  // G2: pronunciation eval — must return ONLY a JSON object so execution-engine can parse it
+  PRONUNCIATION_EVAL_DIRECTIVE:
+    'You are evaluating the student\'s Spanish pronunciation based on their audio transcription.\n' +
+    'The prior context contains the reference phrase they were asked to pronounce.\n' +
+    'Respond with ONLY a JSON object — no prose, no markdown:\n' +
+    '{\n' +
+    '  "score": <number 0-100>,\n' +
+    '  "feedback": "<1-2 sentences of specific pronunciation feedback in the interface language>",\n' +
+    '  "tip": "<one actionable tip to improve>",\n' +
+    '  "errors": ["<specific error 1>", "<specific error 2>"]\n' +
+    '}\n' +
+    'Be encouraging but precise. Score 70+ = good. The transcription of what the student said is in the prior context.',
 }
 
 function buildExecutionDirective(params: {
