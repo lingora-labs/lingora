@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.1 — Beta Tutor Interface
+// LINGORA SEEK 3.2 — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -194,7 +194,7 @@ function normSchema(c?: Record<string, unknown>): Norm {
     })
     .filter(s => s.title || s.content)
   const quiz: QuizQ[] = (Array.isArray(r.quiz) ? r.quiz : [])
-    .map((i: unknown) => { const o = i as Record<string,unknown>; return { question: ss(o.question), options: Array.isArray(o.options) ? o.options.map(ss).filter(Boolean) : [], correct: typeof o.correct === 'number' ? o.correct : 0 } })
+    .map((i: unknown) => { const o = i as Record<string,unknown>; return { question: ss(o.question), options: Array.isArray(o.options) ? o.options.map(ss).filter(Boolean) : [], correct: typeof o.correct === 'number' ? o.correct : 0, explanation: ss(o.explanation) || undefined } })
     .filter(q => q.question && q.options.length > 0)
   const rawRows = Array.isArray(r.tableRows) ? r.tableRows : Array.isArray(r.rows) ? r.rows : []
   let tableRows: TableRow[] = rawRows.map((i: unknown) => { const o = i as Record<string,unknown>; return { left: ss(o.left)||ss(o.label)||ss(o.persona)||ss(o.term), right: ss(o.right)||ss(o.value)||ss(o.forma)||ss(o.definition) } }).filter(r => r.left && r.right)
@@ -661,25 +661,16 @@ function ArtifactRender({ a }: { a: Artifact }) {
           typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
         ) : 0,
     }))
-    const qc = {
-  title:
-    typeof qa.title === 'string'
-      ? qa.title
-      : typeof (a.content as Record<string, unknown>)?.title === 'string'
-        ? ((a.content as Record<string, unknown>).title as string)
-        : '',
-  questions,
-}
-
-return (
-  <div style={{ marginTop:10, width:'100%', maxWidth:540 }}>
-    <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
-      <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
-      <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
-    </div>
-    <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
-  </div>
-)
+    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
+    return (
+      <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
+          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
+        </div>
+        <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
+      </div>
+    )
   }
   if (a.type === 'illustration' && a.url) return (
     <div style={{ marginTop:8 }}>
@@ -753,20 +744,35 @@ return (
       </div>
     )
   }
-  if (a.type === 'pronunciation_report' && a.content) {
-    const r = a.content as { transcribed: string; score: number; feedback: string; correction?: string; target?: string }
-    const scoreColor = r.score >= 8 ? 'var(--teal)' : r.score >= 5 ? 'var(--gold)' : 'var(--coral)'
+  if (a.type === 'pronunciation_report') {
+    // G1: read from top-level fields (PronunciationReport contract) with a.content fallback
+    const raw = (a.content ?? a) as Record<string, unknown>
+    const score    = (raw.score    ?? 70) as number
+    const feedback = (raw.feedback ?? '') as string
+    const tip      = (raw.tip      ?? '') as string
+    const errors   = Array.isArray(raw.errors) ? raw.errors as string[] : []
+    // score is 0-100 in contract
+    const scoreColor = score >= 75 ? 'var(--teal)' : score >= 50 ? 'var(--gold)' : 'var(--coral)'
+    const pct = Math.min(100, Math.max(0, score))
     return (
-      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, border:'1px solid var(--border)', background:'rgba(255,255,255,.02)', overflow:'hidden' }}>
-        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:10 }}>
+      <div style={{ marginTop:10, maxWidth:480, borderRadius:16, border:`1px solid ${scoreColor}33`, background:`${scoreColor}08`, overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:`1px solid ${scoreColor}22`, display:'flex', alignItems:'center', gap:10 }}>
           <span style={{ fontSize:11, fontWeight:800, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'.08em' }}>Pronunciación</span>
-          <span style={{ marginLeft:'auto', fontSize:18, fontWeight:800, color:scoreColor }}>{r.score}<span style={{ fontSize:11, color:'var(--muted)' }}>/10</span></span>
+          <div style={{ flex:1, marginLeft:8 }}>
+            <div style={{ height:4, borderRadius:99, background:'rgba(255,255,255,.08)', overflow:'hidden' }}>
+              <div style={{ height:'100%', width:`${pct}%`, background:scoreColor, borderRadius:99, transition:'width .6s' }} />
+            </div>
+          </div>
+          <span style={{ fontSize:18, fontWeight:800, color:scoreColor, flexShrink:0 }}>{pct}<span style={{ fontSize:11, fontWeight:400, color:'var(--muted)' }}>/100</span></span>
         </div>
         <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:8 }}>
-          {r.target && <div style={{ fontSize:12, color:'var(--muted)' }}>Frase objetivo: <em style={{ color:'var(--silver)' }}>{r.target}</em></div>}
-          <div style={{ fontSize:12, color:'var(--muted)' }}>Lo que se detectó: <em style={{ color:'var(--silver)' }}>{r.transcribed}</em></div>
-          <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{r.feedback}</div>
-          {r.correction && <div style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>✓ {r.correction}</div>}
+          {feedback && <div style={{ fontSize:13, color:'var(--silver)', lineHeight:1.6 }}>{feedback}</div>}
+          {errors.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              {errors.map((e, i) => <div key={i} style={{ fontSize:12, color:'var(--coral)' }}>⚠ {e}</div>)}
+            </div>
+          )}
+          {tip && <div style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>💡 {tip}</div>}
         </div>
       </div>
     )
@@ -946,6 +952,47 @@ return (
       </div>
     )
   }
+  // G3: diagnostic_report — shows CEFR level estimate from accumulative diagnosis
+  if (a.type === 'diagnostic_report') {
+    const raw = (a.content ?? a) as Record<string, unknown>
+    const level   = (raw.estimatedLevel ?? raw.level ?? '?') as string
+    const conf    = (raw.confidence ?? 'low') as string
+    const count   = (raw.sampleCount ?? 0) as number
+    const obs     = Array.isArray(raw.observations) ? raw.observations as string[] : []
+    const confColor = conf === 'high' ? 'var(--teal)' : conf === 'medium' ? 'var(--gold)' : 'var(--muted)'
+    return (
+      <div style={{ marginTop:10, maxWidth:440, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:12 }}>
+          <span style={{ fontSize:28, fontWeight:800, color:'var(--teal)', lineHeight:1 }}>{level}</span>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>Nivel estimado CEFR</div>
+            <div style={{ fontSize:11, color:confColor }}>Confianza: {conf} · {count} muestras</div>
+          </div>
+        </div>
+        {obs.length > 0 && (
+          <div style={{ padding:'12px 14px', display:'flex', flexDirection:'column', gap:5 }}>
+            {obs.map((o, i) => <div key={i} style={{ fontSize:12, color:'var(--silver)' }}>• {o}</div>)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // G4: rich_content — general-purpose rich text artifact
+  if (a.type === 'rich_content') {
+    const raw  = (a.content ?? a) as Record<string, unknown>
+    const title = (raw.title ?? '') as string
+    const body  = (raw.body  ?? '') as string
+    if (!body) return null
+    return (
+      <div style={{ marginTop:10, maxWidth:560, borderRadius:14, border:'1px solid var(--border)', background:'rgba(255,255,255,.02)', padding:'14px 16px' }}>
+        {title && <div style={{ fontSize:14, fontWeight:800, color:'#fff', marginBottom:8 }}>{title}</div>}
+        <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }}
+          dangerouslySetInnerHTML={{ __html: fmt(body) }} />
+      </div>
+    )
+  }
+
   return null
 }
 
