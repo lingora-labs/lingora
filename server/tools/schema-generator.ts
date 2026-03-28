@@ -123,7 +123,7 @@ REQUISITOS (FORMATO UNED — OBLIGATORIO):
 - quiz: exactamente 5 preguntas con opciones plausibles y explanation en cada una
 - erroresFrecuentes: exactamente 3 errores típicos con formato "❌ Error: [incorrecto] → ✅ Correcto: [correcto]"
 - summary: regla 80/20 en una frase memorable, máximo 20 palabras
-- El JSON debe incluir el campo erroresFrecuentes (array de strings)\`
+- El JSON debe incluir el campo erroresFrecuentes (array de strings)`
 }
 
 export async function generateSchemaContent(params: {
