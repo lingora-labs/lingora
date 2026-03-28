@@ -661,7 +661,15 @@ function ArtifactRender({ a }: { a: Artifact }) {
           typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
         ) : 0,
     }))
-    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
+    const qc: { title: string; questions: QuizQ[] } = {
+  title:
+    typeof qa.title === 'string'
+      ? qa.title
+      : typeof (a.content as Record<string, unknown> | undefined)?.title === 'string'
+        ? ((a.content as Record<string, unknown>).title as string)
+        : 'Simulacro',
+  questions,
+    }
     return (
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
@@ -671,7 +679,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
         <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
       </div>
     )
-  }
+  }  
   if (a.type === 'illustration' && a.url) return (
     <div style={{ marginTop:8 }}>
       <img src={a.url} alt="LINGORA visual" style={{ maxWidth:'100%', borderRadius:14, display:'block', border:'1px solid var(--border)' }} />
