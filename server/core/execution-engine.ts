@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.0 — Execution Engine
+// LINGORA SEEK 3.2 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -37,7 +37,7 @@
 //                    server/knowledge/rag.ts
 //                    server/core/diagnostics.ts
 //
-// Commit   : feat(execution-engine): SEEK 3.0 — ordered step execution with
+// Commit   : feat(execution-engine): SEEK 3.2 — ordered step execution with
 //            dependsOn resolution, no decision logic
 // =============================================================================
 
@@ -257,7 +257,6 @@ async function dispatchToExecutor(
 
     // ── Mentor ───────────────────────────────────────────────────────────────
     case 'mentor': {
-      // Dynamic import to avoid circular dependency at module load time
       const { getMentorResponse } = await import('../mentors/mentor-engine');
       const text = await getMentorResponse({
         request: ctx.request,
@@ -266,6 +265,26 @@ async function dispatchToExecutor(
         priorContext: priorText,
         action: step.action,
       });
+
+      // G2: when action is evaluatePronunciation, parse JSON from mentor response
+      // The EXERCISE_FEEDBACK_DIRECTIVE instructs the mentor to return a JSON block
+      if (step.action === 'evaluatePronunciation') {
+        try {
+          const jsonMatch = text.match(/\{[\s\S]*?\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            const artifact: import('../../lib/contracts').PronunciationReport = {
+              type:     'pronunciation_report',
+              score:    typeof parsed.score === 'number' ? parsed.score : 70,
+              feedback: parsed.feedback ?? parsed.tip ?? text.replace(/\{[\s\S]*?\}/, '').trim(),
+              tip:      parsed.tip ?? parsed.suggestion ?? '',
+              errors:   Array.isArray(parsed.errors) ? parsed.errors : [],
+            };
+            return { text: artifact.feedback, artifact };
+          }
+        } catch { /* fall through to plain text */ }
+      }
+
       return { text };
     }
 
@@ -422,19 +441,10 @@ async function dispatchToExecutor(
         // falls back to request.message if not present
         const content = ctx.request.exportTranscript || ctx.request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount = ctx.request.exportTranscript
-  ? ctx.request.exportTranscript.split(/\n\s*\n/).filter(Boolean).length
-  : (ctx.request.message ? 1 : 0);
-
-const artifact = result.success
-  ? {
-      type: 'pdf_chat' as const,
-      url: result.url,
-      messageCount,
-    }
-  : undefined;
-
-return { artifact };
+        const artifact = result.success
+          ? { type: 'pdf_chat' as const, url: result.url }
+          : undefined;
+        return { artifact };
       }
 
       if (step.action === 'generateCoursePdf') {
