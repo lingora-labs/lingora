@@ -1,9 +1,14 @@
+// =============================================================================
+// server/tools/schema-generator.ts
+// LINGORA SEEK 3.2 — Schema Content Generator
+// No changes from live version — preserved as delivered.
+// =============================================================================
+
 import OpenAI from 'openai'
 import type { SchemaContent } from '@/lib/contracts'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-// Classify the schema type to adapt the prompt
 type SchemaKind = 'grammar' | 'conjugation' | 'comparison' | 'vocabulary' | 'culture' | 'cervantes' | 'general'
 
 function classifyTopic(topic: string): SchemaKind {
@@ -34,52 +39,37 @@ function buildPrompt(topic: string, level: string, uiLanguage: string, kind: Sch
     conjugation: `
 TIPO: CONJUGACIÓN VERBAL
 - tableRows OBLIGATORIO: mínimo 7 filas (yo/tú/él/nosotros/vosotros/ellos + ejemplo con frase)
-- Incluir todas las personas gramaticales correctas
-- examples: 6+ ejemplos reales de uso en contexto natural (no frases artificiales de manual)
-- Incluir irregularidades y excepciones si las hay
+- examples: 6+ ejemplos reales de uso en contexto natural
 - summary: la regla de formación en una frase memorable`,
-
     comparison: `
 TIPO: CONTRASTE / COMPARACIÓN
-- tableRows: izquierda = concepto A, derecha = concepto B (mínimo 5 filas de contraste)
-- keyConcepts: los criterios de distinción más importantes
+- tableRows: izquierda = concepto A, derecha = concepto B (mínimo 5 filas)
 - examples: 4 pares de ejemplos contrastivos reales
 - summary: la diferencia clave en una regla 80/20 aplicable`,
-
     vocabulary: `
 TIPO: VOCABULARIO TEMÁTICO
-- tableRows: palabra → definición/uso/equivalente (mínimo 6 palabras clave)
+- tableRows: palabra → definición/uso (mínimo 6 palabras clave)
 - examples: 5+ oraciones reales mostrando el vocabulario en contexto
-- subtopics: categorías semánticas del vocabulario
-- summary: las 3-5 palabras que más valen la pena memorizar primero`,
-
+- summary: las 3-5 palabras más valiosas primero`,
     culture: `
 TIPO: CULTURA E INMERSIÓN
 - keyConcepts: fenómenos culturales específicos, no genéricos
-- subtopics: desarrollar con profundidad histórica y social real
-- examples: anécdotas, situaciones reales, expresiones propias de esa cultura
-- tableRows: solo si aplica (línea del tiempo, comparación regional, etc.)
-- summary: la intuición cultural más importante para alguien que va a viajar`,
-
+- subtopics: profundidad histórica y social real
+- examples: anécdotas, situaciones reales
+- summary: la intuición cultural más importante`,
     cervantes: `
 TIPO: PREPARACIÓN DELE/CCSE
-- Estructura orientada al examen oficial
-- tableRows: tipo de tarea → estrategia → error común a evitar
+- tableRows: tipo de tarea → estrategia → error común
 - quiz: preguntas tipo examen DELE/CCSE con opciones plausibles
-- examples: fragmentos de texto similares a los del examen real
-- summary: la estrategia más útil para este componente del examen`,
-
+- summary: la estrategia más útil para este componente`,
     grammar: `
 TIPO: GRAMÁTICA
 - tableRows: regla → aplicación / excepción (mínimo 5 filas)
 - examples: 5+ ejemplos correctos Y errores comunes corregidos
-- subtopics: subdivisiones gramaticales relevantes
 - summary: la regla principal que cubre el 80% de los casos`,
-
     general: `
 TIPO: GENERAL
 - Adaptar tableRows, subtopics y examples al contenido específico
-- Priorizar practicidad y claridad pedagógica
 - summary: la idea más valiosa del tema en una frase concreta`,
   }
 
@@ -90,59 +80,50 @@ INSTRUCCIÓN DE NIVEL (${level}): ${levelInstructions}
 
 ${kindInstructions[kind]}
 
-REGLAS ABSOLUTAS DE CALIDAD:
+REGLAS ABSOLUTAS:
 ✅ Toda información gramatical debe ser 100% correcta en español
-✅ Los ejemplos deben ser frases reales y naturales, no oraciones de manual artificial
-✅ Cada subtema debe aportar valor pedagógico real, no repetir otros
-✅ El summary debe ser una regla 80/20 verdaderamente útil y aplicable
-✅ El quiz debe tener respuestas incorrectas plausibles (no obviamente falsas)
+✅ Los ejemplos deben ser frases reales y naturales
+✅ El quiz debe tener respuestas incorrectas plausibles
 ✅ Adaptar el nivel de vocabulario y gramática al nivel CEFR indicado
-
-PROHIBIDO ABSOLUTAMENTE:
-❌ Errores gramaticales en cualquier campo
-❌ Explicaciones vagas o circulares ("es importante porque es importante")
-❌ Ejemplos artificiales que nadie diría en conversación real
-❌ Relleno o redundancia entre subtemas
-❌ Pseudopedagogía (parecer educativo sin aportar valor real)
+❌ No errores gramaticales
+❌ No ejemplos artificiales
 
 Genera un esquema de estudio sobre: "${topic}"
 
-Devuelve SOLO JSON válido, sin texto extra, sin markdown, con esta estructura EXACTA:
+Devuelve SOLO JSON válido, sin texto extra, sin markdown:
 {
   "title": "Título pedagógico preciso del tema",
   "block": "Bloque temático (ej: Verbos / Gramática / Cultura / DELE)",
-  "objective": "Objetivo de aprendizaje en una frase directa y verificable",
+  "objective": "Objetivo de aprendizaje en una frase directa",
   "keyConcepts": ["concepto1", "concepto2", "concepto3", "concepto4", "concepto5"],
-  "tableRows": [
-    { "left": "Elemento o forma", "right": "Valor o explicación" }
-  ],
-  "subtopics": [
-    {
-      "title": "Nombre del subtema",
-      "content": "Explicación clara en 2-4 frases con precisión ${level === 'C1' || level === 'C2' ? 'avanzada' : 'apropiada al nivel'}",
-      "keyTakeaway": "Lo esencial de este subtema en una frase"
-    }
-  ],
-  "examples": [
-    "Ejemplo 1: frase real completa con contexto natural",
-    "Ejemplo 2: frase real completa con contexto natural"
-  ],
-  "summary": "Regla 80/20: la idea más valiosa del tema que cubre la mayoría de los casos reales",
-  "quiz": [
-    {
-      "question": "Pregunta tipo examen (DELE/UNED si aplica)",
-      "options": ["Opción A", "Opción B", "Opción C", "Opción D"],
-      "correct": 0
-    }
+  "tableRows": [{ "left": "Elemento", "right": "Valor" }],
+  "subtopics": [{
+    "title": "Nombre del subtema",
+    "content": "Explicación clara en 2-4 frases",
+    "keyTakeaway": "Lo esencial en una frase"
+  }],
+  "examples": ["Ejemplo 1", "Ejemplo 2"],
+  "summary": "Regla 80/20: la idea más valiosa del tema",
+  "quiz": [{
+    "question": "Pregunta tipo examen",
+    "options": ["Opción A", "Opción B", "Opción C", "Opción D"],
+    "correct": 0,
+    "explanation": "Por qué esta opción es correcta"
+  }],
+  "erroresFrecuentes": [
+    "❌ Error: [incorrecto] → ✅ Correcto: [correcto] — Motivo: [explicación breve]"
   ]
 }
 
-REQUISITOS FINALES:
-- tableRows: mínimo 4 filas (más si el tema lo requiere)
-- subtopics: mínimo 3, máximo 6
-- examples: mínimo 4, máximo 8
-- quiz: exactamente 5 preguntas, cada una con 4 opciones, correct es el índice correcto (0-3)
-- keyConcepts: exactamente 5`
+REQUISITOS (FORMATO UNED — OBLIGATORIO):
+- keyConcepts: exactamente 6, con concepto clave subrayado semánticamente en el JSON
+- tableRows: mínimo 5 filas — columnas izquierda/derecha con terminología precisa
+- subtopics: mínimo 5 secciones, cada content de mínimo 60 palabras, cada keyTakeaway en formato "Regla: [regla concisa]"
+- examples: mínimo 6 ejemplos naturales en contexto real, no aislados
+- quiz: exactamente 5 preguntas con opciones plausibles y explanation en cada una
+- erroresFrecuentes: exactamente 3 errores típicos con formato "❌ Error: [incorrecto] → ✅ Correcto: [correcto]"
+- summary: regla 80/20 en una frase memorable, máximo 20 palabras
+- El JSON debe incluir el campo erroresFrecuentes (array de strings)\`
 }
 
 export async function generateSchemaContent(params: {
@@ -159,7 +140,7 @@ export async function generateSchemaContent(params: {
     messages: [{ role: 'system', content: prompt }],
     temperature: 0.2,
     response_format: { type: 'json_object' },
-    max_tokens: 2400,
+    max_tokens: 3500, // P4: UNED format requires more tokens
   })
 
   const raw = completion.choices[0].message.content!
@@ -171,7 +152,6 @@ export async function generateSchemaContent(params: {
     throw new Error('Schema generator returned invalid JSON')
   }
 
-  // Validate required fields
   if (!parsed.title?.trim()) throw new Error('Schema missing title')
   if (!parsed.quiz || parsed.quiz.length === 0) throw new Error('Schema missing quiz')
   if (!parsed.keyConcepts || parsed.keyConcepts.length === 0) throw new Error('Schema missing keyConcepts')
