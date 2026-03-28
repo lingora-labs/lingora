@@ -128,15 +128,17 @@ export type ArtifactType =
  * Used as the content payload before being wrapped in SchemaArtifact or SchemaProArtifact.
  */
 export interface SchemaContent {
-  title:       string;
-  block?:      string;
-  objective?:  string;
-  keyConcepts: string[];
-  tableRows:   Array<{ left: string; right: string }>;
-  subtopics?:  Array<{ title: string; content: string; keyTakeaway?: string }>;
-  examples:    string[];
-  summary?:    string;
-  quiz:        Array<{ question: string; options: string[]; correct: number }>;
+  title:             string;
+  block?:            string;
+  objective?:        string;
+  keyConcepts:       string[];
+  tableRows:         Array<{ left: string; right: string }>;
+  subtopics?:        Array<{ title: string; content: string; keyTakeaway?: string }>;
+  examples:          string[];
+  summary?:          string;
+  quiz:              Array<{ question: string; options: string[]; correct: number; explanation?: string }>;
+  // P4/UNED: rich error section — produced by schema-generator when UNED format active
+  erroresFrecuentes?: string[];
 }
 
 export interface SchemaBlock {
@@ -151,6 +153,7 @@ export interface SchemaQuizItem {
   question: string;
   options: string[];
   correct: number; // index 0-3
+  explanation?: string; // P4/UNED: why the correct answer is correct
 }
 
 export interface SchemaArtifact {
@@ -570,6 +573,7 @@ export type IntentSubtype =
   | 'transcribe'
   | 'export_chat_pdf'
   | 'generate_course_pdf'
+  | 'pronunciation_eval'
   // artifact subtypes
   | 'schema'
   | 'schema_pro'
@@ -646,7 +650,8 @@ export interface MentorDirective {
     | 'TRANSLATION_ONLY_DIRECTIVE'
     | 'FIRST_TURN_DIRECTIVE'
     | 'CURRICULUM_PRESENTER_DIRECTIVE'
-    | 'EXERCISE_FEEDBACK_DIRECTIVE';   // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
+    | 'EXERCISE_FEEDBACK_DIRECTIVE'   // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
+    | 'PRONUNCIATION_EVAL_DIRECTIVE';  // G2: evaluates pronunciation, returns JSON {score,feedback,tip,errors}
   injectContinuity: boolean;
   injectErrorMemory: boolean;
   cognitiveStructure: boolean; // enforce CONTEXT→CONCEPT→EXAMPLE→TRANSFER→ACTION
@@ -901,4 +906,3 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
-
