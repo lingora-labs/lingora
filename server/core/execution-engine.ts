@@ -441,10 +441,19 @@ async function dispatchToExecutor(
         // falls back to request.message if not present
         const content = ctx.request.exportTranscript || ctx.request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        const artifact = result.success
-          ? { type: 'pdf_chat' as const, url: result.url }
-          : undefined;
-        return { artifact };
+        const messageCount = ctx.request.exportTranscript
+  ? ctx.request.exportTranscript.split(/\n\s*\n/).filter(Boolean).length
+  : (ctx.request.message ? 1 : 0);
+
+const artifact = result.success
+  ? {
+      type: 'pdf_chat' as const,
+      url: result.url,
+      messageCount,
+    }
+  : undefined;
+
+return { artifact };
       }
 
       if (step.action === 'generateCoursePdf') {
