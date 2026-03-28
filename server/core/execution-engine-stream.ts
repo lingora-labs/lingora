@@ -334,7 +334,19 @@ async function dispatchSync(
       if (step.action === 'exportChatPdf') {
         const content = request.exportTranscript || request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        return { artifact: result.success ? { type: 'pdf_chat' as const, url: result.url } : undefined };
+        const messageCount = content
+  ? content.split(/\n\s*\n/).filter(Boolean).length
+  : 0;
+
+return {
+  artifact: result.success
+    ? {
+        type: 'pdf_chat' as const,
+        url: result.url,
+        messageCount,
+      }
+    : undefined,
+};
       }
       if (step.action === 'generateCoursePdf') {
         const result = await generatePDF({ title, content: request.message });
