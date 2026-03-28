@@ -1,6 +1,6 @@
 // =============================================================================
 // server/tools/schema-adapter.ts
-// LINGORA SEEK 3.1 — SchemaContent → SchemaArtifact Adapter
+// LINGORA SEEK 3.2 — SchemaContent → SchemaArtifact Adapter
 // =============================================================================
 // FIX-9F: quiz field now passes through as SchemaQuizItem[] (structured)
 // instead of flattening to string[] — enables interactive QuizBlock renderer
@@ -60,10 +60,15 @@ export function adaptSchemaToArtifact(
   // SchemaArtifact.quiz = Array<SchemaQuizItem | string> (updated in contracts)
   // normSchema reads these as QuizQ[] → QuizBlock renders interactive simulacro
   const quiz: SchemaQuizItem[] | undefined = data.quiz?.map(q => ({
-    question: q.question,
-    options:  q.options,
-    correct:  typeof q.correct === 'number' ? q.correct : 0,
+    question:    q.question,
+    options:     q.options,
+    correct:     typeof q.correct === 'number' ? q.correct : 0,
+    explanation: q.explanation,
   }));
+
+  // P4/UNED: pass erroresFrecuentes through so SchemaBlock renderer can display them
+  const erroresFrecuentes: string[] | undefined =
+    data.erroresFrecuentes?.length ? data.erroresFrecuentes : undefined;
 
   return {
     type:      'schema',
@@ -72,5 +77,6 @@ export function adaptSchemaToArtifact(
     level,
     sections,
     quiz,
+    erroresFrecuentes,
   };
 }
