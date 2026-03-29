@@ -183,7 +183,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
 
   // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
-    executor: ExecutorType;
+    executor: ExecutorType | 'hybrid';
     action: string;
     pedagogicalAction: PedagogicalAction;
     artifacts: ArtifactType[];
@@ -223,7 +223,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       // executor is hybrid because it combines tool_audio + mentor + TTS
       executor: 'hybrid',
       action: 'evaluatePronunciation',
-      pedagogicalAction: 'pronunciation_feedback',
+      pedagogicalAction: 'pronunciation_eval',
       artifacts: ['pronunciation_report', 'audio'],
     },
   };
