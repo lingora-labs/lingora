@@ -55,13 +55,7 @@ import {
 } from '../../lib/contracts';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXECUTION RESULT — what execution-engine returns to route.ts
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
 // SEEK 3.1 Fase 0-A — TOPIC RESOLVER
-// Prevents "este tema" from resolving to navigational noise or the wrong topic.
-// Priority: currentLessonTopic > lastConcept > lastUserGoal > curriculumPlan > message
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NOISE_PATTERNS = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|go|start|más|mas|seguir|continue|adelante|siguiente módulo|next module|proceed|claro|entendido|understood)$/i;
@@ -71,149 +65,79 @@ function resolveSchemaTopicFromState(
   state: SessionState,
   priorText: string,
 ): string {
-  // 1. If there is an active lesson topic — always use it
   if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
-
-  // 2. Check if the message itself is meaningful (not navigational noise)
   const cleanMessage = message?.trim();
   if (cleanMessage && cleanMessage.length > 4 && !NOISE_PATTERNS.test(cleanMessage)) {
     return cleanMessage;
   }
-
-  // 3. Fall back to continuity fields
   if (state.lastConcept?.trim())       return state.lastConcept;
   if (state.lastUserGoal?.trim())      return state.lastUserGoal;
   if (state.curriculumPlan?.topic)     return state.curriculumPlan.topic;
-
-  // 4. Prior execution text (if meaningful)
   const cleanPrior = priorText?.trim();
   if (cleanPrior && cleanPrior.length > 4 && !NOISE_PATTERNS.test(cleanPrior)) {
     return cleanPrior;
   }
-
   return 'Spanish grammar';
 }
 
-
 export interface ExecutionResult {
-  /** Primary text message for the user */
   message: string;
-  /** Artifact to render, if any — determined by plan */
   artifact?: ArtifactPayload;
-  /** Suggested actions for the user */
   suggestedActions: SuggestedAction[];
-  /** State changes to merge back into SessionState */
   statePatch: StatePatch;
-  /** Step-level results for trace/audit */
   stepResults: ExecutionStepResult[];
-  /** Total wall time for all steps */
   totalDurationMs: number;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STEP CONTEXT — passed to each executor, contains prior step outputs
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface StepContext {
   plan: ExecutionPlan;
   request: ChatRequest;
   state: SessionState;
-  /** Results from completed steps, keyed by step.order */
   priorResults: Map<number, StepOutput>;
 }
 
 interface StepOutput {
   stepOrder: number;
   executor: ExecutorType;
-  /** Raw text output from this step, if any */
   text?: string;
-  /** Artifact produced by this step, if any */
   artifact?: ArtifactPayload;
-  /** Patch from this step */
   patch?: StatePatch;
   durationMs: number;
   success: boolean;
   error?: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC API
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * executePlan
- * ──────────────────────────────────────────────────────────────────────────
- * Executes the given ExecutionPlan step by step, in the order defined by
- * plan.executionOrder. Steps with dependsOn are held until their dependency
- * completes.
- *
- * Returns a compiled ExecutionResult containing the final message, artifact,
- * suggested actions, state patch, and full step audit trail.
- *
- * @param plan    The ExecutionPlan from orchestrator.ts
- * @param request The original ChatRequest
- * @param state   The current (validated) SessionState
- */
 export async function executePlan(
   plan: ExecutionPlan,
   request: ChatRequest,
   state: SessionState,
 ): Promise<ExecutionResult> {
   const engineStart = Date.now();
-
-  // Sort steps by order (ascending) — defensive, plan should already be sorted
-  const orderedSteps = [...plan.executionOrder].sort(
-    (a, b) => a.order - b.order,
-  );
-
-  const ctx: StepContext = {
-    plan,
-    request,
-    state,
-    priorResults: new Map(),
-  };
-
+  const orderedSteps = [...plan.executionOrder].sort((a, b) => a.order - b.order);
+  const ctx: StepContext = { plan, request, state, priorResults: new Map() };
   const stepResults: ExecutionStepResult[] = [];
 
-  // ── Execute steps in declared order ──────────────────────────────────────
   for (const step of orderedSteps) {
-    // Wait for dependency if declared
     if (step.dependsOn !== undefined) {
       const dep = ctx.priorResults.get(step.dependsOn);
       if (!dep || !dep.success) {
-        // Dependency failed — attempt graceful degradation
         const fallback = buildDegradedStep(step, `dependency step ${step.dependsOn} failed or missing`);
         ctx.priorResults.set(step.order, fallback);
         stepResults.push(toStepResult(fallback, plan));
         continue;
       }
     }
-
     const stepOutput = await executeStep(step, ctx);
     ctx.priorResults.set(step.order, stepOutput);
     stepResults.push(toStepResult(stepOutput, plan));
   }
 
-  // ── Compile final result from all step outputs ────────────────────────────
   const compiled = compileResult(plan, ctx, stepResults);
-
-  return {
-    ...compiled,
-    stepResults,
-    totalDurationMs: Date.now() - engineStart,
-  };
+  return { ...compiled, stepResults, totalDurationMs: Date.now() - engineStart };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STEP EXECUTOR — dispatches to the correct execution layer
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function executeStep(
-  step: ExecutionStep,
-  ctx: StepContext,
-): Promise<StepOutput> {
+async function executeStep(step: ExecutionStep, ctx: StepContext): Promise<StepOutput> {
   const start = Date.now();
-
   try {
     const output = await dispatchToExecutor(step, ctx);
     return {
@@ -227,17 +151,10 @@ async function executeStep(
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[execution-engine] step ${step.order} (${step.executor}:${step.action}) failed: ${errorMessage}`
-    );
-
+    console.error(`[execution-engine] step ${step.order} (${step.executor}:${step.action}) failed: ${errorMessage}`);
     return buildDegradedStep(step, errorMessage, Date.now() - start);
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DISPATCHER — routes each step to the correct execution layer module
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface DispatchOutput {
   text?: string;
@@ -245,12 +162,7 @@ interface DispatchOutput {
   patch?: StatePatch;
 }
 
-async function dispatchToExecutor(
-  step: ExecutionStep,
-  ctx: StepContext,
-): Promise<DispatchOutput> {
-
-  // Collect prior text context for steps that need it
+async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promise<DispatchOutput> {
   const priorText = collectPriorText(ctx.priorResults, step.order);
 
   switch (step.executor) {
@@ -266,8 +178,6 @@ async function dispatchToExecutor(
         action: step.action,
       });
 
-      // G2: when action is evaluatePronunciation, parse JSON from mentor response
-      // The EXERCISE_FEEDBACK_DIRECTIVE instructs the mentor to return a JSON block
       if (step.action === 'evaluatePronunciation') {
         try {
           const jsonMatch = text.match(/\{[\s\S]*?\}/);
@@ -306,12 +216,8 @@ async function dispatchToExecutor(
         }
 
         case 'generateSchemaPro': {
-          // FIX-B2: convert SchemaContent → real SchemaProArtifact with blocks[]
-          // No dedicated generator needed — we map SchemaContent fields to SBlock format
           const data = await generateSchemaContent({ topic, level, uiLanguage });
-          // F-B2: use SchemaProBlockItem[] — now the canonical contract type
           const blocks: import('../../lib/contracts').SchemaProBlockItem[] = [];
-
           if (data.keyConcepts?.length) {
             blocks.push({ type: 'bullets', title: 'Conceptos clave', items: data.keyConcepts });
           }
@@ -324,13 +230,9 @@ async function dispatchToExecutor(
           if (data.summary) {
             blocks.push({ type: 'highlight', tone: 'ok', label: 'Regla 80/20', text: data.summary });
           }
-
           const artifact: import('../../lib/contracts').SchemaProArtifact = {
-            type:     'schema_pro',
-            title:    data.title,
-            subtitle: data.objective,
-            level:    ctx.state.confirmedLevel ?? ctx.state.userLevel,
-            blocks,
+            type: 'schema_pro', title: data.title, subtitle: data.objective,
+            level: ctx.state.confirmedLevel ?? ctx.state.userLevel, blocks,
           };
           return { artifact };
         }
@@ -339,14 +241,10 @@ async function dispatchToExecutor(
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.quiz?.length) {
             const artifact: import('../../lib/contracts').QuizArtifact = {
-              type:  'quiz',
-              title: data.title,
+              type: 'quiz', title: data.title,
               questions: data.quiz.map(q => ({
                 question: q.question,
-                options:  q.options.map((opt, i) => ({
-                  text:    opt,
-                  correct: i === q.correct,
-                })),
+                options: q.options.map((opt, i) => ({ text: opt, correct: i === q.correct })),
               })),
             };
             return { artifact };
@@ -359,10 +257,8 @@ async function dispatchToExecutor(
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.tableRows?.length) {
             const artifact: import('../../lib/contracts').TableArtifact = {
-              type:    'table',
-              title:   data.title,
-              columns: ['', ''],
-              rows:    data.tableRows.map(row => [row.left, row.right]),
+              type: 'table', title: data.title, columns: ['', ''],
+              rows: data.tableRows.map(row => [row.left, row.right]),
             };
             return { artifact };
           }
@@ -371,17 +267,12 @@ async function dispatchToExecutor(
         }
 
         case 'generateTableMatrix': {
-          // FIX: must produce TableMatrixArtifact (type: 'table_matrix'), not TableArtifact
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.tableRows?.length) {
             const artifact: import('../../lib/contracts').TableMatrixArtifact = {
-              type:    'table_matrix',
-              title:   data.title,
+              type: 'table_matrix', title: data.title,
               columns: ['Concept', 'Value'],
-              rows:    data.tableRows.map(row => [
-                { value: row.left },
-                { value: row.right },
-              ]),
+              rows: data.tableRows.map(row => [{ value: row.left }, { value: row.right }]),
             };
             return { artifact };
           }
@@ -390,42 +281,34 @@ async function dispatchToExecutor(
         }
 
         case 'buildRoadmapArtifact': {
-          // FIX-B3: if no curriculumPlan, produce a minimal topic-based roadmap
-          // instead of returning empty — gives the user something useful
           if (!ctx.state.curriculumPlan) {
             const topicFallback = resolveSchemaTopicFromState(ctx.request.message, ctx.state, '') || topic;
             const fallbackModules = [
-              { index: 0, title: 'Diagnóstico de nivel',            focus: 'Evaluación inicial',      completed: false, current: true },
-              { index: 1, title: `Fundamentos: ${topicFallback}`,   focus: 'Conceptos clave',         completed: false, current: false },
-              { index: 2, title: 'Práctica guiada',                 focus: 'Ejercicios aplicados',    completed: false, current: false },
-              { index: 3, title: 'Errores frecuentes',              focus: 'Corrección',              completed: false, current: false },
-              { index: 4, title: 'Simulacro final',                 focus: 'Evaluación de dominio',   completed: false, current: false },
+              { index: 0, title: 'Diagnóstico de nivel',          focus: 'Evaluación inicial',    completed: false, current: true },
+              { index: 1, title: `Fundamentos: ${topicFallback}`, focus: 'Conceptos clave',       completed: false, current: false },
+              { index: 2, title: 'Práctica guiada',               focus: 'Ejercicios aplicados',  completed: false, current: false },
+              { index: 3, title: 'Errores frecuentes',            focus: 'Corrección',            completed: false, current: false },
+              { index: 4, title: 'Simulacro final',               focus: 'Evaluación de dominio', completed: false, current: false },
             ];
             const artifact: import('../../lib/contracts').RoadmapBlock = {
-              type:    'roadmap',
-              title:   topicFallback,
-              modules: fallbackModules,
+              type: 'roadmap', title: topicFallback, modules: fallbackModules,
             };
             return { artifact };
           }
           const artifact: import('../../lib/contracts').RoadmapBlock = {
-            type:    'roadmap',
-            title:   ctx.state.curriculumPlan.topic,
+            type: 'roadmap', title: ctx.state.curriculumPlan.topic,
             modules: ctx.state.curriculumPlan.modules.map(m => ({
-              index:     m.index,
-              title:     m.title,
-              focus:     m.focus,
+              index: m.index, title: m.title, focus: m.focus,
               completed: !!(ctx.state.masteryByModule[m.index]?.passed),
-              current:   m.index === (ctx.state.currentModuleIndex ?? 0),
+              current: m.index === (ctx.state.currentModuleIndex ?? 0),
             })),
           };
           return { artifact };
         }
 
         default: {
-          // FIX: unknown action → explicit error, no schema substitution
           console.error(`[execution-engine] tool_schema: unsupported action "${step.action}" — no artifact produced`);
-          return {};  // empty — caller sees no artifact, no silent schema
+          return {};
         }
       }
     }
@@ -435,19 +318,17 @@ async function dispatchToExecutor(
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
 
-      // FIX-EE1: discriminate by step.action so artifact type matches orchestrator contract
       if (step.action === 'exportChatPdf') {
-        // G6a — SEEK 3.3: structured PDF content with UNED-style format
-        // Build a formatted transcript instead of raw message
+        // G6a — SEEK 3.3: structured PDF with UNED-style format
         const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
         const now = new Date();
-        const dateStr = now.toLocaleDateString('es-ES', { year:'numeric', month:'long', day:'numeric' });
+        const dateStr = now.toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
         const mentorName = (ctx.state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
                            (ctx.state.mentorProfile ?? 'Alex').slice(1);
-        const levelStr   = ctx.state.confirmedLevel ?? ctx.state.level ?? 'N/A';
-        const tokensStr  = String(ctx.state.tokens ?? 0);
+        // IS fix H2: use userLevel, not level
+        const levelStr  = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'N/A';
+        const tokensStr = String(ctx.state.tokens ?? 0);
 
-        // Format transcript lines into readable turns
         const lines = rawTranscript.split('\n').filter(Boolean);
         const formattedLines = lines.map((line: string) => {
           if (line.startsWith('[Student]:') || line.startsWith('[USER]:')) {
@@ -458,14 +339,15 @@ async function dispatchToExecutor(
           return line;
         }).join('\n');
 
+        // IS fix H1: clean template literals (no backslash escaping)
         const header = [
           '══════════════════════════════════════════',
           '   LINGORA — HISTORIAL DE SESIÓN',
           '══════════════════════════════════════════',
-          \`Mentor:   \${mentorName}\`,
-          \`Nivel:    \${levelStr}\`,
-          \`Turnos:   \${tokensStr}\`,
-          \`Fecha:    \${dateStr}\`,
+          `Mentor:   ${mentorName}`,
+          `Nivel:    ${levelStr}`,
+          `Turnos:   ${tokensStr}`,
+          `Fecha:    ${dateStr}`,
           '──────────────────────────────────────────',
           '',
         ].join('\n');
@@ -475,14 +357,21 @@ async function dispatchToExecutor(
           '──────────────────────────────────────────',
           'LINGORA · AI Cultural Immersion Platform for Spanish',
           'Learn → Connect → Experience',
-          \`Exportado el \${dateStr}\`,
+          `Exportado el ${dateStr}`,
         ].join('\n');
 
         const content = header + formattedLines + footer;
-        const result = await generatePDF({ title: \`LINGORA · Sesión · \${dateStr}\`, content });
+        const result = await generatePDF({ title: `LINGORA · Sesión · ${dateStr}`, content });
+
+        // IS fix H3: include messageCount in pdf_chat artifact
+        const messageCount = rawTranscript
+          ? rawTranscript.split('\n').filter(Boolean).length
+          : 0;
+
         const artifact = result.success
-          ? { type: 'pdf_chat' as const, url: result.url }
+          ? { type: 'pdf_chat' as const, url: result.url, messageCount }
           : undefined;
+
         return { artifact };
       }
 
@@ -494,7 +383,6 @@ async function dispatchToExecutor(
         return { artifact };
       }
 
-      // Default: generic PDF
       const result = await generatePDF({ title, content: ctx.request.message });
       const artifact = result.success
         ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
@@ -509,9 +397,7 @@ async function dispatchToExecutor(
       const result = await generateImage(prompt);
       if (result?.success && result.url) {
         return { artifact: {
-          type: 'illustration' as const,
-          prompt,
-          url: result.url,
+          type: 'illustration' as const, prompt, url: result.url,
           caption: result.message ?? undefined,
         }};
       }
@@ -521,19 +407,14 @@ async function dispatchToExecutor(
     // ── Audio toolkit ────────────────────────────────────────────────────────
     case 'tool_audio': {
 
-      // SEEK 3.1: discriminate by step.action
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
-        // FIX-EE3: use only the most recent mentor text for TTS
-        // priorText includes ALL prior steps (transcription + mentor response)
-        // TTS should speak only the mentor response — not echo the user's own words
         const mentorPriorText = Array.from(ctx.priorResults.values())
           .filter(r => r.executor === 'mentor' && r.text)
           .sort((a, b) => b.stepOrder - a.stepOrder)[0]?.text;
         const textToSpeak = (mentorPriorText ?? priorText)?.trim() || ctx.request.message?.trim();
         if (!textToSpeak) return {};
         // G2 — SEEK 3.3: map mentor identity to correct OpenAI voice
-        // nova (default) = female; onyx = deep male; shimmer = female; fable = neutral
         const MENTOR_VOICES: Record<string, string> = {
           sarah: 'shimmer',
           alex:  'fable',
@@ -548,7 +429,7 @@ async function dispatchToExecutor(
         return {};
       }
 
-      // default branch: transcribe audio input
+      // Default: transcribe audio input
       const { transcribeAudio } = await import('../tools/audio-toolkit');
       const audioData = ctx.request.audioDataUrl
         ? { data: ctx.request.audioDataUrl.split(',')[1] || ctx.request.audioDataUrl, format: ctx.request.audioMimeType?.split('/')[1] || 'webm' }
@@ -568,31 +449,26 @@ async function dispatchToExecutor(
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
-      // G5 — SEEK 3.3: persist transcript in state so subsequent turns don't lose it
+      // G5 — SEEK 3.3: persist transcript so subsequent turns don't lose it
       const transcriptText = result.success ? result.text : undefined;
+      // IS fix H4: use patch (not statePatch) — DispatchOutput contract
       return {
-        text:       transcriptText,
-        statePatch: transcriptText
+        text: transcriptText,
+        patch: transcriptText
           ? { lastUserAudioTranscript: transcriptText }
           : undefined,
-        artifact: undefined,
-        patch:    undefined,
       };
     }
 
     // ── Attachment processor ─────────────────────────────────────────────────
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
-      // Map AttachedFile[] to the shape processAttachment expects
       const filesToProcess = (ctx.request.files ?? []).map(f => ({
-        name: f.name,
-        type: f.type,
-        size: f.size,
+        name: f.name, type: f.type, size: f.size,
         data: f.base64 ?? (f.dataUrl ? f.dataUrl.split(',')[1] ?? f.dataUrl : ''),
       }));
       const result = await processAttachment(
-        filesToProcess,
-        ctx.state as unknown as Record<string, unknown>,
+        filesToProcess, ctx.state as unknown as Record<string, unknown>,
       );
       const text = result?.extractedTexts?.[0] ?? undefined;
       return { text };
@@ -600,8 +476,6 @@ async function dispatchToExecutor(
 
     // ── Storage ───────────────────────────────────────────────────────────────
     case 'tool_storage': {
-      // Storage is handled internally by pdf-generator and audio-toolkit
-      // If it appears as a standalone step, it's a no-op here
       return {};
     }
 
@@ -615,17 +489,12 @@ async function dispatchToExecutor(
     // ── Diagnostics ───────────────────────────────────────────────────────────
     case 'diagnostic': {
       const { evaluateLevel } = await import('./diagnostics');
-      // Accumulative diagnostic: build sample context from available state
-      // diagnosticSamples tracks how many exchanges have been evaluated
       const sampleCount = (ctx.state.diagnosticSamples ?? 0) + 1;
-      // Build samples array: current message + synthetic prior context
-      // The confidence threshold in evaluateLevel requires >= 3 samples for low, >= 8 for high
       const samples = [
         ctx.request.message,
-        // Pad with available context to reflect accumulated evidence
-        ...(ctx.state.lastConcept    ? [ctx.state.lastConcept]    : []),
-        ...(ctx.state.lastUserGoal   ? [ctx.state.lastUserGoal]   : []),
-        ...(ctx.state.lastMistake    ? [ctx.state.lastMistake]    : []),
+        ...(ctx.state.lastConcept  ? [ctx.state.lastConcept]  : []),
+        ...(ctx.state.lastUserGoal ? [ctx.state.lastUserGoal] : []),
+        ...(ctx.state.lastMistake  ? [ctx.state.lastMistake]  : []),
       ];
       const result = await evaluateLevel(samples);
       const patch = {
@@ -639,24 +508,18 @@ async function dispatchToExecutor(
 
     // ── Commercial ────────────────────────────────────────────────────────────
     case 'commercial': {
-      // Commercial is evaluated by route.ts post-execution, not here.
-      // If it appears in executionOrder, it is always the last step.
-      // execution-engine never triggers commercial independently.
       return {};
     }
 
     default: {
-      // Unknown executor — safe no-op with warning
-      console.warn(
-        `[execution-engine] unknown executor: "${step.executor}" in step ${step.order}. Skipping.`
-      );
+      console.warn(`[execution-engine] unknown executor: "${step.executor}" in step ${step.order}. Skipping.`);
       return {};
     }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RESULT COMPILER — assembles final ExecutionResult from all step outputs
+// RESULT COMPILER
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CompiledResult {
@@ -666,114 +529,64 @@ interface CompiledResult {
   statePatch: StatePatch;
 }
 
-function compileResult(
-  plan: ExecutionPlan,
-  ctx: StepContext,
-  stepResults: ExecutionStepResult[],
-): CompiledResult {
+function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: ExecutionStepResult[]): CompiledResult {
   const outputs = Array.from(ctx.priorResults.values());
 
-  // ── Primary message: join all non-empty text outputs ─────────────────────
-  // Respects execution order — mentor last in hybrid plans
   const textParts = outputs
     .sort((a, b) => a.stepOrder - b.stepOrder)
     .map(o => o.text)
     .filter((t): t is string => !!t && t.trim() !== '');
 
-  const message = textParts.join('\n\n') ||
-    buildFallbackMessage(plan, ctx.state.interfaceLanguage);
+  const message = textParts.join('\n\n') || buildFallbackMessage(plan, ctx.state.interfaceLanguage);
 
-  // ── Primary artifact: first artifact produced by a tool step ─────────────
-  // In hybrid plans, tool artifacts take precedence over mentor artifacts
-  const toolArtifact = outputs.find(
-    o => o.artifact && o.executor !== 'mentor'
-  )?.artifact;
-  const mentorArtifact = outputs.find(
-    o => o.artifact && o.executor === 'mentor'
-  )?.artifact;
-  const artifact = toolArtifact ?? mentorArtifact;
+  const toolArtifact   = outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact;
+  const mentorArtifact = outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
+  const artifact       = toolArtifact ?? mentorArtifact;
 
-  // ── State patch: merge all step patches ──────────────────────────────────
   const statePatch: StatePatch = outputs.reduce(
     (acc, o) => (o.patch ? { ...acc, ...o.patch } : acc),
     {} as StatePatch,
   );
 
-  // Always increment tokens (execution-engine responsibility)
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
-  // Clear requestedOperation after hard overrides — use null (explicit clear sentinel)
   if (plan.priority >= 100) {
     (statePatch as StatePatch).requestedOperation = null;
   }
 
-  // Advance tutor phase unless plan says to skip
   if (!plan.skipPhaseAdvance && ctx.state.activeMode === 'structured') {
     const { advanceTutorPhase } = require('./state-manager');
-    statePatch.tutorPhase = advanceTutorPhase(
-      ctx.state.tutorPhase,
-      ctx.state.activeMode,
-    );
+    statePatch.tutorPhase = advanceTutorPhase(ctx.state.tutorPhase, ctx.state.activeMode);
   }
 
-  // ── Suggested actions: derive from plan and artifact ─────────────────────
   const suggestedActions = buildSuggestedActions(plan, artifact, ctx.state);
-
   return { message, artifact, suggestedActions, statePatch };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SUGGESTED ACTIONS BUILDER
+// SUGGESTED ACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildSuggestedActions(
-  plan: ExecutionPlan,
-  artifact: ArtifactPayload | undefined,
-  state: SessionState,
-): SuggestedAction[] {
+function buildSuggestedActions(plan: ExecutionPlan, artifact: ArtifactPayload | undefined, state: SessionState): SuggestedAction[] {
   const actions: SuggestedAction[] = [];
-
-  // Artifact-based actions
   if (artifact) {
-    if (artifact.type === 'quiz') {
-      actions.push({ type: 'start_quiz', label: getLabel('start_quiz', state.interfaceLanguage) });
-    }
-    if (artifact.type === 'schema' || artifact.type === 'schema_pro') {
-      actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-    }
-    if (artifact.type === 'roadmap') {
-      actions.push({ type: 'start_course', label: getLabel('start_course', state.interfaceLanguage) });
-    }
+    if (artifact.type === 'quiz')                                      actions.push({ type: 'start_quiz',      label: getLabel('start_quiz',      state.interfaceLanguage) });
+    if (artifact.type === 'schema' || artifact.type === 'schema_pro') actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
+    if (artifact.type === 'roadmap')                                   actions.push({ type: 'start_course',    label: getLabel('start_course',    state.interfaceLanguage) });
   }
-
-  // Phase-based actions
-  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured') {
-    actions.push({ type: 'next_module', label: getLabel('next_module', state.interfaceLanguage) });
-  }
-  if (plan.pedagogicalAction === 'lesson') {
-    actions.push({ type: 'show_schema', label: getLabel('show_schema', state.interfaceLanguage) });
-  }
-
-  // Export is always available
+  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured') actions.push({ type: 'next_module', label: getLabel('next_module', state.interfaceLanguage) });
+  if (plan.pedagogicalAction === 'lesson')                             actions.push({ type: 'show_schema',     label: getLabel('show_schema',     state.interfaceLanguage) });
   actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-
-  // Deduplicate
-  return actions.filter(
-    (a, i, arr) => arr.findIndex(b => b.type === a.type) === i
-  );
+  return actions.filter((a, i, arr) => arr.findIndex(b => b.type === a.type) === i);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LABEL LOCALISATION — minimal, full layer in Sprint 2.7
-// ─────────────────────────────────────────────────────────────────────────────
-
 const LABELS: Record<string, Record<string, string>> = {
-  start_quiz:       { en: 'Start quiz', es: 'Empezar quiz', no: 'Start quiz' },
-  export_chat_pdf:  { en: 'Export as PDF', es: 'Exportar a PDF', no: 'Eksporter som PDF' },
-  next_module:      { en: 'Next module', es: 'Siguiente módulo', no: 'Neste modul' },
-  start_course:     { en: 'Start course', es: 'Empezar curso', no: 'Start kurs' },
-  show_schema:      { en: 'Show schema', es: 'Ver esquema', no: 'Vis skjema' },
-  retry_quiz:       { en: 'Try again', es: 'Intentar de nuevo', no: 'Prøv igjen' },
+  start_quiz:      { en: 'Start quiz',      es: 'Empezar quiz',       no: 'Start quiz' },
+  export_chat_pdf: { en: 'Export as PDF',   es: 'Exportar a PDF',     no: 'Eksporter som PDF' },
+  next_module:     { en: 'Next module',     es: 'Siguiente módulo',   no: 'Neste modul' },
+  start_course:    { en: 'Start course',    es: 'Empezar curso',      no: 'Start kurs' },
+  show_schema:     { en: 'Show schema',     es: 'Ver esquema',        no: 'Vis skjema' },
+  retry_quiz:      { en: 'Try again',       es: 'Intentar de nuevo',  no: 'Prøv igjen' },
 };
 
 function getLabel(type: SuggestedActionType, lang: string): string {
@@ -784,10 +597,7 @@ function getLabel(type: SuggestedActionType, lang: string): string {
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function collectPriorText(
-  results: Map<number, StepOutput>,
-  currentOrder: number,
-): string {
+function collectPriorText(results: Map<number, StepOutput>, currentOrder: number): string {
   return Array.from(results.values())
     .filter(r => r.stepOrder < currentOrder && r.text)
     .sort((a, b) => a.stepOrder - b.stepOrder)
@@ -795,24 +605,11 @@ function collectPriorText(
     .join('\n\n');
 }
 
-function buildDegradedStep(
-  step: ExecutionStep,
-  reason: string,
-  durationMs: number = 0,
-): StepOutput {
-  return {
-    stepOrder: step.order,
-    executor: step.executor,
-    durationMs,
-    success: false,
-    error: reason,
-  };
+function buildDegradedStep(step: ExecutionStep, reason: string, durationMs: number = 0): StepOutput {
+  return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
 }
 
-function toStepResult(
-  output: StepOutput,
-  plan: ExecutionPlan,
-): ExecutionStepResult {
+function toStepResult(output: StepOutput, plan: ExecutionPlan): ExecutionStepResult {
   return {
     stepOrder: output.stepOrder,
     executor: output.executor,
