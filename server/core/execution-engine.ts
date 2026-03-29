@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.2 — Execution Engine
+// LINGORA SEEK 3.3 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -37,7 +37,7 @@
 //                    server/knowledge/rag.ts
 //                    server/core/diagnostics.ts
 //
-// Commit   : feat(execution-engine): SEEK 3.2 — ordered step execution with
+// Commit   : feat(execution-engine): SEEK 3.3 — ordered step execution with
 //            dependsOn resolution, no decision logic
 // =============================================================================
 
@@ -437,23 +437,53 @@ async function dispatchToExecutor(
 
       // FIX-EE1: discriminate by step.action so artifact type matches orchestrator contract
       if (step.action === 'exportChatPdf') {
-        // FIX-B4: use exportTranscript (full chat history) if provided by frontend
-        // falls back to request.message if not present
-        const content = ctx.request.exportTranscript || ctx.request.message;
-        const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount = ctx.request.exportTranscript
-  ? ctx.request.exportTranscript.split(/\n\s*\n/).filter(Boolean).length
-  : (ctx.request.message ? 1 : 0);
+        // G6a — SEEK 3.3: structured PDF content with UNED-style format
+        // Build a formatted transcript instead of raw message
+        const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('es-ES', { year:'numeric', month:'long', day:'numeric' });
+        const mentorName = (ctx.state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
+                           (ctx.state.mentorProfile ?? 'Alex').slice(1);
+        const levelStr   = ctx.state.confirmedLevel ?? ctx.state.level ?? 'N/A';
+        const tokensStr  = String(ctx.state.tokens ?? 0);
 
-const artifact = result.success
-  ? {
-      type: 'pdf_chat' as const,
-      url: result.url,
-      messageCount,
-    }
-  : undefined;
+        // Format transcript lines into readable turns
+        const lines = rawTranscript.split('\n').filter(Boolean);
+        const formattedLines = lines.map((line: string) => {
+          if (line.startsWith('[Student]:') || line.startsWith('[USER]:')) {
+            return line.replace(/^\[(?:Student|USER)\]:/, '▶ Estudiante:');
+          }
+          const mentorMatch = line.match(/^\[([A-Z]+)\]:/);
+          if (mentorMatch) return line.replace(/^\[[A-Z]+\]:/, `◆ ${mentorName}:`);
+          return line;
+        }).join('\n');
 
-return { artifact };
+        const header = [
+          '══════════════════════════════════════════',
+          '   LINGORA — HISTORIAL DE SESIÓN',
+          '══════════════════════════════════════════',
+          \`Mentor:   \${mentorName}\`,
+          \`Nivel:    \${levelStr}\`,
+          \`Turnos:   \${tokensStr}\`,
+          \`Fecha:    \${dateStr}\`,
+          '──────────────────────────────────────────',
+          '',
+        ].join('\n');
+
+        const footer = [
+          '',
+          '──────────────────────────────────────────',
+          'LINGORA · AI Cultural Immersion Platform for Spanish',
+          'Learn → Connect → Experience',
+          \`Exportado el \${dateStr}\`,
+        ].join('\n');
+
+        const content = header + formattedLines + footer;
+        const result = await generatePDF({ title: \`LINGORA · Sesión · \${dateStr}\`, content });
+        const artifact = result.success
+          ? { type: 'pdf_chat' as const, url: result.url }
+          : undefined;
+        return { artifact };
       }
 
       if (step.action === 'generateCoursePdf') {
@@ -502,7 +532,16 @@ return { artifact };
           .sort((a, b) => b.stepOrder - a.stepOrder)[0]?.text;
         const textToSpeak = (mentorPriorText ?? priorText)?.trim() || ctx.request.message?.trim();
         if (!textToSpeak) return {};
-        const result = await generateSpeech(textToSpeak, { voice: 'nova' });
+        // G2 — SEEK 3.3: map mentor identity to correct OpenAI voice
+        // nova (default) = female; onyx = deep male; shimmer = female; fable = neutral
+        const MENTOR_VOICES: Record<string, string> = {
+          sarah: 'shimmer',
+          alex:  'fable',
+          nick:  'onyx',
+        };
+        const mentorKey = (ctx.state.mentorProfile ?? 'alex').toLowerCase();
+        const ttsVoice  = MENTOR_VOICES[mentorKey] ?? 'fable';
+        const result = await generateSpeech(textToSpeak, { voice: ttsVoice });
         if (result?.success && result.url) {
           return { artifact: { type: 'audio' as const, dataUrl: result.url } };
         }
@@ -529,8 +568,13 @@ return { artifact };
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
+      // G5 — SEEK 3.3: persist transcript in state so subsequent turns don't lose it
+      const transcriptText = result.success ? result.text : undefined;
       return {
-        text:     result.success ? result.text : undefined,
+        text:       transcriptText,
+        statePatch: transcriptText
+          ? { lastUserAudioTranscript: transcriptText }
+          : undefined,
         artifact: undefined,
         patch:    undefined,
       };
@@ -790,4 +834,3 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
-
