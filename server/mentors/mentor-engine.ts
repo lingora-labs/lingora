@@ -1,14 +1,14 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// LINGORA SEEK 3.2 — Mentor Engine
+// LINGORA SEEK 3.3 — Mentor Engine
 // =============================================================================
 // FIX LOG:
-//   FIX-6A  buildContext: uses SEEK 3.0 state field names with legacy fallbacks
+//   FIX-6A  buildContext: uses SEEK 3.2 state field names with legacy fallbacks
 //   FIX-6B  normalizeRuntimeCall: audio fallback to priorContext
 //   FIX-6C  buildMentorPrompt: injects "Current topic" explicitly
 //   FIX-6D  buildExecutionDirective: directive names → concrete instructions
-//   FIX-7A  SEEK 3.2 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
-//   FIX-7B  SEEK 3.2 Fase 0-A: activeExercise + activeTopic injected into prompt
+//   FIX-7A  SEEK 3.3 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
+//   FIX-7B  SEEK 3.3 Fase 0-A: activeExercise + activeTopic injected into prompt
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -143,6 +143,12 @@ function buildContext(state: LegacyMentorState): string {
     if (errs.length > 0) parts.push(`Recurring errors: ${errs.slice(0, 3).join(', ')}`)
   }
 
+  // G5 — SEEK 3.3: inject persisted audio transcript to prevent cognitive loop
+  if ((state as Record<string,unknown>).lastUserAudioTranscript) {
+    const t = (state as Record<string,unknown>).lastUserAudioTranscript as string
+    parts.push(`Audio transcript from prior turn: "${t}" — do NOT ask the student to send audio again.`)
+  }
+
   return parts.length > 0
     ? '\n\n[Session state: ' + parts.join(' · ') + ']' 
     : ''
@@ -193,6 +199,13 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
     '  "errors": ["<specific error 1>", "<specific error 2>"]\n' +
     '}\n' +
     'Be encouraging but precise. Score 70+ = good. The transcription of what the student said is in the prior context.',
+  // G7 — SEEK 3.3: diagnostic first turn when level is unknown
+  DIAGNOSTIC_FIRST_TURN_DIRECTIVE:
+    'This is the student\'s very first message and their level is unknown. ' +
+    'Greet them warmly by name if known, introduce yourself in 1 sentence, then ask them to ' +
+    'write 2-3 sentences in Spanish about themselves or their day. ' +
+    'Explain briefly that this helps personalise their learning path. ' +
+    'Do NOT start a lesson. Do NOT ask multiple questions. One request only.',
 }
 
 function buildExecutionDirective(params: {
@@ -260,7 +273,6 @@ export function buildMentorPrompt(params: {
   const protocolMode = resolveProtocolMode(mode)
   const topic       = resolveTopic(state)
   const context     = buildContext(state)
-  const modeInstructions   = getModeInstruction(protocolMode, topic)
   const executionDirective = buildExecutionDirective({
     systemDirective: params.systemDirective,
     plan:            params.plan,
@@ -268,10 +280,30 @@ export function buildMentorPrompt(params: {
     priorContext:    params.priorContext,
   })
 
+  // G1 — SEEK 3.3: executionDirective BEFORE modeInstructions
+  const baseModeInstructions = getModeInstruction(protocolMode, topic)
+  // G1: when fast-path is active, append explicit permission to the mode instructions
+  // so GPT sees consistent signal even at the end of the prompt
+  const modeInstructions = (params.plan?.priority ?? 0) >= 70
+    ? baseModeInstructions +
+      '\n\n[OVERRIDE ACTIVE] An explicit artifact was requested. Deliver it now. ' +
+      'The phase sequence above is suspended for this response only.'
+    : baseModeInstructions
+
+  // G1 — fast-path override when orchestrator decided explicit artifact (priority >= 70)
+  const fastPathOverride =
+    (params.plan?.priority ?? 0) >= 70
+      ? '\n\nOVERRIDE — EXPLICIT ARTIFACT REQUEST: The user has explicitly requested ' +
+        'a table, schema, or other artifact. Deliver it immediately. ' +
+        'The pedagogical phase sequence does NOT apply to this response. ' +
+        'Ignore any prior instruction to stay in phase or not blend steps.'
+      : ''
+
   const system = [
     profile.system,
-    modeInstructions,
+    fastPathOverride,
     executionDirective,
+    modeInstructions,
     TUTOR_PROHIBITIONS,
     context,
   ].filter(Boolean).join('')
@@ -404,3 +436,4 @@ export async function getMentorResponseStream(
     })()
   }
 }
+
