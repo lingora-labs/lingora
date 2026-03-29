@@ -1,9 +1,9 @@
 // ============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.2 — State Manager
+// LINGORA SEEK 3.3 — State Manager
 // ============================================================================
 // FIX LOG:
-//   SEEK 3.2 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
+//   SEEK 3.3 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
 //   for requestedOperation before returning SessionState.
 //   StatePatch allows requestedOperation?: RequestedOperation | null
 //   SessionState allows requestedOperation?: RequestedOperation (no null)
@@ -290,3 +290,4 @@ export function getNextUnlockedModule(state: SessionState): number | undefined {
 // mergeStatePatch — constitutional translation layer between StatePatch
 // (allows null-as-clear) and SessionState (requires undefined or value)
 // ============================================================================
+
