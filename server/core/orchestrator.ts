@@ -235,12 +235,12 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: [] as ArtifactType[],
   };
 
-  const step: ExecutionStep = {
-    order: 1,
-    executor: config.executor,
-    action: config.action,
-    timeout: 15000,
-  };
+const step: ExecutionStep = {
+  order: 1,
+  executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
+  action: config.action,
+  timeout: 15000,
+};
 
   return {
     executor: config.executor,
