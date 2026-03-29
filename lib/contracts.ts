@@ -644,17 +644,17 @@ export interface ExecutionStep {
 export interface MentorDirective {
   profile: 'Alex' | 'Sarah' | 'Nick';
   directive:
-    | 'RICH_CONTENT_DIRECTIVE'
-    | 'STRUCTURED_COURSE_DIRECTIVE'
-    | 'FREE_CONVERSATION_DIRECTIVE'
-    | 'PDF_COURSE_DIRECTIVE'
-    | 'CORRECTION_ONLY_DIRECTIVE'
-    | 'TRANSLATION_ONLY_DIRECTIVE'
-    | 'FIRST_TURN_DIRECTIVE'
-    | 'CURRICULUM_PRESENTER_DIRECTIVE'
-    | 'EXERCISE_FEEDBACK_DIRECTIVE'   // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
-    | 'PRONUNCIATION_EVAL_DIRECTIVE';  // G2: evaluates pronunciation, returns JSON {score,feedback,tip,errors}
-  injectContinuity: boolean;
+| 'RICH_CONTENT_DIRECTIVE'
+| 'STRUCTURED_COURSE_DIRECTIVE'
+| 'FREE_CONVERSATION_DIRECTIVE'
+| 'PDF_COURSE_DIRECTIVE'
+| 'CORRECTION_ONLY_DIRECTIVE'
+| 'TRANSLATION_ONLY_DIRECTIVE'
+| 'FIRST_TURN_DIRECTIVE'
+| 'DIAGNOSTIC_FIRST_TURN_DIRECTIVE'   // SEEK 3.3 G7 — first-turn diagnostic when level is unknown (A0 or undefined)
+| 'CURRICULUM_PRESENTER_DIRECTIVE'
+| 'EXERCISE_FEEDBACK_DIRECTIVE'       // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
+| 'PRONUNCIATION_EVAL_DIRECTIVE';     // G2 — evaluates pronunciation, returns JSON {score,feedback,tip,errors} injectContinuity: boolean;
   injectErrorMemory: boolean;
   cognitiveStructure: boolean; // enforce CONTEXT→CONCEPT→EXAMPLE→TRANSFER→ACTION
   // SEEK 3.1 Fase 0-A — populated when directive = EXERCISE_FEEDBACK_DIRECTIVE
