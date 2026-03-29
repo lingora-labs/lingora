@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.2 — Sole Decision Authority
+// LINGORA SEEK 3.3 — Sole Decision Authority
 // =============================================================================
 // Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
 //            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
@@ -29,7 +29,7 @@
 //
 // Dependencia      : lib/contracts.ts, server/core/intent-router.ts
 //
-// Commit   : feat(orchestrator): SEEK 3.2 — sole decision authority,
+// Commit   : feat(orchestrator): SEEK 3.3 — sole decision authority,
 //            6-step constitutional evaluation, auditable ExecutionPlan
 // =============================================================================
 
@@ -183,7 +183,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
 
   // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
-    executor: ExecutorType  | 'hybrid';
+    executor: ExecutorType;
     action: string;
     pedagogicalAction: PedagogicalAction;
     artifacts: ArtifactType[];
@@ -223,7 +223,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       // executor is hybrid because it combines tool_audio + mentor + TTS
       executor: 'hybrid',
       action: 'evaluatePronunciation',
-      pedagogicalAction: 'pronunciation_eval',
+      pedagogicalAction: 'pronunciation_feedback',
       artifacts: ['pronunciation_report', 'audio'],
     },
   };
@@ -236,11 +236,11 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
   };
 
   const step: ExecutionStep = {
-  order: 1,
-  executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
-  action: config.action,
-  timeout: 15000,
-};
+    order: 1,
+    executor: config.executor,
+    action: config.action,
+    timeout: 15000,
+  };
 
   return {
     executor: config.executor,
@@ -346,10 +346,23 @@ function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
 function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   const isStructured = ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course';
 
+  // G7 — SEEK 3.3: if level is unknown, request a spontaneous sample BEFORE
+  // starting the pedagogical sequence. Enforces Art. 22/24-bis Manifiesto 7.0.
+  // G7 — FIX: 'A0' is the default unknown level from the frontend, not a confirmed level.
+  // The diagnostic should fire when: no confirmedLevel AND (no level OR level is 'A0')
+  const levelUnknown = !ctx.state.confirmedLevel &&
+    (!ctx.state.level || ctx.state.level === 'A0');
+
   // P2: in structured/pdf_course mode, first turn includes TTS so user
   // hears the mentor's introduction while reading — mandatory for the product experience
   const steps: ExecutionStep[] = [
-    { order: 1, executor: 'mentor', action: 'firstTurnGreeting', timeout: 12000 },
+    {
+      order: 1,
+      executor: 'mentor',
+      // G7: if level is unknown use diagnostic greeting, otherwise normal first-turn greeting
+      action: levelUnknown && isStructured ? 'diagnosticFirstTurn' : 'firstTurnGreeting',
+      timeout: 12000,
+    },
   ];
   if (isStructured) {
     steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
@@ -363,7 +376,8 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: isStructured ? ['audio'] : [],
     mentor: buildMentorDirective(
       ctx.state.mentorProfile,
-      'FIRST_TURN_DIRECTIVE',
+      // G7: use diagnostic directive when level is unknown on first turn
+      levelUnknown && isStructured ? 'DIAGNOSTIC_FIRST_TURN_DIRECTIVE' : 'FIRST_TURN_DIRECTIVE',
       ctx,
     ),
     commercial: undefined,
@@ -552,17 +566,26 @@ function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
       timeout: 10000,
     });
   } else {
-    // Non-artifact phases: mentor only
+    // Non-artifact phases: mentor responds, then TTS speaks it (G3 — SEEK 3.3)
     steps.push({
       order: 1,
       executor: 'mentor',
       action: `phase_${tutorPhase}`,
       timeout: 15000,
     });
+    // G3: TTS step after every mentor response in structured mode
+    // This restores parity with SEEK 2.6 where every tutor response had audio
+    steps.push({
+      order: 2,
+      executor: 'tool_audio' as ExecutorType,
+      action: 'generateTTS',
+      dependsOn: 1,
+      timeout: 8000,
+    });
   }
 
   return {
-    executor: config.producesArtifact ? 'hybrid' : 'mentor',
+    executor: config.producesArtifact ? 'hybrid' : 'hybrid',  // G3: always hybrid now
     priority: PRIORITY.PEDAGOGICAL,
     blocking: false,
     pedagogicalAction: config.pedagogicalAction,
@@ -640,4 +663,3 @@ function buildMentorDirective(
     }),
   };
 }
-
