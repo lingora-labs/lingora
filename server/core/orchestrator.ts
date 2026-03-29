@@ -351,7 +351,7 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   // G7 — FIX: 'A0' is the default unknown level from the frontend, not a confirmed level.
   // The diagnostic should fire when: no confirmedLevel AND (no level OR level is 'A0')
   const levelUnknown = !ctx.state.confirmedLevel &&
-    (!ctx.state.level || ctx.state.level === 'A0');
+  (!ctx.state.userLevel || ctx.state.userLevel === 'A0');
 
   // P2: in structured/pdf_course mode, first turn includes TTS so user
   // hears the mentor's introduction while reading — mandatory for the product experience
