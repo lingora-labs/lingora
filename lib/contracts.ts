@@ -1,12 +1,12 @@
 // =============================================================================
 // lib/contracts.ts
-// LINGORA SEEK 3.0 — Single Source of Truth for all TypeScript types
+// LINGORA SEEK 3.3 — Single Source of Truth for all TypeScript types
 // =============================================================================
 // Purpose  : Canonical runtime contracts. Every interface, type and default
 //            used across the LINGORA runtime is defined here and only here.
 //            No consuming module may redefine structures declared in this file.
 //
-// Version  : SEEK 3.0 — Extended from 2.6 baseline
+// Version  : SEEK 3.3 — Extended from 2.6 baseline
 // Changes  : + ExecutionPlan (replaces implicit action struct)
 //            + ExecutionStep (explicit order + dependsOn)
 //            + IntentResult  (intent-router output contract)
@@ -14,7 +14,7 @@
 //            + StatePatch    (state-manager merge contract)
 //            + All 2.6 types preserved without breaking change
 //
-// Commit   : feat(contracts): add SEEK 3.0 orchestration types — ExecutionPlan,
+// Commit   : feat(contracts): add SEEK 3.3 orchestration types — ExecutionPlan,
 //            ExecutionStep, IntentResult, OrchestrationContext
 // =============================================================================
 
@@ -463,6 +463,8 @@ export interface SessionState {
   currentExercise?: string;           // the active exercise pending evaluation
   expectedResponseMode?: 'exercise_answer' | 'free' | 'quiz_answer';
   _exerciseAttemptCount?: number;     // how many attempts on current exercise
+  // G5 — SEEK 3.3: persist audio transcript to prevent cognitive loop
+  lastUserAudioTranscript?: string;   // last transcribed audio — survives all turns
 }
 
 export const DEFAULT_SESSION_STATE: SessionState = {
@@ -823,6 +825,7 @@ export const CONTINUITY_FIELDS: ReadonlyArray<keyof SessionState> = [
   'currentExercise',
   'expectedResponseMode',
   '_exerciseAttemptCount',
+  'lastUserAudioTranscript',  // G5 — SEEK 3.3
 ] as const;
 
 /**
@@ -906,3 +909,4 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
+
