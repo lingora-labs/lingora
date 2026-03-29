@@ -1,6 +1,6 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.2 — Thin Router (Entry Point)
+// LINGORA SEEK 3.3 — Thin Router (Entry Point)
 // =============================================================================
 // FIX-9A: *1357*# diagnostic response now includes 'message' field so
 //         page.tsx callAPI renders JSON instead of "No se recibió respuesta".
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       const diagPayload = {
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      'SEEK-3.1',
+        architecture:      'SEEK-3.3',  // SEEK 3.3 — G1-G7 deployed
         runtime:           'LINGORA-ARCH-9.11',
         timestamp:         new Date().toISOString(),
         orchestratorActive: true,
@@ -105,7 +105,18 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioDataUrl ||
       (hasFiles && files?.some(f => f.type?.startsWith('audio/') || f.type === 'video/webm'))
     );
-    const intent = classifyIntent(message ?? '', state, hasFiles, hasAudio);
+
+    // G4 — SEEK 3.3: when gallery audio is attached, the composer text disappears
+    // and the backend receives the filename (e.g. "6c83090c-84a4.webm") as the message.
+    // Normalize: if message looks like an audio filename, treat as empty string so
+    // the intent-router can classify it correctly as a transcription request.
+    const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
+    const normalizedMessage =
+      hasAudio && (message ?? '').trim() !== '' && AUDIO_FILENAME_RE.test((message ?? '').trim())
+        ? ''
+        : (message ?? '');
+
+    const intent = classifyIntent(normalizedMessage, state, hasFiles, hasAudio);
 
     const ctx: OrchestrationContext = {
       message:           message ?? '',
@@ -121,7 +132,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const plan = orchestrate(ctx);
 
     const chatRequest: ChatRequest = {
-      message: message ?? '',
+      message: normalizedMessage,  // G4: use normalized message (filename → empty)
       state,
       files,
       audioDataUrl,
