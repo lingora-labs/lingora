@@ -330,6 +330,7 @@ async function dispatchSync(
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = state.lastConcept ?? 'LINGORA Study Guide';
+      console.log(`[PDF:stream] step.action: ${step.action}`);
 
       if (step.action === 'exportChatPdf') {
         const content = request.exportTranscript || request.message;
@@ -404,7 +405,10 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
         if (!courseContent) return {};
 
         const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
+        console.log(`[PDF:stream] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
+        console.log(`[PDF:stream] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
+        if (!result.success) console.error(`[PDF:stream] error: ${result.error} — ${result.message}`);
         return { artifact: result.success
           ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
           : undefined };
