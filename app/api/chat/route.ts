@@ -1,6 +1,6 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.3 — Thin Router (Entry Point)
+// LINGORA SEEK 3.4 — Thin Router (Entry Point)
 // =============================================================================
 // FIX-9A: *1357*# diagnostic response now includes 'message' field so
 //         page.tsx callAPI renders JSON instead of "No se recibió respuesta".
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       const diagPayload = {
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      'SEEK-3.3',  // SEEK 3.3 — G1-G7 deployed
+        architecture:      'SEEK-3.4',  // SEEK 3.4 — F2 F3 F4 PDF-dual deployed
         runtime:           'LINGORA-ARCH-9.11',
         timestamp:         new Date().toISOString(),
         orchestratorActive: true,
