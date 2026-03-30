@@ -1,6 +1,6 @@
 // =============================================================================
 // server/tools/pdf-generator.ts
-// LINGORA SEEK 3.4 — PDF Generator Router (ARCH-COMPLIANT)
+// LINGORA SEEK 3.4 — PDF Generator Router (HTML RENDER ENGINE)
 // =============================================================================
 // Central router for PDF generation.
 // Decides WHICH generator executes (lesson / course / fallback).
@@ -11,6 +11,7 @@
 //
 // ARCH ALIGNMENT:
 // - Generators located in /server/tools/pdf/
+// - HTML/CSS → Chromium → PDF
 // - No AWS dependency required
 // - S3 optional (fallback always data URL)
 //
@@ -58,7 +59,6 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
   try {
     let pdfBytes: Uint8Array;
 
-    // ── Routing decision (STRUCTURAL — NOT PROMPT) ──────────────────────────
     if (params.lessonContent) {
       pdfBytes = await generateLessonPdf(params.lessonContent);
     } else if (params.courseContent) {
@@ -70,7 +70,6 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
     const buffer = Buffer.from(pdfBytes);
     const key = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;
 
-    // ── Optional S3 upload ──────────────────────────────────────────────────
     if (uploadToS3) {
       try {
         const s3Url = await uploadToS3(buffer, key, 'application/pdf');
@@ -82,10 +81,8 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
       }
     }
 
-    // ── Always-safe fallback ────────────────────────────────────────────────
     const dataUrl = `data:application/pdf;base64,${buffer.toString('base64')}`;
     return { success: true, url: dataUrl, method: 'dataurl' };
-
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[pdf-generator] generation failed:', msg);
@@ -111,7 +108,6 @@ async function generatePlainTextPdf(title: string, content: string): Promise<Uin
   const MIDGRAY = rgb(0.78, 0.84, 0.90);
   const WHITE = rgb(1, 1, 1);
 
-  // Header
   page.drawRectangle({
     x: 0,
     y: height - 56,
@@ -136,7 +132,6 @@ async function generatePlainTextPdf(title: string, content: string): Promise<Uin
     color: TEAL
   });
 
-  // Content
   const lines = String(content).split('\n');
   let y = height - 72;
 
@@ -164,13 +159,12 @@ async function generatePlainTextPdf(title: string, content: string): Promise<Uin
       y,
       size: isMentor || isStudent ? 9.5 : 9,
       font: isMentor || isStudent ? bold : regular,
-      color: isMentor ? NAVY : isStudent ? DKGRAY : DKGRAY
+      color: isMentor ? NAVY : DKGRAY
     });
 
     y -= 13;
   }
 
-  // Footer
   page.drawRectangle({
     x: 0,
     y: 0,
