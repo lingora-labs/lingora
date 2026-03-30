@@ -1,12 +1,12 @@
 // =============================================================================
 // lib/contracts.ts
-// LINGORA SEEK 3.3 — Single Source of Truth for all TypeScript types
+// LINGORA SEEK 3.4 — Single Source of Truth for all TypeScript types
 // =============================================================================
 // Purpose  : Canonical runtime contracts. Every interface, type and default
 //            used across the LINGORA runtime is defined here and only here.
 //            No consuming module may redefine structures declared in this file.
 //
-// Version  : SEEK 3.3 — Extended from 2.6 baseline
+// Version  : SEEK 3.0 — Extended from 2.6 baseline
 // Changes  : + ExecutionPlan (replaces implicit action struct)
 //            + ExecutionStep (explicit order + dependsOn)
 //            + IntentResult  (intent-router output contract)
@@ -14,7 +14,7 @@
 //            + StatePatch    (state-manager merge contract)
 //            + All 2.6 types preserved without breaking change
 //
-// Commit   : feat(contracts): add SEEK 3.3 orchestration types — ExecutionPlan,
+// Commit   : feat(contracts): add SEEK 3.0 orchestration types — ExecutionPlan,
 //            ExecutionStep, IntentResult, OrchestrationContext
 // =============================================================================
 
@@ -23,6 +23,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free';
+
+/**
+ * PedagogicalMode — the output FORMAT the orchestrator decides for this turn.
+ * ARCH decision (SEEK 3.4): 4 modes only. No submodes. No cognitiveLoad.
+ * Resolved by resolvePedagogicalMode() in orchestrator.ts.
+ * 'conversation' = free dialogue
+ * 'explanation'  = structured explanation (default for most turns)
+ * 'schema'       = full structured schema with 80/20 per subtopic
+ * 'table'        = colored matrix table with tone/icon per cell
+ */
+export type PedagogicalMode = 'conversation' | 'explanation' | 'schema' | 'table';
 
 export type TutorPhase =
   | 'guide'
@@ -465,6 +476,9 @@ export interface SessionState {
   _exerciseAttemptCount?: number;     // how many attempts on current exercise
   // G5 — SEEK 3.3: persist audio transcript to prevent cognitive loop
   lastUserAudioTranscript?: string;   // last transcribed audio — survives all turns
+  // SEEK 3.4: explicit pedagogical output format — decided by orchestrator, not LLM
+  pedagogicalMode?: PedagogicalMode;
+  lastStructuredOutput?: 'schema' | 'table' | null;
 }
 
 export const DEFAULT_SESSION_STATE: SessionState = {
@@ -651,17 +665,16 @@ export interface MentorDirective {
     | 'CORRECTION_ONLY_DIRECTIVE'
     | 'TRANSLATION_ONLY_DIRECTIVE'
     | 'FIRST_TURN_DIRECTIVE'
-    | 'DIAGNOSTIC_FIRST_TURN_DIRECTIVE'   // SEEK 3.3 G7 — first-turn diagnostic when level is unknown
     | 'CURRICULUM_PRESENTER_DIRECTIVE'
-    | 'EXERCISE_FEEDBACK_DIRECTIVE'       // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
-    | 'PRONUNCIATION_EVAL_DIRECTIVE';     // G2 — evaluates pronunciation, returns JSON {score,feedback,tip,errors}
-
-  injectContinuity: boolean;             // injects session continuity (lastConcept, lastUserGoal)
-  injectErrorMemory: boolean;            // injects error memory for correction loops
-  cognitiveStructure: boolean;           // enforce CONTEXT→CONCEPT→EXAMPLE→TRANSFER→ACTION
-
-  activeExercise?: string;               // exact exercise the user is responding to
-  activeTopic?: string;                  // lesson topic (e.g. 'ser vs estar')
+    | 'EXERCISE_FEEDBACK_DIRECTIVE'   // SEEK 3.1 Fase 0-A — evaluates user response to active exercise
+    | 'PRONUNCIATION_EVAL_DIRECTIVE'   // G2 — evaluates pronunciation, returns JSON {score,feedback,tip,errors}
+    | 'DIAGNOSTIC_FIRST_TURN_DIRECTIVE'; // G7/SEEK 3.3 — first-turn diagnostic when level is unknown (A0 or unset)
+  injectContinuity: boolean;
+  injectErrorMemory: boolean;
+  cognitiveStructure: boolean; // enforce CONTEXT→CONCEPT→EXAMPLE→TRANSFER→ACTION
+  // SEEK 3.1 Fase 0-A — populated when directive = EXERCISE_FEEDBACK_DIRECTIVE
+  activeExercise?: string;  // exact exercise the user is responding to
+  activeTopic?: string;     // lesson topic (e.g. 'ser vs estar')
 }
 
 /**
@@ -828,6 +841,9 @@ export const CONTINUITY_FIELDS: ReadonlyArray<keyof SessionState> = [
   'expectedResponseMode',
   '_exerciseAttemptCount',
   'lastUserAudioTranscript',  // G5 — SEEK 3.3
+  // SEEK 3.4: persist pedagogical output mode across turns
+  'pedagogicalMode',
+  'lastStructuredOutput',
 ] as const;
 
 /**
@@ -911,4 +927,3 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
-
