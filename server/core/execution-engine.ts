@@ -277,7 +277,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             const artifact: import('../../lib/contracts').TableMatrixArtifact = {
               type: 'table_matrix', title: data.title,
               columns: ['Concepto', 'Valor'],
-              rows: data.tableRows.map(row => [{ value: row.left, tone: 'info' as const }, { value: row.right }]),
+              rows: data.tableRows.map(row => [{ value: row.left, tone: 'neutral' as const }, { value: row.right, tone: 'neutral' as const }]),
             };
             return { artifact };
           }
