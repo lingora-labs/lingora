@@ -666,7 +666,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
-          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
+          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc && typeof qc.title !== 'object' && qc.title != null ? String(qc.title) : ''}</span>
         </div>
         <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
       </div>
