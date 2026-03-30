@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.3 — Sole Decision Authority
+// LINGORA SEEK 3.4 — Sole Decision Authority
 // =============================================================================
 // Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
 //            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
@@ -29,7 +29,7 @@
 //
 // Dependencia      : lib/contracts.ts, server/core/intent-router.ts
 //
-// Commit   : feat(orchestrator): SEEK 3.3 — sole decision authority,
+// Commit   : feat(orchestrator): SEEK 3.0 — sole decision authority,
 //            6-step constitutional evaluation, auditable ExecutionPlan
 // =============================================================================
 
@@ -75,6 +75,35 @@ const PRIORITY = {
 
 const ORCH_NOISE = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PEDAGOGICAL MODE RESOLVER — SEEK 3.4
+// ARCH decision: 4 modes only (conversation|explanation|schema|table)
+// No cognitiveLoad. No submodes. Thin single-pass decision.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function resolvePedagogicalMode(
+  message: string,
+  state: import('../../lib/contracts').SessionState,
+): import('../../lib/contracts').PedagogicalMode {
+  const t = message.toLowerCase().trim();
+
+  // Trigger 1: explicit schema intent
+  if (/\besquema\b|\bschema\b|\bresumen\s+visual|\bstructured\s+summary\b|\bstructure\s+this\b|\borganize\s+this\b/i.test(t)) return 'schema';
+
+  // Trigger 2: explicit table intent — checked AFTER intent-router confirms table_matrix
+  // (intent-router handles routing; this governs mentor directive)
+  if (/\btabla\b|\bmatriz\b|\btable\b|\bmatrix\b|\bcompar[ae]/i.test(t) &&
+      !/\btabla.*de\s+contenido/i.test(t)) return 'table';
+
+  // Trigger 3: persist current mode if user didn't change it
+  if (state.pedagogicalMode === 'schema') return 'schema';
+  if (state.pedagogicalMode === 'table') return 'table';
+
+  // Default: mode-appropriate explanation
+  if (state.activeMode === 'free') return 'conversation';
+  return 'explanation';
+}
+
 function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, message: string): string {
   if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
   const clean = message?.trim();
@@ -111,6 +140,13 @@ function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, 
  * No randomness. No external calls. No side effects.
  */
 export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
+
+  // SEEK 3.4: resolve pedagogical output format (schema|table|explanation|conversation)
+  // This is a thin single-pass decision — not a new architecture layer.
+  const pedagogicalMode = resolvePedagogicalMode(ctx.message, ctx.state);
+  if (pedagogicalMode !== ctx.state.pedagogicalMode) {
+    ctx = { ...ctx, state: { ...ctx.state, pedagogicalMode } };
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1 — HARD OVERRIDES
@@ -183,7 +219,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
 
   // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
-    executor: ExecutorType | 'hybrid';
+    executor: ExecutorType;
     action: string;
     pedagogicalAction: PedagogicalAction;
     artifacts: ArtifactType[];
@@ -223,7 +259,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       // executor is hybrid because it combines tool_audio + mentor + TTS
       executor: 'hybrid',
       action: 'evaluatePronunciation',
-      pedagogicalAction: 'pronunciation_eval',
+      pedagogicalAction: 'pronunciation_feedback',
       artifacts: ['pronunciation_report', 'audio'],
     },
   };
@@ -235,12 +271,12 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: [] as ArtifactType[],
   };
 
-const step: ExecutionStep = {
-  order: 1,
-  executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
-  action: config.action,
-  timeout: 15000,
-};
+  const step: ExecutionStep = {
+    order: 1,
+    executor: config.executor,
+    action: config.action,
+    timeout: 15000,
+  };
 
   return {
     executor: config.executor,
@@ -350,8 +386,9 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   // starting the pedagogical sequence. Enforces Art. 22/24-bis Manifiesto 7.0.
   // G7 — FIX: 'A0' is the default unknown level from the frontend, not a confirmed level.
   // The diagnostic should fire when: no confirmedLevel AND (no level OR level is 'A0')
+  // IS Ledger: use userLevel (not level) — matches SessionState contract
   const levelUnknown = !ctx.state.confirmedLevel &&
-  (!ctx.state.userLevel || ctx.state.userLevel === 'A0');
+    (!ctx.state.userLevel || ctx.state.userLevel === 'A0');
 
   // P2: in structured/pdf_course mode, first turn includes TTS so user
   // hears the mentor's introduction while reading — mandatory for the product experience
@@ -663,3 +700,4 @@ function buildMentorDirective(
     }),
   };
 }
+
