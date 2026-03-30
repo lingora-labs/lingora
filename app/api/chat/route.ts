@@ -1,9 +1,9 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.4 — Thin Router (Entry Point)
+// LINGORA SEEK 3.5 — Thin Router (Entry Point)
 // =============================================================================
-// FIX-9A: *1357*# diagnostic response now includes 'message' field so
-//         page.tsx callAPI renders JSON instead of "No se recibió respuesta".
+// FIX-9A: *1357*# diagnostic response includes 'message' field for UI render.
+// SEEK-3.5: *2468*# pipeline tracer — live intent + plan + artifact diagnosis.
 // =============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -74,13 +74,11 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     }
 
     // ── SEEK DIAGNOSTIC TRIGGER ───────────────────────────────────────────────
-    // FIX-9A: add 'message' field so page.tsx callAPI renders the diagnostic
-    // instead of showing "No se recibió respuesta. Intenta de nuevo."
     if (message?.trim() === '*1357*#') {
       const diagPayload = {
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      'SEEK-3.4',  // SEEK 3.4 — F2 F3 F4 PDF-dual deployed
+        architecture:      'SEEK-3.5',  // SEEK 3.5 — PDF pipeline + *2468*# tracer
         runtime:           'LINGORA-ARCH-9.11',
         timestamp:         new Date().toISOString(),
         orchestratorActive: true,
@@ -95,6 +93,73 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       return NextResponse.json({
         ...diagPayload,
         message: JSON.stringify(diagPayload, null, 2),
+        state,
+        suggestedActions: [],
+      });
+    }
+
+    // ── SEEK 3.5 PIPELINE TRACER — *2468*# ───────────────────────────────────
+    // Live diagnosis: runs the full intent→orchestrate pipeline against two
+    // known PDF test inputs and returns the exact decisions the system makes.
+    // Does NOT call OpenAI. Does NOT produce artifacts. Pure routing trace.
+    if (message?.trim() === '*2468*#') {
+      const testCases = [
+        { label: 'export_chat_pdf',    msg: 'Exporta esta conversación a PDF' },
+        { label: 'generate_course_pdf', msg: 'Quiero un curso completo A0-A2 en PDF' },
+        { label: 'table_matrix',        msg: 'Dame una tabla de 8 columnas de ser y estar' },
+      ];
+
+      const traces = testCases.map(tc => {
+        const testIntent = classifyIntent(tc.msg, state, false, false);
+        const testCtx: OrchestrationContext = {
+          message: tc.msg, state, intent: testIntent,
+          hasAudio: false, isFirstTurn: false,
+          interfaceLanguage: state.interfaceLanguage ?? 'en',
+          timestamp: Date.now(),
+        };
+        const testPlan = orchestrate(testCtx);
+        return {
+          testCase:       tc.label,
+          input:          tc.msg,
+          intent: {
+            type:           testIntent.type,
+            subtype:        testIntent.subtype ?? null,
+            confidence:     testIntent.confidence,
+            matchedPattern: testIntent.matchedPattern ?? null,
+            isHardOverride: testIntent.type === 'hard_override',
+          },
+          plan: {
+            executor:          testPlan.executor,
+            blocking:          testPlan.blocking,
+            priority:          testPlan.priority,
+            pedagogicalAction: testPlan.pedagogicalAction,
+            reason:            testPlan.reason,
+            executionOrder:    testPlan.executionOrder.map(s => ({
+              order:    s.order,
+              executor: s.executor,
+              action:   s.action,
+            })),
+          },
+          pdfWillFire: testPlan.executionOrder.some(s => s.executor === 'tool_pdf'),
+          mentorIntercepts: testPlan.executionOrder.every(s => s.executor === 'mentor'),
+        };
+      });
+
+      const summary = {
+        allPdfPipelinesActive: traces.every(t => t.pdfWillFire || !t.testCase.includes('pdf')),
+        noMentorInterception: traces
+          .filter(t => t.testCase.includes('pdf'))
+          .every(t => !t.mentorIntercepts),
+        streamingEnabled: STREAMING_ENABLED,
+        architecture: 'SEEK-3.5',
+        timestamp: new Date().toISOString(),
+      };
+
+      const payload = { summary, traces };
+      return NextResponse.json({
+        ...summary,
+        traces,
+        message: JSON.stringify(payload, null, 2),
         state,
         suggestedActions: [],
       });
