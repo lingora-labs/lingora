@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.4 — Execution Engine
+// LINGORA SEEK 3.5 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -37,8 +37,8 @@
 //                    server/knowledge/rag.ts
 //                    server/core/diagnostics.ts
 //
-// Commit   : feat(execution-engine): SEEK 3.3 — ordered step execution with
-//            dependsOn resolution, no decision logic
+// Commit   : feat(execution-engine): SEEK 3.5 — ordered step execution with
+//            dependsOn resolution, no decision logic.
 // =============================================================================
 
 import {
