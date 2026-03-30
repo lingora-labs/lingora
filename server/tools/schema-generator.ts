@@ -1,6 +1,6 @@
 // =============================================================================
 // server/tools/schema-generator.ts
-// LINGORA SEEK 3.2 — Schema Content Generator
+// LINGORA SEEK 3.4 — Schema Content Generator
 // No changes from live version — preserved as delivered.
 // =============================================================================
 
@@ -115,7 +115,7 @@ Devuelve SOLO JSON válido, sin texto extra, sin markdown:
   ]
 }
 
-REQUISITOS (FORMATO UNED — OBLIGATORIO):
+REQUISITOS DE FORMATO (OBLIGATORIO):
 - keyConcepts: exactamente 6, con concepto clave subrayado semánticamente en el JSON
 - tableRows: mínimo 5 filas — columnas izquierda/derecha con terminología precisa
 - subtopics: mínimo 5 secciones, cada content de mínimo 60 palabras, cada keyTakeaway en formato "Regla: [regla concisa]"
@@ -123,7 +123,7 @@ REQUISITOS (FORMATO UNED — OBLIGATORIO):
 - quiz: exactamente 5 preguntas con opciones plausibles y explanation en cada una
 - erroresFrecuentes: exactamente 3 errores típicos con formato "❌ Error: [incorrecto] → ✅ Correcto: [correcto]"
 - summary: regla 80/20 en una frase memorable, máximo 20 palabras
-- El JSON debe incluir el campo erroresFrecuentes (array de strings)`
+- El JSON debe incluir el campo erroresFrecuentes (array de strings)\`
 }
 
 export async function generateSchemaContent(params: {
@@ -140,7 +140,7 @@ export async function generateSchemaContent(params: {
     messages: [{ role: 'system', content: prompt }],
     temperature: 0.2,
     response_format: { type: 'json_object' },
-    max_tokens: 3500, // P4: UNED format requires more tokens
+    max_tokens: 3500, // structured schema format requires more tokens
   })
 
   const raw = completion.choices[0].message.content!
@@ -159,3 +159,69 @@ export async function generateSchemaContent(params: {
   return parsed
 }
 
+
+// =============================================================================
+// SEEK 3.4 — generateTableMatrixRich
+// Produces a TableMatrixArtifact with semantic tone per cell (ok/warn/danger/info)
+// so the MatrixTableBlock renderer shows colors as in LINGORA 2.6
+// =============================================================================
+
+export async function generateTableMatrixRich(params: {
+  topic: string;
+  level?: string;
+  uiLanguage?: string;
+}): Promise<import('@/lib/contracts').TableMatrixArtifact | null> {
+  const { topic, level = 'B1', uiLanguage = 'en' } = params;
+
+  const prompt = `You are LINGORA's table generator. Generate a COLOR-CODED comparison table for: "${topic}"
+Student level: ${level}. Interface language: ${uiLanguage}.
+
+Return ONLY valid JSON with this exact structure — no markdown, no extra text:
+{
+  "title": "Table title",
+  "columns": [
+    {"key": "concepto", "label": "CONCEPTO"},
+    {"key": "uso_correcto", "label": "USO CORRECTO"},
+    {"key": "error_comun", "label": "ERROR COMÚN"},
+    {"key": "nota", "label": "NOTA"}
+  ],
+  "rows": [
+    [
+      {"text": "concept name", "tone": "info", "bold": true},
+      {"text": "correct usage or form", "tone": "ok", "icon": "✔️"},
+      {"text": "common error to avoid", "tone": "danger", "icon": "❌"},
+      {"text": "key tip or rule", "tone": "warn", "icon": "⚠️"}
+    ]
+  ]
+}
+
+RULES:
+- tone values: "ok" (correct/good), "danger" (error/wrong), "warn" (caution/note), "info" (neutral concept), "neutral" (plain)
+- minimum 6 rows, maximum 10 rows
+- each row covers one distinct concept/verb/rule/structure
+- use the tone to make the table visually meaningful
+- do NOT use markdown in text values
+- columns must match the columns array keys`;
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'system', content: prompt }],
+    temperature: 0.1,
+    response_format: { type: 'json_object' },
+    max_tokens: 2000,
+  });
+
+  const raw = completion.choices[0].message.content!;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed.columns?.length || !parsed.rows?.length) return null;
+    return {
+      type: 'table_matrix' as const,
+      title: parsed.title ?? topic,
+      columns: parsed.columns,
+      rows: parsed.rows,
+    };
+  } catch {
+    return null;
+  }
+}
