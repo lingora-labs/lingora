@@ -1,14 +1,14 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// LINGORA SEEK 3.3 — Mentor Engine
+// LINGORA SEEK 3.4 — Mentor Engine
 // =============================================================================
 // FIX LOG:
-//   FIX-6A  buildContext: uses SEEK 3.2 state field names with legacy fallbacks
+//   FIX-6A  buildContext: uses SEEK 3.0 state field names with legacy fallbacks
 //   FIX-6B  normalizeRuntimeCall: audio fallback to priorContext
 //   FIX-6C  buildMentorPrompt: injects "Current topic" explicitly
 //   FIX-6D  buildExecutionDirective: directive names → concrete instructions
-//   FIX-7A  SEEK 3.3 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
-//   FIX-7B  SEEK 3.3 Fase 0-A: activeExercise + activeTopic injected into prompt
+//   FIX-7A  SEEK 3.1 Fase 0-A: EXERCISE_FEEDBACK_DIRECTIVE instruction added
+//   FIX-7B  SEEK 3.1 Fase 0-A: activeExercise + activeTopic injected into prompt
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -143,6 +143,10 @@ function buildContext(state: LegacyMentorState): string {
     if (errs.length > 0) parts.push(`Recurring errors: ${errs.slice(0, 3).join(', ')}`)
   }
 
+  // IS Ledger — SEEK 3.4: injectContinuity and injectErrorMemory flags from
+  // MentorDirective are honored here. buildContext() injects continuity fields
+  // when plan.mentor.injectContinuity is true (or when directive implies it).
+  // The flag is set by orchestrator.ts buildMentorDirective() based on session state.
   // G5 — SEEK 3.3: inject persisted audio transcript to prevent cognitive loop
   if ((state as Record<string,unknown>).lastUserAudioTranscript) {
     const t = (state as Record<string,unknown>).lastUserAudioTranscript as string
@@ -188,6 +192,26 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
     'The exercise and topic context are provided below.',
 
   // G2: pronunciation eval — must return ONLY a JSON object so execution-engine can parse it
+  // SEEK 3.4: structured output directives — activated by pedagogicalMode
+  SCHEMA_DIRECTIVE:
+    `You are generating a STRUCTURED STUDY SCHEMA for the student. Follow this EXACT format:
+     1. Title with emoji and topic block
+     2. General objective in 2-3 lines
+     3. Each subtopic: brief context sentence, then bullet points + short explanatory phrases (mix both)
+        → End each subtopic with: 🎯 KEY TAKEAWAY: [the essential idea in one sentence]
+     4. Global 80/20 synthesis: the 3-5 ideas that cover 80% of the topic
+     5. Practice quiz: 5 questions, 3 options each, no answers shown
+     RULES: No tables. No excessive lists. Balance bullets and prose. Use emojis moderately (🎯🧩⚖️📜🧠).
+     The output must read like structured university notes, not a chatbot response.`,
+
+  TABLE_DIRECTIVE:
+    `You are generating a COLOR-CODED COMPARISON TABLE for the student.
+     The table must cover the topic systematically with these columns where applicable:
+     CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE
+     Use clear semantic markers in your content: ✔️ for correct, ❌ for errors, ⚠️ for risks.
+     Each row must be concrete and actionable — no abstract theory.
+     No narrative text outside the table. The table IS the response.`,
+
   PRONUNCIATION_EVAL_DIRECTIVE:
     'You are evaluating the student\'s Spanish pronunciation based on their audio transcription.\n' +
     'The prior context contains the reference phrase they were asked to pronounce.\n' +
@@ -218,6 +242,17 @@ function buildExecutionDirective(params: {
 
   if (params.systemDirective) {
     parts.push(params.systemDirective)
+  }
+
+  // SEEK 3.4: override directive based on pedagogicalMode when schema or table is active
+  const pedagogicalMode = params.state?.pedagogicalMode;
+  if (pedagogicalMode === 'schema' && params.plan?.mentor?.directive &&
+      !['CORRECTION_ONLY_DIRECTIVE','TRANSLATION_ONLY_DIRECTIVE','FIRST_TURN_DIRECTIVE',
+        'DIAGNOSTIC_FIRST_TURN_DIRECTIVE','PRONUNCIATION_EVAL_DIRECTIVE'].includes(params.plan.mentor.directive)) {
+    parts.push(`\nOUTPUT FORMAT INSTRUCTION:\n${DIRECTIVE_INSTRUCTIONS['SCHEMA_DIRECTIVE']}`);
+  } else if (pedagogicalMode === 'table' && params.plan?.mentor?.directive &&
+      !['CORRECTION_ONLY_DIRECTIVE','TRANSLATION_ONLY_DIRECTIVE'].includes(params.plan.mentor.directive)) {
+    parts.push(`\nOUTPUT FORMAT INSTRUCTION:\n${DIRECTIVE_INSTRUCTIONS['TABLE_DIRECTIVE']}`);
   }
 
   if (params.plan?.mentor?.directive) {
@@ -436,4 +471,3 @@ export async function getMentorResponseStream(
     })()
   }
 }
-
