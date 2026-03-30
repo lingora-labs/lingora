@@ -1,9 +1,9 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.4 — Streaming Execution Engine
+// LINGORA SEEK 3.5 — Streaming Execution Engine
 // =============================================================================
 //
-// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
+// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.5) ─────
 //
 //   Frontend accumulates text from: { delta: string }
 //   Frontend applies state from:    { done: true, state, artifact?, suggestedActions? }
@@ -334,23 +334,70 @@ async function dispatchSync(
       if (step.action === 'exportChatPdf') {
         const content = request.exportTranscript || request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount =
-  (request.exportTranscript ? String(request.exportTranscript).split('\n').filter(Boolean).length : 0) ||
-  (request.message ? 1 : 0);
-
-return {
-  artifact: result.success
-    ? {
-        type: 'pdf_chat' as const,
-        url: result.url,
-        messageCount,
-      }
-    : undefined,
-};
+        return { artifact: result.success ? { type: 'pdf_chat' as const, url: result.url } : undefined };
       }
       if (step.action === 'generateCoursePdf') {
-        const result = await generatePDF({ title, content: request.message });
-        return { artifact: result.success ? { type: 'course_pdf' as const, title, url: result.url, modules: [] } : undefined };
+        // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
+        // No intermediate text → parser. One typed object → professional template.
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+        const topic  = priorContext?.trim() || request.message?.trim()
+          || state.lastConcept || state.curriculumPlan?.topic || 'Español general';
+        const level  = state.confirmedLevel ?? state.userLevel ?? 'A1';
+        const lang   = state.interfaceLanguage ?? 'en';
+        const mentor = state.mentorProfile ?? 'Sarah';
+        const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+
+        const coursePrompt = `You are LINGORA's course generator. Produce a complete Spanish course as valid JSON.
+Topic: "${topic}". Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+
+Return ONLY valid JSON matching this exact structure (no markdown, no extra text):
+{
+  "mentorName": "${mentor}",
+  "level": "${level}",
+  "studentName": "Estudiante",
+  "courseTitle": "string",
+  "objective": "string",
+  "nativeLanguage": "${lang}",
+  "totalModules": 5,
+  "modules": [
+    {
+      "index": 1,
+      "title": "string",
+      "vocabulary": [["spanish word", "translation"], ...],
+      "grammar": "string",
+      "exercise": "string",
+      "communicativeFunction": "string",
+      "tip": "string"
+    }
+  ],
+  "nextStep": "string",
+  "generatedAt": "${now}"
+}
+Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
+
+        let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
+        try {
+          const completion = await openai.chat.completions.create({
+            model: 'gpt-4o', temperature: 0.3, max_tokens: 3000,
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'user', content: coursePrompt }],
+          });
+          const raw = completion.choices?.[0]?.message?.content ?? '';
+          const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+          if (parsed.modules?.length > 0) courseContent = parsed;
+        } catch (e) {
+          console.error('[stream] generateCoursePdf: JSON parse failed:', e);
+        }
+
+        if (!courseContent) return {};
+
+        const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
+        const result = await generatePDF({ title: courseTitle, content: '', courseContent });
+        return { artifact: result.success
+          ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
+          : undefined };
       }
       const result = await generatePDF({ title, content: request.message });
       return { artifact: result.success ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url } : undefined };
@@ -507,3 +554,4 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
+
