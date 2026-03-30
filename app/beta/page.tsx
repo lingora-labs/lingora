@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.2 — Beta Tutor Interface
+// LINGORA SEEK 3.4 — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -661,15 +661,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
           typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
         ) : 0,
     }))
-    const qc: { title: string; questions: QuizQ[] } = {
-  title:
-    typeof qa.title === 'string'
-      ? qa.title
-      : typeof (a.content as Record<string, unknown> | undefined)?.title === 'string'
-        ? ((a.content as Record<string, unknown>).title as string)
-        : 'Simulacro',
-  questions,
-    }
+    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
     return (
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
@@ -679,7 +671,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
         <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
       </div>
     )
-  }  
+  }
   if (a.type === 'illustration' && a.url) return (
     <div style={{ marginTop:8 }}>
       <img src={a.url} alt="LINGORA visual" style={{ maxWidth:'100%', borderRadius:14, display:'block', border:'1px solid var(--border)' }} />
@@ -1221,9 +1213,17 @@ export default function BetaPage() {
                     return n
                   })
                 }
-                if (parsed.artifact || parsed.suggestedActions) {
-                  setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, artifact: parsed.artifact ?? null, suggestedActions: parsed.suggestedActions } : m))
-                }
+                // F3 — SEEK 3.4: always update artifact and suggestedActions on done.
+                // Previous condition (parsed.artifact || parsed.suggestedActions) could silently
+                // skip the update if the done chunk was split across network frames.
+                // Now unconditional: suggestedActions defaults to the export action if missing.
+                const defaultActions = [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' as const }];
+                const finalActions = (parsed.suggestedActions && parsed.suggestedActions.length > 0)
+                  ? parsed.suggestedActions
+                  : defaultActions;
+                setMsgs(prev => prev.map(m => m.id === streamId
+                  ? { ...m, artifact: parsed.artifact ?? m.artifact ?? null, suggestedActions: finalActions }
+                  : m))
               }
             } catch { /* partial chunk */ }
           }
@@ -1243,7 +1243,12 @@ export default function BetaPage() {
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
-      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore, suggestedActions: data.suggestedActions ?? undefined })
+      addMsg({ sender: mentorRef.current, text: text || 'Material listo:',
+        artifact: data.artifact ?? null, score: data.pronunciationScore,
+        // F3 — SEEK 3.4: ensure suggestedActions always has at least export action
+        suggestedActions: (data.suggestedActions && data.suggestedActions.length > 0)
+          ? data.suggestedActions
+          : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' }] })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
       addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó demasiado. Intenta de nuevo.' : 'Error de conexión. Intenta de nuevo.' })
