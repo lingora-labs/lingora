@@ -322,6 +322,9 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
+      // SEEK 3.5 — observable logging for Vercel diagnosis
+      console.log(`[PDF] step.action: ${step.action}`);
+      console.log(`[PDF] title: ${title}`);
 
       if (step.action === 'exportChatPdf') {
         // G6a — SEEK 3.3: structured PDF with UNED-style format
@@ -367,6 +370,8 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
 
         const content = header + formattedLines + footer;
         const result = await generatePDF({ title: `LINGORA · Sesión · ${dateStr}`, content });
+        console.log(`[PDF] exportChatPdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
+        if (!result.success) console.error(`[PDF] exportChatPdf error: ${result.error} — ${result.message}`);
 
         // IS fix H3: include messageCount in pdf_chat artifact
         const messageCount = rawTranscript
@@ -450,7 +455,10 @@ Requirements:
         }
 
         const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
+        console.log(`[PDF] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
+        console.log(`[PDF] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
+        if (!result.success) console.error(`[PDF] generateCoursePdf error: ${result.error} — ${result.message}`);
         const artifact = result.success
           ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
           : undefined;
