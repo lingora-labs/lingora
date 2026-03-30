@@ -3,7 +3,7 @@
 // LINGORA SEEK 3.5 — Streaming Execution Engine
 // =============================================================================
 //
-// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.5) ─────
+// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
 //   Frontend accumulates text from: { delta: string }
 //   Frontend applies state from:    { done: true, state, artifact?, suggestedActions? }
@@ -330,27 +330,22 @@ async function dispatchSync(
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = state.lastConcept ?? 'LINGORA Study Guide';
-      
-if (step.action === 'exportChatPdf') {
-  const content = request.exportTranscript || request.message;
-  const result = await generatePDF({ title: 'Chat Export', content });
 
-  const messageCount =
-    (request.exportTranscript
-      ? String(request.exportTranscript).split('\n').filter(Boolean).length
-      : 0) || (request.message ? 1 : 0);
+      if (step.action === 'exportChatPdf') {
+        const content = request.exportTranscript || request.message;
+        const result = await generatePDF({ title: 'Chat Export', content });
 
-  return {
-    artifact: result.success
-      ? {
-          type: 'pdf_chat' as const,
-          url: result.url,
-          messageCount,
-        }
-      : undefined,
-  };
-}
-      
+        const messageCount =
+          (request.exportTranscript
+            ? String(request.exportTranscript).split('\n').filter(Boolean).length
+            : 0) || (request.message ? 1 : 0);
+
+        return {
+          artifact: result.success
+            ? { type: 'pdf_chat' as const, url: result.url, messageCount }
+            : undefined,
+        };
+      }
       if (step.action === 'generateCoursePdf') {
         // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
         // No intermediate text → parser. One typed object → professional template.
