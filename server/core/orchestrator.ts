@@ -257,7 +257,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     pronunciation_eval: {
       // 2.8-A: 3-step plan — transcribe → mentor evaluates → TTS
       // executor is hybrid because it combines tool_audio + mentor + TTS
-      executor: 'hybrid',
+      executor: 'mentor',
       action: 'evaluatePronunciation',
       pedagogicalAction: 'pronunciation_feedback',
       artifacts: ['pronunciation_report', 'audio'],
