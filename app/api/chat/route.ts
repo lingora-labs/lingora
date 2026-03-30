@@ -29,7 +29,7 @@ import { executePlanStream } from '../../../server/core/execution-engine-stream'
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
