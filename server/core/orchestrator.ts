@@ -286,7 +286,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: config.artifacts,
     // F-B4: directive per hard override subtype
     // Also set for hybrid executor (pronunciation_eval) — mentor step needs it
-    mentor: (config.executor === 'mentor' || config.executor === 'hybrid')
+    mentor: config.executor === 'mentor'
       ? buildMentorDirective(
           ctx.state.mentorProfile,
           subtype === 'translate'          ? 'TRANSLATION_ONLY_DIRECTIVE'
