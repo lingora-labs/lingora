@@ -2,7 +2,7 @@
   "name": "lingora",
   "version": "10.1.0",
   "private": true,
-  "description": "LINGORA \u2014 AI Cultural Immersion Platform for Spanish",
+  "description": "LINGORA — AI Cultural Immersion Platform for Spanish",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,19 +10,21 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@aws-sdk/client-rekognition": "^3.540.0",
+    "@aws-sdk/client-s3": "^3.540.0",
+    "@sparticuz/chromium": "143.0.4",
     "next": "14.2.3",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "openai": "^4.28.0",
     "pdf-lib": "^1.17.1",
-    "@aws-sdk/client-rekognition": "^3.540.0",
-    "@aws-sdk/client-s3": "^3.540.0"
+    "puppeteer-core": "24.40.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^20",
     "@types/react": "^18",
-    "@types/react-dom": "^18"
+    "@types/react-dom": "^18",
+    "typescript": "^5"
   },
   "engines": {
     "node": ">=18"
