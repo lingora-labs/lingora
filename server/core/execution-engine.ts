@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.3 — Execution Engine
+// LINGORA SEEK 3.4 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -267,12 +267,17 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         }
 
         case 'generateTableMatrix': {
+          // SEEK 3.4: generateTableMatrixRich produces tone-aware RCell rows for color rendering
+          const { generateTableMatrixRich } = await import('../tools/schema-generator');
+          const richArtifact = await generateTableMatrixRich({ topic, level, uiLanguage });
+          if (richArtifact) return { artifact: richArtifact };
+          // Fallback to basic schema if rich fails
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.tableRows?.length) {
             const artifact: import('../../lib/contracts').TableMatrixArtifact = {
               type: 'table_matrix', title: data.title,
-              columns: ['Concept', 'Value'],
-              rows: data.tableRows.map(row => [{ value: row.left }, { value: row.right }]),
+              columns: ['Concepto', 'Valor'],
+              rows: data.tableRows.map(row => [{ value: row.left, tone: 'info' as const }, { value: row.right }]),
             };
             return { artifact };
           }
