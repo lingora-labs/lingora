@@ -170,42 +170,40 @@ export async function generateTableMatrixRich(params: {
   topic: string;
   level?: string;
   uiLanguage?: string;
-}): Promise<import('@/lib/contracts').TableMatrixArtifact | null> {
-  const { topic, level = 'B1', uiLanguage = 'en' } = params;
+}): Promise<TableMatrixArtifact | null> {
+  const topic = params.topic;
+  const level = params.level || 'B1';
+  const uiLanguage = params.uiLanguage || 'en';
 
-  const prompt = [
-    "You are LINGORA's table generator.",
-    `Generate a COLOR-CODED comparison table for: "${topic}".`,
-    `Student level: ${level}. Interface language: ${uiLanguage}.`,
-    "",
-    "Return ONLY valid JSON with this exact structure. No markdown. No extra text.",
-    "",
-    "{",
-    '  "title": "string",',
-    '  "columns": [',
-    '    { "key": "criterion", "label": "CRITERIO" },',
-    '    { "key": "correct", "label": "CORRECTO" },',
-    '    { "key": "error", "label": "ERROR" },',
-    '    { "key": "risk", "label": "RIESGO" },',
-    '    { "key": "note", "label": "NOTA" }',
-    "  ],",
-    '  "rows": [',
-    "    {",
-    '      "criterion": { "text": "string", "tone": "info" },',
-    '      "correct":   { "text": "string", "tone": "ok",     "icon": "✔️" },',
-    '      "error":     { "text": "string", "tone": "danger", "icon": "❌" },',
-    '      "risk":      { "text": "string", "tone": "warn",   "icon": "⚠️" },',
-    '      "note":      { "text": "string", "tone": "info" }',
-    "    }",
-    "  ]",
-    "}",
-    "",
-    "Rules:",
-    "- Keep rows concise and useful for study.",
-    "- Use short academic wording.",
-    "- Do not return fewer than 4 rows.",
-    "- Do not add explanations outside the JSON."
-  ].join("\n");
+  const prompt =
+    "You are LINGORA's table generator.\n" +
+    "Generate a COLOR-CODED comparison table for: " + topic + ".\n" +
+    "Student level: " + level + ". Interface language: " + uiLanguage + ".\n\n" +
+    "Return ONLY valid JSON with this exact structure. No markdown. No extra text.\n\n" +
+    "{\n" +
+    '  "title": "string",\n' +
+    '  "columns": [\n' +
+    '    { "key": "criterion", "label": "CRITERIO" },\n' +
+    '    { "key": "correct", "label": "CORRECTO" },\n' +
+    '    { "key": "error", "label": "ERROR" },\n' +
+    '    { "key": "risk", "label": "RIESGO" },\n' +
+    '    { "key": "note", "label": "NOTA" }\n' +
+    "  ],\n" +
+    '  "rows": [\n' +
+    "    {\n" +
+    '      "criterion": { "text": "string", "tone": "info" },\n' +
+    '      "correct":   { "text": "string", "tone": "ok", "icon": "✔️" },\n' +
+    '      "error":     { "text": "string", "tone": "danger", "icon": "❌" },\n' +
+    '      "risk":      { "text": "string", "tone": "warn", "icon": "⚠️" },\n' +
+    '      "note":      { "text": "string", "tone": "info" }\n' +
+    "    }\n" +
+    "  ]\n" +
+    "}\n\n" +
+    "Rules:\n" +
+    "- Keep rows concise and useful for study.\n" +
+    "- Use short academic wording.\n" +
+    "- Do not return fewer than 4 rows.\n" +
+    "- Do not add explanations outside the JSON.";
 
   const { getOpenAIClient } = await import('@/server/openai/client');
   const client = getOpenAIClient();
@@ -214,12 +212,18 @@ export async function generateTableMatrixRich(params: {
     model: 'gpt-4o-mini',
     temperature: 0.2,
     messages: [
-      { role: 'system', content: 'You generate structured study artifacts in strict JSON.' },
-      { role: 'user', content: prompt }
+      {
+        role: 'system',
+        content: 'You generate structured study artifacts in strict JSON.'
+      },
+      {
+        role: 'user',
+        content: prompt
+      }
     ]
   });
 
-  const raw = response.choices[0]?.message?.content?.trim() ?? '';
+  const raw = response.choices[0]?.message?.content?.trim() || '';
   if (!raw) return null;
 
   let parsed: any;
@@ -231,8 +235,9 @@ export async function generateTableMatrixRich(params: {
 
   return {
     type: 'table_matrix',
-    title: parsed.title ?? topic,
+    title: parsed.title || topic,
     columns: Array.isArray(parsed.columns) ? parsed.columns : [],
     rows: Array.isArray(parsed.rows) ? parsed.rows : []
   };
 }
+  
