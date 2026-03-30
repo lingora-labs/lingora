@@ -1,9 +1,9 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.2 — Streaming Execution Engine
+// LINGORA SEEK 3.4 — Streaming Execution Engine
 // =============================================================================
 //
-// ── SSE CONTRACT (verified against app/beta/page.tsx SEEK 2.6) ───────────────
+// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
 //   Frontend accumulates text from: { delta: string }
 //   Frontend applies state from:    { done: true, state, artifact?, suggestedActions? }
@@ -334,19 +334,8 @@ async function dispatchSync(
       if (step.action === 'exportChatPdf') {
         const content = request.exportTranscript || request.message;
         const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount = content
-  ? content.split(/\n\s*\n/).filter(Boolean).length
-  : 0;
-const artifact = result.success
-  ? {
-      type: 'pdf_chat' as const,
-      url: result.url,
-      messageCount,
-    }
-  : undefined;
-
-return { artifact };
-      }      
+        return { artifact: result.success ? { type: 'pdf_chat' as const, url: result.url } : undefined };
+      }
       if (step.action === 'generateCoursePdf') {
         const result = await generatePDF({ title, content: request.message });
         return { artifact: result.success ? { type: 'course_pdf' as const, title, url: result.url, modules: [] } : undefined };
@@ -375,7 +364,16 @@ return { artifact };
         const { generateSpeech } = await import('../tools/audio-toolkit');
         const textToSpeak = priorContext?.trim() || request.message?.trim();
         if (!textToSpeak) return {};
-        const result = await generateSpeech(textToSpeak, { voice: 'nova' });
+        // F4 — SEEK 3.4: map mentor identity to correct voice (was 'nova' hardcoded)
+        // execution-engine-stream.ts missed the G2 fix applied to execution-engine.ts
+        const STREAM_MENTOR_VOICES: Record<string, string> = {
+          sarah: 'shimmer',
+          alex:  'fable',
+          nick:  'onyx',
+        };
+        const streamMentorKey = (state.mentorProfile ?? 'alex').toLowerCase();
+        const streamVoice = STREAM_MENTOR_VOICES[streamMentorKey] ?? 'fable';
+        const result = await generateSpeech(textToSpeak, { voice: streamVoice });
         if (result?.success && result.url) {
           return { artifact: { type: 'audio' as const, dataUrl: result.url } };
         }
