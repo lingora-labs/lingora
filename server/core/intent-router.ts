@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/intent-router.ts
-// LINGORA SEEK 3.2 — Deterministic Intent Classifier
+// LINGORA SEEK 3.4 — Deterministic Intent Classifier
 // =============================================================================
 // Purpose  : Classify user intent deterministically before orchestration.
 //            Returns an IntentResult that the orchestrator uses to choose
@@ -280,6 +280,13 @@ const ARTIFACT_RULES: PatternRule[] = [
       /\bmatrix\b/i,
       /\bcomparison matrix\b/i,
       /\btabla (comparativa|de comparaci[oó]n)\b/i,
+      // F2 — SEEK 3.4: explicit column-count and conjugation table patterns
+      /\btabla\b.*\b\d+\s*colum/i,                      // "tabla de 8 columnas"
+      /\bconjuga[a-z]*\b.*\btabla\b/i,                   // "conjugaciones en tabla"
+      /\btabla\b.*\b(ser|estar)\b.*\bconjug/i,           // "tabla ser/estar conjugación"
+      /\btabla\b.*\bconjugaci[oó]n/i,                     // "tabla de conjugación"
+      /\btabla\b.*\bverbos?\b.*\b(todos|completa)/i,     // "tabla de verbos completa"
+      /\b(ser|estar)\b.*\bconjugaci[oó]n.*\btabla/i,     // "ser/estar conjugación tabla"
     ],
   },
   {
