@@ -259,7 +259,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       // executor is hybrid because it combines tool_audio + mentor + TTS
       executor: 'mentor',
       action: 'evaluatePronunciation',
-      pedagogicalAction: 'pronunciation_feedback',
+      pedagogicalAction: 'pronunciation_eval',
       artifacts: ['pronunciation_report', 'audio'],
     },
   };
