@@ -1,6 +1,6 @@
 // =============================================================================
 // server/tools/generateLessonPdf.ts
-// LINGORA SEEK 3.4 — Lesson PDF Generator
+// LINGORA SEEK 3.4 — Lesson PDF Generator.
 // =============================================================================
 // Layout: Business Spanish A0/A1 (Sara format)
 // Sections: HEADER · DEL 1 (key phrases table) · DEL 2 (build your own)
