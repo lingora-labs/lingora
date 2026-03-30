@@ -173,55 +173,66 @@ export async function generateTableMatrixRich(params: {
 }): Promise<import('@/lib/contracts').TableMatrixArtifact | null> {
   const { topic, level = 'B1', uiLanguage = 'en' } = params;
 
-  const prompt = `You are LINGORA's table generator. Generate a COLOR-CODED comparison table for: "${topic}"
-Student level: ${level}. Interface language: ${uiLanguage}.
+  const prompt = [
+    "You are LINGORA's table generator.",
+    `Generate a COLOR-CODED comparison table for: "${topic}".`,
+    `Student level: ${level}. Interface language: ${uiLanguage}.`,
+    "",
+    "Return ONLY valid JSON with this exact structure. No markdown. No extra text.",
+    "",
+    "{",
+    '  "title": "string",',
+    '  "columns": [',
+    '    { "key": "criterion", "label": "CRITERIO" },',
+    '    { "key": "correct", "label": "CORRECTO" },',
+    '    { "key": "error", "label": "ERROR" },',
+    '    { "key": "risk", "label": "RIESGO" },',
+    '    { "key": "note", "label": "NOTA" }',
+    "  ],",
+    '  "rows": [',
+    "    {",
+    '      "criterion": { "text": "string", "tone": "info" },',
+    '      "correct":   { "text": "string", "tone": "ok",     "icon": "✔️" },',
+    '      "error":     { "text": "string", "tone": "danger", "icon": "❌" },',
+    '      "risk":      { "text": "string", "tone": "warn",   "icon": "⚠️" },',
+    '      "note":      { "text": "string", "tone": "info" }',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "Rules:",
+    "- Keep rows concise and useful for study.",
+    "- Use short academic wording.",
+    "- Do not return fewer than 4 rows.",
+    "- Do not add explanations outside the JSON."
+  ].join("\n");
 
-Return ONLY valid JSON with this exact structure — no markdown, no extra text:
-{
-  "title": "Table title",
-  "columns": [
-    {"key": "concepto", "label": "CONCEPTO"},
-    {"key": "uso_correcto", "label": "USO CORRECTO"},
-    {"key": "error_comun", "label": "ERROR COMÚN"},
-    {"key": "nota", "label": "NOTA"}
-  ],
-  "rows": [
-    [
-      {"text": "concept name", "tone": "info", "bold": true},
-      {"text": "correct usage or form", "tone": "ok", "icon": "✔️"},
-      {"text": "common error to avoid", "tone": "danger", "icon": "❌"},
-      {"text": "key tip or rule", "tone": "warn", "icon": "⚠️"}
+  const { getOpenAIClient } = await import('@/server/openai/client');
+  const client = getOpenAIClient();
+
+  const response = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: 'You generate structured study artifacts in strict JSON.' },
+      { role: 'user', content: prompt }
     ]
-  ]
-}
-
-RULES:
-- tone values: "ok" (correct/good), "danger" (error/wrong), "warn" (caution/note), "info" (neutral concept), "neutral" (plain)
-- minimum 6 rows, maximum 10 rows
-- each row covers one distinct concept/verb/rule/structure
-- use the tone to make the table visually meaningful
-- do NOT use markdown in text values
-- columns must match the columns array keys`;
-
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [{ role: 'system', content: prompt }],
-    temperature: 0.1,
-    response_format: { type: 'json_object' },
-    max_tokens: 2000,
   });
 
-  const raw = completion.choices[0].message.content!;
+  const raw = response.choices[0]?.message?.content?.trim() ?? '';
+  if (!raw) return null;
+
+  let parsed: any;
   try {
-    const parsed = JSON.parse(raw);
-    if (!parsed.columns?.length || !parsed.rows?.length) return null;
-    return {
-      type: 'table_matrix' as const,
-      title: parsed.title ?? topic,
-      columns: parsed.columns,
-      rows: parsed.rows,
-    };
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
+
+  return {
+    type: 'table_matrix',
+    title: parsed.title ?? topic,
+    columns: Array.isArray(parsed.columns) ? parsed.columns : [],
+    rows: Array.isArray(parsed.rows) ? parsed.rows : []
+  };
 }
