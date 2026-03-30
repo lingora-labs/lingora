@@ -542,7 +542,6 @@ function renderCourseHtml(content: CourseContent): string {
 async function renderHtmlToPdf(html: string): Promise<Uint8Array> {
   const browser = await puppeteer.launch({
     args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
     executablePath: await chromium.executablePath(),
     headless: true
   });
