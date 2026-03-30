@@ -277,7 +277,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             const artifact: import('../../lib/contracts').TableMatrixArtifact = {
               type: 'table_matrix', title: data.title,
               columns: ['Concepto', 'Valor'],
-              rows: data.tableRows.map(row => [{ value: row.left, tone: 'neutral' as const }, { value: row.right, tone: 'neutral' as const }]),
+              rows: data.tableRows.map(row => [{ value: row.left, tone: 'info' as const }, { value: row.right }]),
             };
             return { artifact };
           }
@@ -381,9 +381,78 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       }
 
       if (step.action === 'generateCoursePdf') {
-        const result = await generatePDF({ title, content: ctx.request.message });
+        // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
+        // No intermediate text → parser step. One LLM call → typed object → professional template.
+        // Matches the exact CourseContent / CourseModule interfaces in generateCoursePdf.ts.
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+        const topic    = ctx.plan.resolvedTopic
+          || resolveSchemaTopicFromState(ctx.request.message, ctx.state, '');
+        const level    = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'A1';
+        const lang     = ctx.state.interfaceLanguage ?? 'en';
+        const mentor   = ctx.state.mentorProfile ?? 'Sarah';
+        const now      = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+
+        const coursePrompt = `You are LINGORA's course generator. Produce a complete Spanish course as valid JSON.
+Topic: "${topic}". Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+
+Return ONLY valid JSON matching this exact structure (no markdown, no extra text):
+{
+  "mentorName": "${mentor}",
+  "level": "${level}",
+  "studentName": "Estudiante",
+  "courseTitle": "string — course title in the student's language",
+  "objective": "string — 2-3 sentence learning objective",
+  "nativeLanguage": "${lang}",
+  "totalModules": 5,
+  "modules": [
+    {
+      "index": 1,
+      "title": "string",
+      "vocabulary": [["spanish word", "translation/definition"], ...],
+      "grammar": "string — the 80/20 core grammar rule in one sentence",
+      "exercise": "string — one production exercise the student completes",
+      "communicativeFunction": "string — what the student CAN DO after this module",
+      "tip": "string — one practical tip, cultural note, or DELE strategy"
+    }
+  ],
+  "nextStep": "string — recommended next step after completing this course",
+  "generatedAt": "${now}"
+}
+
+Requirements:
+- Exactly 5 modules, each addressing a distinct sub-topic of "${topic}"
+- vocabulary: 4-6 pairs per module, level-appropriate
+- grammar: one actionable rule, not an abstract definition
+- exercise: a concrete sentence or task the student produces
+- All content pedagogically appropriate for CEFR ${level}`;
+
+        let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
+        try {
+          const completion = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            temperature: 0.3,
+            max_tokens: 3000,
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'user', content: coursePrompt }],
+          });
+          const raw = completion.choices?.[0]?.message?.content ?? '';
+          const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+          if (parsed.modules?.length > 0) courseContent = parsed;
+        } catch (e) {
+          console.error('[execution-engine] generateCoursePdf: JSON parse failed:', e);
+        }
+
+        if (!courseContent) {
+          console.error('[execution-engine] generateCoursePdf: no courseContent — aborting');
+          return {};
+        }
+
+        const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
+        const result = await generatePDF({ title: courseTitle, content: '', courseContent });
         const artifact = result.success
-          ? { type: 'course_pdf' as const, title, url: result.url, modules: [] }
+          ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
           : undefined;
         return { artifact };
       }
@@ -636,3 +705,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
