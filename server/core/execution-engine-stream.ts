@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.5 — Streaming Execution Engine
+// LINGORA SEEK 3.7 — Streaming Execution Engine
 // =============================================================================
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
@@ -191,7 +191,7 @@ export function executePlanStream(
 
           // ── NON-MENTOR STEP — execute synchronously ───────────────────────
           } else {
-            const output = await executeSyncStep(step, request, state, priorText);
+            const output = await executeSyncStep(plan, step, request, state, priorText);
             priorResults.set(step.order, output);
             // Non-mentor artifacts travel in terminal done event — not mid-stream
           }
@@ -270,6 +270,14 @@ function buildStatePatch(
 
   patch.tokens = (state.tokens ?? 0) + 1;
 
+  // SEEK 3.7 — Mirror of execution-engine.ts: persist resolvedTopic to lastConcept.
+  // Stream engine must write the same state as the JSON engine. Without this,
+  // topic continuity only works when streaming is disabled.
+  const resolvedTopic = plan.resolvedTopic?.trim();
+  if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
+    patch.lastConcept = resolvedTopic;
+  }
+
   if (plan.priority >= 100) (patch as StatePatch).requestedOperation = null;
 
   if (!plan.skipPhaseAdvance && state.activeMode === 'structured') {
@@ -286,6 +294,7 @@ function buildStatePatch(
 interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; }
 
 async function executeSyncStep(
+  plan: ExecutionPlan,
   step: ExecutionStep,
   request: ChatRequest,
   state: SessionState,
@@ -293,7 +302,7 @@ async function executeSyncStep(
 ): Promise<StepOutput> {
   const start = Date.now();
   try {
-    const out = await dispatchSync(step, request, state, priorContext);
+    const out = await dispatchSync(plan, step, request, state, priorContext);
     return {
       stepOrder: step.order, executor: step.executor,
       text: out.text, artifact: out.artifact, patch: out.patch,
@@ -306,6 +315,7 @@ async function executeSyncStep(
 }
 
 async function dispatchSync(
+  plan: ExecutionPlan,
   step: ExecutionStep,
   request: ChatRequest,
   state: SessionState,
@@ -315,7 +325,12 @@ async function dispatchSync(
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
-      const topic = priorContext || request.message;
+      // SEEK 3.7 — Parity with execution-engine.ts: use plan.resolvedTopic first,
+      // then fall back to priorContext (mentor output) or request.message.
+      // Using raw request.message here was the parity gap that caused topic drift in streaming.
+      const topic = plan.resolvedTopic?.trim()
+        || (priorContext?.trim() && priorContext.length > 4 ? priorContext : null)
+        || request.message;
       const data  = await generateSchemaContent({
         topic,
         level:      state.confirmedLevel ?? state.userLevel ?? 'B1',
@@ -472,7 +487,12 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
-      return { text: result.success ? result.text : undefined };
+      // SEEK 3.7 — Parity with execution-engine.ts: persist transcript to state.
+      const transcriptText = result.success ? result.text : undefined;
+      return {
+        text: transcriptText,
+        patch: transcriptText ? { lastUserAudioTranscript: transcriptText } : undefined,
+      };
     }
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
