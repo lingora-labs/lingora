@@ -1,9 +1,9 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.5 — Thin Router (Entry Point)
+// LINGORA SEEK 3.7 — Thin Router (Entry Point)
 // =============================================================================
-// FIX-9A: *1357*# diagnostic response includes 'message' field for UI render.
-// SEEK-3.5: *2468*# pipeline tracer — live intent + plan + artifact diagnosis.
+// SEEK-3.7: topic persistence (lastConcept), universal TTS, neutral first turn.
+// *1357*# diagnostic + *2468*# pipeline tracer active.
 // =============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -29,7 +29,7 @@ import { executePlanStream } from '../../../server/core/execution-engine-stream'
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 30;
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
@@ -66,7 +66,12 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     callerState = baseState;
     const validation = validateStateInvariants(baseState);
-    const state = validation.valid ? baseState : repairState(baseState, validation.errors);
+    // SEEK 3.7: always run repairState to normalize structural issues (e.g. module indexes)
+    // even when there are no hard errors — warnings can indicate silent state corruption.
+    const state = repairState(
+      validation.valid ? baseState : baseState,
+      validation.errors,
+    );
     const stateValidationStatus = validation.valid ? 'passed' : 'repaired';
 
     if (validation.warnings.length > 0) {
@@ -78,7 +83,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       const diagPayload = {
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      'SEEK-3.5',  // SEEK 3.5 — PDF pipeline + *2468*# tracer
+        architecture:      'SEEK-3.7',  // SEEK 3.7 — topic persistence + universal TTS + neutral first turn
         runtime:           'LINGORA-ARCH-9.11',
         timestamp:         new Date().toISOString(),
         orchestratorActive: true,
@@ -151,7 +156,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
           .filter(t => t.testCase.includes('pdf'))
           .every(t => !t.mentorIntercepts),
         streamingEnabled: STREAMING_ENABLED,
-        architecture: 'SEEK-3.5',
+        architecture: 'SEEK-3.7',
         timestamp: new Date().toISOString(),
       };
 
