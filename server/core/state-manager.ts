@@ -1,6 +1,6 @@
 // ============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.4 — State Manager
+// LINGORA SEEK 3.7 — State Manager
 // ============================================================================
 // FIX LOG:
 //   SEEK 3.1 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
@@ -36,7 +36,12 @@ export function validateStateInvariants(state: SessionState): StateValidationRes
 
   if (state.curriculumPlan && state.masteryByModule) {
     const moduleKeys = Object.keys(state.masteryByModule).map(Number);
-    const expectedModules = state.curriculumPlan.modules.map(m => m.index);
+    // SEEK 3.7: filter out modules with undefined index before comparison
+    // (LLM-generated curricula may omit explicit index; repairState handles this,
+    // but validation runs before repair on the first turn)
+    const expectedModules = state.curriculumPlan.modules
+      .map(m => m.index)
+      .filter((idx): idx is number => typeof idx === 'number' && !isNaN(idx));
 
     for (const key of moduleKeys) {
       if (!expectedModules.includes(key)) {
@@ -89,6 +94,20 @@ export function repairState(state: SessionState, errors: string[]): SessionState
 
   if (!repaired.masteryByModule || typeof repaired.masteryByModule !== 'object') {
     repaired.masteryByModule = {};
+  }
+
+  // SEEK 3.7 — FIX: Ensure curriculumPlan modules always have numeric index.
+  // The LLM sometimes returns modules without explicit index, causing the warning
+  // "Module undefined in curriculumPlan missing from masteryByModule".
+  // Auto-assign 0-based index if missing.
+  if (repaired.curriculumPlan?.modules?.length) {
+    repaired.curriculumPlan = {
+      ...repaired.curriculumPlan,
+      modules: repaired.curriculumPlan.modules.map((m, i) => ({
+        ...m,
+        index: typeof m.index === 'number' && !isNaN(m.index) ? m.index : i,
+      })),
+    };
   }
 
   return repaired;
