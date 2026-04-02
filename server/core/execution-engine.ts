@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.5 — Execution Engine
+// LINGORA SEEK 3.7 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -37,7 +37,7 @@
 //                    server/knowledge/rag.ts
 //                    server/core/diagnostics.ts
 //
-// Commit   : feat(execution-engine): SEEK 3.5 — ordered step execution with
+// Commit   : feat(execution-engine): SEEK 3.7 — ordered step execution with
 //            dependsOn resolution, no decision logic.
 // =============================================================================
 
@@ -631,6 +631,15 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
   );
 
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
+
+  // SEEK 3.7 — FIX: Persist the resolved topic back to state every turn.
+  // This is the missing link: resolveCurrentTopic reads lastConcept but nothing
+  // was ever WRITING it. Without this, topic continuity is impossible across turns.
+  // Only persist if resolvedTopic is a real topic (not the fallback default).
+  const resolvedTopic = plan.resolvedTopic?.trim();
+  if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
+    statePatch.lastConcept = resolvedTopic;
+  }
 
   if (plan.priority >= 100) {
     (statePatch as StatePatch).requestedOperation = null;
