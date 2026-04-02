@@ -229,7 +229,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
 
   // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
-    executor: ExecutorType;
+    executor: ExecutorType | 'hybrid';
     action: string;
     pedagogicalAction: PedagogicalAction;
     artifacts: ArtifactType[];
@@ -283,7 +283,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
 
   const step: ExecutionStep = {
     order: 1,
-    executor: config.executor,
+    executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
     action: config.action,
     timeout: 15000,
   };
