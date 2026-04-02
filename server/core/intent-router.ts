@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/intent-router.ts
-// LINGORA SEEK 3.4 — Deterministic Intent Classifier
+// LINGORA SEEK 3.7 — Deterministic Intent Classifier
 // =============================================================================
 // Purpose  : Classify user intent deterministically before orchestration.
 //            Returns an IntentResult that the orchestrator uses to choose
@@ -124,6 +124,22 @@ const HARD_OVERRIDE_RULES: PatternRule[] = [
       /exporta esta conversaci[oó]n/i,
     ],
   },
+  // Export current artifact as PDF (conversational: "convierte esto en PDF", "descarga el esquema")
+  // SEEK 3.7: user wants to export the artifact they just saw, not the full chat
+  {
+    type: 'hard_override',
+    subtype: 'export_chat_pdf',   // routes to exportChatPdf which exports current content
+    confidence: 0.95,
+    explicit: true,
+    patterns: [
+      /\bconvierte?\b.*(esto|este|eso|el esquema|la tabla|el simulacro).*\bpdf\b/i,
+      /\b(descarga|download)\b.*(esto|este|esquema|tabla|artifact|simulacro)\b/i,
+      /\bpdf\b.*(esto|este|esquema|tabla|resumen|output)\b/i,
+      /\b(guarda|guardar|save)\b.*(esto|este|esquema|tabla).*\bpdf\b/i,
+      /convert (this|it) to pdf/i,
+      /download (this|the) (schema|table|summary|quiz)/i,
+    ],
+  },
   // Generate course PDF
   {
     type: 'hard_override',
@@ -138,8 +154,12 @@ const HARD_OVERRIDE_RULES: PatternRule[] = [
       // FIX-9C: user asks for a lesson/content in PDF format
       /\b(lecci[oó]n|material|contenido).*\bpdf\b/i,
       /\bpdf\b.*(lecci[oó]n|material|completo|nivel)/i,
-      /\ben pdf\b/i,
-      /\b(dame|quiero|genera|crea)\b.*\bpdf\b/i,
+      // SEEK 3.7: tighten \ben pdf\b — must be paired with course/content intent
+      // to avoid capturing "Traduce esto en PDF" or other unrelated phrases
+      /\ben pdf\b.*(curso|course|complete|completo|nivel|lección)/i,
+      /\b(curso|course|lección|lesson|material|completo).*\ben pdf\b/i,
+      /\b(dame|quiero|genera|crea)\b.*\bcurso\b.*\bpdf\b/i,
+      /\b(dame|quiero|genera|crea)\b.*\bpdf\b.*\bcurso\b/i,
     ],
   },
 ];
