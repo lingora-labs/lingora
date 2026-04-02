@@ -1,7 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.6 — Fase A: Evidence-based diagnostic guard + referential topic resolution
-// LINGORA SEEK 3.4 — Sole Decision Authority
+// LINGORA SEEK 3.7 — Sole Decision Authority
 // =============================================================================
 // Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
 //            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
@@ -107,19 +106,47 @@ function resolvePedagogicalMode(
 
 function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, message: string): string {
   if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
+
+  // SEEK 3.7 — Topic sovereignty: state context always wins over message text
+  // when the message is referential — even if long.
+  // A message is referential when it points to existing context rather than naming a new topic.
+  //
+  // TWO-LEVEL referential detection:
+  // Level 1 — Exact short phrases: "este tema", "lo mismo", etc.
+  // Level 2 — Semantic referential: long messages that CONTAIN a referential anchor
+  //           before a verb (hazme, dame, genera, muéstrame + {este/eso/esto/el tema}).
+  //           "Hazme un esquema completo de este tema" = referential despite length.
+  //
+  // Order of authority (constitutional — cannot be changed without IS/CSJ approval):
+  //   1. currentLessonTopic  (set by structured course engine)
+  //   2. lastConcept         (persisted from previous turns)
+  //   3. lastUserGoal        (user's stated objective)
+  //   4. curriculumPlan.topic (active course topic)
+  //   5. message             (only if it introduces a genuinely new topic)
+
   const clean = message?.trim();
-  // SEEK 3.6 — Fase A: Only use message as topic if it contains a real subject.
-  // Short referential phrases ("este tema", "this topic", "lo mismo", "the same") 
-  // must NOT become the topic — they point to the existing conversational context.
-  // If message is short and referential, skip it and use state context instead.
-  const REFERENTIAL = /^(este tema|this topic|lo mismo|the same|eso|that|esto|this|el mismo|same|continuar|continue|lo anterior|el tema|the topic|más sobre|more on)$/i;
-  const isReferential = !clean || clean.length < 30 || REFERENTIAL.test(clean);
+
+  const EXACT_REFERENTIAL = /^(este tema|this topic|lo mismo|the same|eso|that|esto|this|el mismo|same|continuar|continue|lo anterior|el tema|the topic|más sobre|more on)$/i;
+
+  // Semantic referential: the message requests an action ON an implied topic, not a new one.
+  // Pattern: verb-of-action + ... + (este/eso/esto/el tema/mismo)
+  const SEMANTIC_REFERENTIAL = /\b(hazme|dame|genera|crea|muéstrame|show me|give me|make|create|generate|convierte|convert|exporta|export)\b.{0,60}\b(este|esto|eso|ese|el mismo|el tema|this|that|it|the same)\b/i;
+
+  const isReferential =
+    !clean ||
+    clean.length < 30 ||
+    EXACT_REFERENTIAL.test(clean) ||
+    SEMANTIC_REFERENTIAL.test(clean);
+
+  // If NOT referential AND not noise: message is a genuine new topic
   if (!isReferential && clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
-  // State context is the authoritative source for short/referential messages
-  if (state.lastConcept?.trim())    return state.lastConcept;
-  if (state.lastUserGoal?.trim())   return state.lastUserGoal;
-  if (state.curriculumPlan?.topic)  return state.curriculumPlan.topic;
-  // Only fall back to message if no state context exists at all
+
+  // State context is authoritative for referential messages
+  if (state.lastConcept?.trim())   return state.lastConcept;
+  if (state.lastUserGoal?.trim())  return state.lastUserGoal;
+  if (state.curriculumPlan?.topic) return state.curriculumPlan.topic;
+
+  // Final fallback: use message only if no state context exists at all
   if (clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
   return 'Spanish grammar';
 }
@@ -392,34 +419,14 @@ function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
 function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   const isStructured = ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course';
 
-  // G7 — SEEK 3.3: if level is unknown, request a spontaneous sample BEFORE
-  // starting the pedagogical sequence. Enforces Art. 22/24-bis Manifiesto 7.0.
-  // G7 — FIX: 'A0' is the default unknown level from the frontend, not a confirmed level.
-  // The diagnostic should fire when: no confirmedLevel AND (no level OR level is 'A0')
-  // IS Ledger: use userLevel (not level) — matches SessionState contract
-  const levelUnknown = !ctx.state.confirmedLevel &&
-    (!ctx.state.userLevel || ctx.state.userLevel === 'A0');
-
-  // SEEK 3.6 — Fase A: Evidence-based diagnostic guard.
-  // If the user's first message itself contains evidence of advanced level
-  // (long sentence, complex syntax, academic vocabulary), do NOT request A1 sample.
-  // Detect: message > 80 chars with subordination markers = likely B2+.
-  // This prevents the embarrassing inversion: C2 user asked to write "Me llamo ___".
-  const firstMessageShowsAdvancedEvidence = ((): boolean => {
-    const msg = (ctx.message ?? '').trim();
-    if (msg.length < 80) return false;
-    const advancedMarkers = [
-      /\b(aunque|puesto que|sin embargo|no obstante|a pesar de|dado que|si bien)\b/i,
-      /\b(subjuntivo|indicativo|subordinada|sintaxis|gramática|cláusula)\b/i,
-      /\b(concibió|debatido|metafísic|epistemológi|lingüístic)\b/i,
-      /,\s*donde\s+/i,
-      /;\s*(?:de hecho|es decir|por tanto)/i,
-    ];
-    return advancedMarkers.some(r => r.test(msg));
-  })();
-
-  // If first message shows advanced evidence, skip diagnostic regardless of stored level
-  const shouldRequestDiagnostic = levelUnknown && isStructured && !firstMessageShowsAdvancedEvidence;
+  // SEEK 3.7 — FIX: First turn is ALWAYS a greeting. Never a diagnostic.
+  // Rationale: at tokens=0, the user has not yet produced any language sample.
+  // Requesting "write two simple sentences" before the user has typed anything
+  // is pedagogically inverted. The diagnostic should evaluate WHAT THE USER WROTE,
+  // not request output before any output exists.
+  // Diagnostic is deferred to token=1+ where real evidence exists (Fase B).
+  // The firstMessageShowsAdvancedEvidence guard is retained for future use but
+  // shouldRequestDiagnostic is always false at first turn.
 
   // P2: in structured/pdf_course mode, first turn includes TTS so user
   // hears the mentor's introduction while reading — mandatory for the product experience
@@ -427,8 +434,7 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     {
       order: 1,
       executor: 'mentor',
-      // G7: if level is unknown use diagnostic greeting, otherwise normal first-turn greeting
-      action: shouldRequestDiagnostic ? 'diagnosticFirstTurn' : 'firstTurnGreeting',
+      action: 'firstTurnGreeting',
       timeout: 12000,
     },
   ];
@@ -444,8 +450,7 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: isStructured ? ['audio'] : [],
     mentor: buildMentorDirective(
       ctx.state.mentorProfile,
-      // G7: use diagnostic directive when level is unknown on first turn
-      shouldRequestDiagnostic ? 'DIAGNOSTIC_FIRST_TURN_DIRECTIVE' : 'FIRST_TURN_DIRECTIVE',
+      'FIRST_TURN_DIRECTIVE',
       ctx,
     ),
     commercial: undefined,
@@ -679,25 +684,37 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
       ? 'FREE_CONVERSATION_DIRECTIVE'
       : 'RICH_CONTENT_DIRECTIVE';
 
-  const step: ExecutionStep = {
-    order: 1,
-    executor: 'mentor',
-    action: 'conversation',
-    timeout: 15000,
-  };
+  // SEEK 3.7 — Add TTS step to ALL conversation responses.
+  // Previously only structured mode had TTS. Audio must be universal.
+  // The mentor speaks; the user can listen or read. Both are always available.
+  const steps: ExecutionStep[] = [
+    {
+      order: 1,
+      executor: 'mentor',
+      action: 'conversation',
+      timeout: 15000,
+    },
+    {
+      order: 2,
+      executor: 'tool_audio',
+      action: 'generateTTS',
+      dependsOn: 1,
+      timeout: 8000,
+    },
+  ];
 
   return {
-    executor: 'mentor',
+    executor: 'hybrid',
     priority: PRIORITY.DEFAULT,
     blocking: false,
     pedagogicalAction: 'conversation',
-    artifacts: [],
+    artifacts: ['audio'],
     mentor: buildMentorDirective(ctx.state.mentorProfile, directive, ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
     reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}, intent=${ctx.intent.type}(${ctx.intent.confidence.toFixed(2)}). Safe fallsafe branch.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: [step],
+    executionOrder: steps,
   };
 }
 
@@ -731,4 +748,3 @@ function buildMentorDirective(
     }),
   };
 }
-
