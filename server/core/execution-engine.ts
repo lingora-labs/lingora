@@ -722,13 +722,14 @@ function toStepResult(output: StepOutput, plan: ExecutionPlan): ExecutionStepRes
 }
 
 function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
+  // SEEK 3.8 — Dignified fallback: never leave user with a generic placeholder.
+  // If the system couldn't respond, say something honest and useful.
   const fallbacks: Record<string, string> = {
-    en: "I'm here to help. What would you like to work on?",
-    es: "Estoy aquí para ayudarte. ¿En qué quieres trabajar?",
-    no: "Jeg er her for å hjelpe. Hva vil du jobbe med?",
-    it: "Sono qui per aiutarti. Su cosa vuoi lavorare?",
-    fr: "Je suis là pour t'aider. Sur quoi veux-tu travailler?",
+    en: "I wasn't able to generate a response right now — please try again in a moment.",
+    es: "No pude generar una respuesta en este momento. Por favor, inténtalo de nuevo en un instante.",
+    no: "Jeg kunne ikke generere et svar akkurat nå. Prøv igjen om et øyeblikk.",
+    it: "Non ho potuto generare una risposta in questo momento. Riprova tra un attimo.",
+    fr: "Je n'ai pas pu générer une réponse pour l'instant. Réessaie dans un moment.",
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
-
