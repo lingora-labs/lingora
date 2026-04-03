@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.7 — Sole Decision Authority
+// LINGORA SEEK 3.8 — Sole Decision Authority
 // =============================================================================
 // Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
 //            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
@@ -748,3 +748,4 @@ function buildMentorDirective(
     }),
   };
 }
+
