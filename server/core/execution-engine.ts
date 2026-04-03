@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.7 — Execution Engine
+// LINGORA SEEK 3.8 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
@@ -37,7 +37,7 @@
 //                    server/knowledge/rag.ts
 //                    server/core/diagnostics.ts
 //
-// Commit   : feat(execution-engine): SEEK 3.7 — ordered step execution with
+// Commit   : feat(execution-engine): SEEK 3.5 — ordered step execution with
 //            dependsOn resolution, no decision logic.
 // =============================================================================
 
@@ -208,11 +208,19 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       const level      = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'B1';
       const uiLanguage = ctx.state.interfaceLanguage ?? 'en';
 
+      // SEEK 3.8 — FIX: tool_schema persists lastConcept immediately.
+      // compileResult() also writes lastConcept, but that runs AFTER all steps.
+      // If the mentor step changes context, the artifact topic would be lost.
+      // Writing it here guarantees topic sovereignty for the artifact branch.
+      const topicPatch = (topic && topic !== 'Spanish grammar')
+        ? { lastConcept: topic }
+        : undefined;
+
       switch (step.action) {
 
         case 'generateSchema': {
           const data = await generateSchemaContent({ topic, level, uiLanguage });
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel) };
+          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel), patch: topicPatch };
         }
 
         case 'generateSchemaPro': {
@@ -270,7 +278,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
           // SEEK 3.4: generateTableMatrixRich produces tone-aware RCell rows for color rendering
           const { generateTableMatrixRich } = await import('../tools/schema-generator');
           const richArtifact = await generateTableMatrixRich({ topic, level, uiLanguage });
-          if (richArtifact) return { artifact: richArtifact };
+          if (richArtifact) return { artifact: richArtifact, patch: topicPatch };
           // Fallback to basic schema if rich fails
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.tableRows?.length) {
@@ -722,3 +730,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
