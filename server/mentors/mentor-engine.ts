@@ -239,6 +239,7 @@ function buildExecutionDirective(params: {
   plan?: ExecutionPlan
   action?: string
   priorContext?: string
+  state?: LegacyMentorState
 }): string {
   const parts: string[] = []
 
@@ -315,6 +316,7 @@ export function buildMentorPrompt(params: {
     plan:            params.plan,
     action:          params.action,
     priorContext:    params.priorContext,
+    state,
   })
 
   // G1 — SEEK 3.3: executionDirective BEFORE modeInstructions
@@ -473,3 +475,4 @@ export async function getMentorResponseStream(
     })()
   }
 }
+
