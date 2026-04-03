@@ -54,6 +54,8 @@ import {
   SuggestedActionType,
 } from '../../lib/contracts';
 
+import { advanceTutorPhase } from './state-manager';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEEK 3.1 Fase 0-A — TOPIC RESOLVER
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,7 +656,6 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
   }
 
   if (!plan.skipPhaseAdvance && ctx.state.activeMode === 'structured') {
-    const { advanceTutorPhase } = require('./state-manager');
     statePatch.tutorPhase = advanceTutorPhase(ctx.state.tutorPhase, ctx.state.activeMode);
   }
 
