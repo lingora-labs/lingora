@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/intent-router.ts
-// LINGORA SEEK 3.7 — Deterministic Intent Classifier
+// LINGORA SEEK 3.8 — Deterministic Intent Classifier
 // =============================================================================
 // Purpose  : Classify user intent deterministically before orchestration.
 //            Returns an IntentResult that the orchestrator uses to choose
@@ -548,3 +548,4 @@ export function isStrongCurriculumRequest(intent: IntentResult): boolean {
 export function isFastPathArtifact(intent: IntentResult): boolean {
   return intent.type === 'artifact' && intent.confidence >= 0.85;
 }
+
