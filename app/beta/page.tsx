@@ -648,20 +648,47 @@ function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'table_matrix') return <MatrixTableBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'quiz') {
-    // Support QuizArtifact (questions[]) and legacy {content: {questions[]}}
-    const qa = a as unknown as { title?: string; questions?: Array<{question:string; options: unknown[]; correct?: number}> }
-    const rawQ = qa.questions ?? (a.content as Record<string,unknown>)?.questions as unknown[] ?? []
-    const questions = (rawQ as Array<{question:string;options:unknown[];correct?:number}>).map(q => ({
-      question: q.question,
-      options: Array.isArray(q.options) ? q.options.map((o: unknown) =>
-        typeof o === 'object' && o !== null && 'text' in o ? (o as {text:string}).text : String(o)
-      ) : [],
-      correct: typeof q.correct === 'number' ? q.correct :
-        Array.isArray(q.options) ? q.options.findIndex((o: unknown) =>
-          typeof o === 'object' && o !== null && 'correct' in o && (o as {correct:boolean}).correct
-        ) : 0,
+    type QuizOption   = string | { text: string; correct?: boolean }
+    type QuizQuestion = { question: string; options: QuizOption[]; correct?: number }
+    type QuizArtifactShape = { title?: string; questions?: QuizQuestion[]; content?: Record<string, unknown> }
+
+    const qa          = a as unknown as QuizArtifactShape
+    const contentObj  = qa.content && typeof qa.content === 'object' ? qa.content : undefined
+
+    const rawQuestionsUnknown =
+      qa.questions ??
+      (Array.isArray(contentObj?.questions) ? (contentObj?.questions as unknown[]) : [])
+
+    const questions = (rawQuestionsUnknown as QuizQuestion[]).map(q => ({
+      question: typeof q.question === 'string' ? q.question : '',
+      options: Array.isArray(q.options)
+        ? q.options.map((o: unknown) =>
+            typeof o === 'object' && o !== null && 'text' in o
+              ? String((o as {text: string}).text)
+              : String(o)
+          )
+        : [],
+      correct:
+        typeof q.correct === 'number'
+          ? q.correct
+          : Array.isArray(q.options)
+            ? q.options.findIndex(
+                (o: unknown) =>
+                  typeof o === 'object' && o !== null &&
+                  'correct' in o && Boolean((o as {correct?: boolean}).correct)
+              )
+            : 0,
     }))
-    const qc = { title: qa.title ?? (a.content as Record<string,unknown>)?.title ?? 'Simulacro', questions }
+
+    const qc: { title: string; questions: QuizQ[] } = {
+      title:
+        typeof qa.title === 'string'
+          ? qa.title
+          : typeof contentObj?.title === 'string'
+            ? contentObj.title
+            : 'Simulacro',
+      questions,
+    }
     return (
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
@@ -1690,3 +1717,4 @@ export default function BetaPage() {
     </>
   )
 }
+
