@@ -36,7 +36,7 @@ export function validateStateInvariants(state: SessionState): StateValidationRes
 
   if (state.curriculumPlan && state.masteryByModule) {
     const moduleKeys = Object.keys(state.masteryByModule).map(Number);
-    // SEEK 3.7: filter out modules with undefined index before comparison
+    // SEEK 3.8: filter out modules with undefined index before comparison
     // (LLM-generated curricula may omit explicit index; repairState handles this,
     // but validation runs before repair on the first turn)
     const expectedModules = state.curriculumPlan.modules
@@ -108,6 +108,20 @@ export function repairState(state: SessionState, errors: string[]): SessionState
         index: typeof m.index === 'number' && !isNaN(m.index) ? m.index : i,
       })),
     };
+
+    // SEEK 3.8 — FIX: Initialize masteryByModule for any module that is in
+    // curriculumPlan but missing from masteryByModule. This eliminates the
+    // repetitive warning "Module N in curriculumPlan missing from masteryByModule"
+    // that fires on every request in structured mode.
+    if (!repaired.masteryByModule || typeof repaired.masteryByModule !== 'object') {
+      repaired.masteryByModule = {};
+    }
+    for (const mod of repaired.curriculumPlan.modules) {
+      const idx = mod.index;
+      if (typeof idx === 'number' && !(idx in repaired.masteryByModule)) {
+        repaired.masteryByModule[idx] = { score: 0, attempts: 0, passed: false };
+      }
+    }
   }
 
   return repaired;
