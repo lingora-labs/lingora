@@ -1,44 +1,63 @@
 // =============================================================================
-// server/core/execution-engine.ts
-// LINGORA SEEK 3.8 — Execution Engine
+// server/core/execution-engine-stream.ts
+// LINGORA SEEK 3.8 — Streaming Execution Engine
 // =============================================================================
-// Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
-//            Reads executionOrder. Executes steps in declared order.
-//            Resolves dependsOn. Collects results. Returns compiled outputs.
 //
-//            THIS MODULE:
-//            ✅ Reads ExecutionPlan.executionOrder
-//            ✅ Executes steps in order (1 → 2 → 3...)
-//            ✅ Resolves dependsOn — step N waits for step M
-//            ✅ Collects results from execution layers
-//            ✅ Returns ExecutionResult (message + artifact + patch)
-//            ❌ Does NOT decide what to execute
-//            ❌ Does NOT choose executor types
-//            ❌ Does NOT modify priority or blocking
-//            ❌ Does NOT reinterpret intent
-//            ❌ Does NOT generate ad-hoc routing logic
+// ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
-//            ARCHITECTURAL RULE:
-//            If this engine needs to "decide", the architecture has failed.
-//            Any decision logic found here is a bug and must be moved to
-//            orchestrator.ts.
+//   Frontend accumulates text from: { delta: string }
+//   Frontend applies state from:    { done: true, state, artifact?, suggestedActions? }
 //
-// Riesgo principal : Step result contamination — a step producing output that
-//                    implicitly influences subsequent steps outside the declared
-//                    dependsOn chain. All inter-step data must flow through
-//                    StepContext.priorResults explicitly.
+//   This engine emits:
+//     data: {"delta":"...partial mentor text..."}\n\n    (0–N times)
+//     data: {"delta":"...commercial suffix..."}\n\n      (0–1 times, if triggered)
+//     data: {"done":true,"state":{...},...}\n\n          (exactly once)
 //
-// Dependencias     : lib/contracts.ts
-//                    server/mentors/mentor-engine.ts
-//                    server/tools/schema-generator.ts
-//                    server/tools/pdf-generator.ts
-//                    server/tools/image-generator.ts
-//                    server/tools/audio-toolkit.ts
-//                    server/knowledge/rag.ts
-//                    server/core/diagnostics.ts
+//   Commercial parity:
+//     The commercial suffix is emitted as a FINAL delta event, immediately
+//     before the terminal done. This ensures it is accumulated by the frontend
+//     into the same message as the mentor text — identical to the JSON branch
+//     where it is appended to result.message before returning.
 //
-// Commit   : feat(execution-engine): SEEK 3.5 — ordered step execution with
-//            dependsOn resolution, no decision logic.
+//     JSON:  message = mentorText + "\n\n" + commercialSuffix  →  in ChatResponse.message
+//     SSE:   delta(mentorText) + delta(commercialSuffix)        →  accumulated in frontend
+//     Result: user sees same content in both branches. ✅
+//
+// ── getMentorResponseStream — REQUIRED EXTENSION ────────────────────────────
+//
+//   SEEK 2.6 mentor-engine.ts only exports getMentorResponse() (non-streaming).
+//   The streaming branch requires getMentorResponseStream() which must be added
+//   to mentor-engine.ts as part of Sprint 2.7.
+//
+//   Required contract (formal declaration):
+//
+//     export async function getMentorResponseStream(params: {
+//       request:      ChatRequest;
+//       state:        SessionState;
+//       plan:         ExecutionPlan;
+//       priorContext: string;
+//       action:       string;
+//     }): Promise<AsyncGenerator<string>>
+//
+//   Until getMentorResponseStream() is implemented in mentor-engine.ts,
+//   the stream engine falls back to getMentorResponse() and emits the complete
+//   text as a single delta. This preserves the SSE wire format contract and
+//   keeps the frontend compatible, at the cost of no incremental streaming
+//   for the mentor text. The fallback is declared explicitly and logs a warning.
+//
+// ── INVARIANTS ────────────────────────────────────────────────────────────────
+//   1. ORDER: Steps walk executionOrder ascending. No grouping by executor.
+//   2. DEPENDSON: Failure → visible degraded step, not silent skip.
+//   3. MENTOR GATE: executor='mentor' always runs. plan.mentor is metadata only.
+//   4. PATCH/STATE: buildStatePatch() → StatePatch (delta).
+//                   mergeStatePatch() → updatedState (final).
+//                   Terminal done emits updatedState, not statePatch.
+//   5. COMMERCIAL: Emitted as final delta before done (observable in UI).
+//                  Evaluated with post-merge updatedState — same as JSON branch.
+//
+// Commit   : fix(execution-engine-stream): commercial as final delta for UI
+//            observability; getMentorResponseStream formally declared;
+//            fallback to getMentorResponse if stream variant unavailable
 // =============================================================================
 
 import {
@@ -51,361 +70,316 @@ import {
   StatePatch,
   ChatRequest,
   SuggestedAction,
-  SuggestedActionType,
 } from '../../lib/contracts';
 
+import { ExecutionResult }                    from './execution-engine';
+import { advanceTutorPhase, mergeStatePatch } from './state-manager';
+import { evaluateCommercial }                 from './commercial-engine-adapter';
+
 // ─────────────────────────────────────────────────────────────────────────────
-// SEEK 3.1 Fase 0-A — TOPIC RESOLVER
+// SSE WIRE FORMAT — exactly what app/beta/page.tsx SEEK 2.6 consumes
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NOISE_PATTERNS = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|go|start|más|mas|seguir|continue|adelante|siguiente módulo|next module|proceed|claro|entendido|understood)$/i;
-
-function resolveSchemaTopicFromState(
-  message: string,
-  state: SessionState,
-  priorText: string,
-): string {
-  if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
-  const cleanMessage = message?.trim();
-  if (cleanMessage && cleanMessage.length > 4 && !NOISE_PATTERNS.test(cleanMessage)) {
-    return cleanMessage;
-  }
-  if (state.lastConcept?.trim())       return state.lastConcept;
-  if (state.lastUserGoal?.trim())      return state.lastUserGoal;
-  if (state.curriculumPlan?.topic)     return state.curriculumPlan.topic;
-  const cleanPrior = priorText?.trim();
-  if (cleanPrior && cleanPrior.length > 4 && !NOISE_PATTERNS.test(cleanPrior)) {
-    return cleanPrior;
-  }
-  return 'Spanish grammar';
+interface SSEDelta { delta: string; }
+interface SSEDone  {
+  done:              true;
+  state:             SessionState;
+  artifact?:         ArtifactPayload;
+  suggestedActions?: SuggestedAction[];
 }
+type SSEPayload = SSEDelta | SSEDone;
 
-export interface ExecutionResult {
-  message: string;
-  artifact?: ArtifactPayload;
-  suggestedActions: SuggestedAction[];
-  statePatch: StatePatch;
-  stepResults: ExecutionStepResult[];
-  totalDurationMs: number;
-}
-
-interface StepContext {
-  plan: ExecutionPlan;
-  request: ChatRequest;
-  state: SessionState;
-  priorResults: Map<number, StepOutput>;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERNAL
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface StepOutput {
-  stepOrder: number;
-  executor: ExecutorType;
-  text?: string;
-  artifact?: ArtifactPayload;
-  patch?: StatePatch;
+  stepOrder:  number;
+  executor:   ExecutorType;
+  text?:      string;
+  artifact?:  ArtifactPayload;
+  patch?:     StatePatch;
   durationMs: number;
-  success: boolean;
-  error?: string;
+  success:    boolean;
+  error?:     string;
 }
 
-export async function executePlan(
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function executePlanStream(
   plan: ExecutionPlan,
   request: ChatRequest,
   state: SessionState,
-): Promise<ExecutionResult> {
-  const engineStart = Date.now();
-  const orderedSteps = [...plan.executionOrder].sort((a, b) => a.order - b.order);
-  const ctx: StepContext = { plan, request, state, priorResults: new Map() };
-  const stepResults: ExecutionStepResult[] = [];
+): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
 
-  for (const step of orderedSteps) {
-    if (step.dependsOn !== undefined) {
-      const dep = ctx.priorResults.get(step.dependsOn);
-      if (!dep || !dep.success) {
-        const fallback = buildDegradedStep(step, `dependency step ${step.dependsOn} failed or missing`);
-        ctx.priorResults.set(step.order, fallback);
-        stepResults.push(toStepResult(fallback, plan));
-        continue;
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+
+      function emit(payload: SSEPayload): void {
+        controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`));
       }
-    }
-    const stepOutput = await executeStep(step, ctx);
-    ctx.priorResults.set(step.order, stepOutput);
-    stepResults.push(toStepResult(stepOutput, plan));
-  }
 
-  const compiled = compileResult(plan, ctx, stepResults);
-  return { ...compiled, stepResults, totalDurationMs: Date.now() - engineStart };
+      const priorResults = new Map<number, StepOutput>();
+
+      try {
+        const orderedSteps = [...plan.executionOrder].sort(
+          (a, b) => a.order - b.order,
+        );
+
+        // ── Walk steps in exact plan order ────────────────────────────────
+        for (const step of orderedSteps) {
+
+          // dependsOn resolution
+          if (step.dependsOn !== undefined) {
+            const dep = priorResults.get(step.dependsOn);
+            if (!dep || !dep.success) {
+              priorResults.set(step.order, degradedStep(step, `dep ${step.dependsOn} failed`));
+              console.error(`[stream] step ${step.order} skipped: dep ${step.dependsOn} failed`);
+              continue;
+            }
+          }
+
+          const priorText = collectPriorText(priorResults, step.order);
+
+          // ── MENTOR STEP — always executes; streams if possible ────────────
+          if (step.executor === 'mentor') {
+            if (!plan.mentor) {
+              console.warn(`[stream] step ${step.order}: plan.mentor missing — will use default directive`);
+            }
+            const start = Date.now();
+            try {
+              const { getMentorResponseStream, getMentorResponse } = await import('../mentors/mentor-engine');
+
+              if (typeof getMentorResponseStream === 'function') {
+                // ── Streaming path (Sprint 2.7+ when getMentorResponseStream exists) ──
+                const stream = await getMentorResponseStream({
+                  request, state, plan, priorContext: priorText, action: step.action,
+                });
+                let fullText = '';
+                for await (const delta of stream) {
+                  fullText += delta;
+                  emit({ delta }); // frontend accumulates
+                }
+                priorResults.set(step.order, {
+                  stepOrder: step.order, executor: 'mentor',
+                  text: fullText, durationMs: Date.now() - start, success: true,
+                });
+
+              } else {
+                // ── Fallback path (SEEK 2.6 mentor-engine without stream variant) ──
+                // Emits complete mentor text as a single delta.
+                // SSE wire format is preserved; incremental streaming is not available.
+                console.warn(`[stream] getMentorResponseStream not found — falling back to getMentorResponse`);
+                const fullText = await getMentorResponse({
+                  request, state, plan, priorContext: priorText, action: step.action,
+                });
+                emit({ delta: fullText }); // single delta — still valid SSE
+                priorResults.set(step.order, {
+                  stepOrder: step.order, executor: 'mentor',
+                  text: fullText, durationMs: Date.now() - start, success: true,
+                });
+              }
+
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(`[stream] mentor step ${step.order} failed:`, msg);
+              priorResults.set(step.order, degradedStep(step, msg));
+            }
+
+          // ── NON-MENTOR STEP — execute synchronously ───────────────────────
+          } else {
+            const output = await executeSyncStep(plan, step, request, state, priorText);
+            priorResults.set(step.order, output);
+            // Non-mentor artifacts travel in terminal done event — not mid-stream
+          }
+        }
+
+        // ── Build statePatch (delta) ───────────────────────────────────────
+        const statePatch   = buildStatePatch(plan, state, priorResults);
+
+        // ── Merge → updatedState (final) ──────────────────────────────────
+        // These two are kept separate throughout.
+        // Terminal event emits updatedState (not statePatch).
+        const updatedState = mergeStatePatch(state, statePatch);
+
+        // ── Artifact ──────────────────────────────────────────────────────
+        const outputs = Array.from(priorResults.values());
+        const artifact =
+          outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact
+          ?? outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
+
+        // ── Suggested actions ─────────────────────────────────────────────
+        const suggestedActions = buildSuggestedActions(plan, artifact, updatedState);
+
+        // ── Commercial — evaluated post-merge with updatedState ───────────
+        // Parity: same evaluateCommercial(), same updatedState, same timing as JSON.
+        // Observable: emitted as a final DELTA before done, so frontend accumulates
+        // it into the same message as mentor text — identical user experience to JSON.
+        if (!plan.blocking) {
+          const commercial = await evaluateCommercial(updatedState, plan);
+          if (commercial.triggered && commercial.message) {
+            // Emit as final delta: "\n\n" + suffix — same separator as JSON branch
+            emit({ delta: `\n\n${commercial.message}` });
+          }
+        }
+
+        // ── Terminal event — frontend wire format ─────────────────────────
+        // state: updatedState (already merged) — not statePatch
+        const donePayload: SSEDone = {
+          done:  true,
+          state: updatedState,
+          ...(artifact               && { artifact }),
+          ...(suggestedActions.length > 0 && { suggestedActions }),
+        };
+        emit(donePayload);
+        controller.close();
+
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Stream error';
+        console.error('[stream] fatal:', msg);
+        // Terminal event even on fatal — frontend must not hang
+        emit({
+          done:  true,
+          state: mergeStatePatch(state, { tokens: (state.tokens ?? 0) + 1 }),
+        });
+        controller.close();
+      }
+    },
+  });
 }
 
-async function executeStep(step: ExecutionStep, ctx: StepContext): Promise<StepOutput> {
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE PATCH BUILDER
+// Mirrors execution-engine.ts compileResult() lines 381–408 exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildStatePatch(
+  plan: ExecutionPlan,
+  state: SessionState,
+  priorResults: Map<number, StepOutput>,
+): StatePatch {
+  const outputs = Array.from(priorResults.values());
+
+  const patch: StatePatch = outputs.reduce(
+    (acc, o) => (o.patch ? { ...acc, ...o.patch } : acc),
+    {} as StatePatch,
+  );
+
+  patch.tokens = (state.tokens ?? 0) + 1;
+
+  // SEEK 3.7 — Mirror of execution-engine.ts: persist resolvedTopic to lastConcept.
+  // Stream engine must write the same state as the JSON engine. Without this,
+  // topic continuity only works when streaming is disabled.
+  const resolvedTopic = plan.resolvedTopic?.trim();
+  if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
+    patch.lastConcept = resolvedTopic;
+  }
+
+  if (plan.priority >= 100) (patch as StatePatch).requestedOperation = null;
+
+  if (!plan.skipPhaseAdvance && state.activeMode === 'structured') {
+    patch.tutorPhase = advanceTutorPhase(state.tutorPhase, state.activeMode);
+  }
+
+  return patch;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYNC DISPATCHER — mirrors execution-engine.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; }
+
+async function executeSyncStep(
+  plan: ExecutionPlan,
+  step: ExecutionStep,
+  request: ChatRequest,
+  state: SessionState,
+  priorContext: string,
+): Promise<StepOutput> {
   const start = Date.now();
   try {
-    const output = await dispatchToExecutor(step, ctx);
+    const out = await dispatchSync(plan, step, request, state, priorContext);
     return {
-      stepOrder: step.order,
-      executor: step.executor,
-      text: output.text,
-      artifact: output.artifact,
-      patch: output.patch,
-      durationMs: Date.now() - start,
-      success: true,
+      stepOrder: step.order, executor: step.executor,
+      text: out.text, artifact: out.artifact, patch: out.patch,
+      durationMs: Date.now() - start, success: true,
     };
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error(`[execution-engine] step ${step.order} (${step.executor}:${step.action}) failed: ${errorMessage}`);
-    return buildDegradedStep(step, errorMessage, Date.now() - start);
+    const msg = err instanceof Error ? err.message : String(err);
+    return degradedStep(step, msg, Date.now() - start);
   }
 }
 
-interface DispatchOutput {
-  text?: string;
-  artifact?: ArtifactPayload;
-  patch?: StatePatch;
-}
-
-async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promise<DispatchOutput> {
-  const priorText = collectPriorText(ctx.priorResults, step.order);
-
+async function dispatchSync(
+  plan: ExecutionPlan,
+  step: ExecutionStep,
+  request: ChatRequest,
+  state: SessionState,
+  priorContext: string,
+): Promise<SyncOut> {
   switch (step.executor) {
-
-    // ── Mentor ───────────────────────────────────────────────────────────────
-    case 'mentor': {
-      const { getMentorResponse } = await import('../mentors/mentor-engine');
-      const text = await getMentorResponse({
-        request: ctx.request,
-        state: ctx.state,
-        plan: ctx.plan,
-        priorContext: priorText,
-        action: step.action,
-      });
-
-      if (step.action === 'evaluatePronunciation') {
-        try {
-          const jsonMatch = text.match(/\{[\s\S]*?\}/);
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            const artifact: import('../../lib/contracts').PronunciationReport = {
-              type:     'pronunciation_report',
-              score:    typeof parsed.score === 'number' ? parsed.score : 70,
-              feedback: parsed.feedback ?? parsed.tip ?? text.replace(/\{[\s\S]*?\}/, '').trim(),
-              tip:      parsed.tip ?? parsed.suggestion ?? '',
-              errors:   Array.isArray(parsed.errors) ? parsed.errors : [],
-            };
-            return { text: artifact.feedback, artifact };
-          }
-        } catch { /* fall through to plain text */ }
-      }
-
-      return { text };
-    }
-
-    // ── Schema generator ─────────────────────────────────────────────────────
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
-
-      const topic      = ctx.plan.resolvedTopic
-        || resolveSchemaTopicFromState(ctx.request.message, ctx.state, priorText);
-      const level      = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'B1';
-      const uiLanguage = ctx.state.interfaceLanguage ?? 'en';
-
-      // SEEK 3.8 — FIX: tool_schema persists lastConcept immediately.
-      // compileResult() also writes lastConcept, but that runs AFTER all steps.
-      // If the mentor step changes context, the artifact topic would be lost.
-      // Writing it here guarantees topic sovereignty for the artifact branch.
+      // SEEK 3.7 — Parity with execution-engine.ts: use plan.resolvedTopic first,
+      // then fall back to priorContext (mentor output) or request.message.
+      // Using raw request.message here was the parity gap that caused topic drift in streaming.
+      const topic = plan.resolvedTopic?.trim()
+        || (priorContext?.trim() && priorContext.length > 4 ? priorContext : null)
+        || request.message;
+      const data  = await generateSchemaContent({
+        topic,
+        level:      state.confirmedLevel ?? state.userLevel ?? 'B1',
+        uiLanguage: state.interfaceLanguage ?? 'en',
+      });
+      const artifact = adaptSchemaToArtifact(
+        data,
+        state.confirmedLevel ?? state.userLevel,
+      );
+      // SEEK 3.8 — Parity with execution-engine.ts: persist topic immediately.
+      // buildStatePatch() also writes lastConcept, but this guarantees artifact
+      // branch sovereignty even if streaming path diverges.
       const topicPatch = (topic && topic !== 'Spanish grammar')
         ? { lastConcept: topic }
         : undefined;
-
-      switch (step.action) {
-
-        case 'generateSchema': {
-          const data = await generateSchemaContent({ topic, level, uiLanguage });
-          return { artifact: adaptSchemaToArtifact(data, ctx.state.confirmedLevel ?? ctx.state.userLevel), patch: topicPatch };
-        }
-
-        case 'generateSchemaPro': {
-          const data = await generateSchemaContent({ topic, level, uiLanguage });
-          const blocks: import('../../lib/contracts').SchemaProBlockItem[] = [];
-          if (data.keyConcepts?.length) {
-            blocks.push({ type: 'bullets', title: 'Conceptos clave', items: data.keyConcepts });
-          }
-          for (const sub of (data.subtopics ?? [])) {
-            blocks.push({ type: 'concept', title: sub.title, body: sub.keyTakeaway ? `${sub.content}\n→ ${sub.keyTakeaway}` : sub.content });
-          }
-          if (data.tableRows?.length) {
-            blocks.push({ type: 'table', columns: ['Forma', 'Valor'], rows: data.tableRows.map(r => [r.left, r.right]) });
-          }
-          if (data.summary) {
-            blocks.push({ type: 'highlight', tone: 'ok', label: 'Regla 80/20', text: data.summary });
-          }
-          const artifact: import('../../lib/contracts').SchemaProArtifact = {
-            type: 'schema_pro', title: data.title, subtitle: data.objective,
-            level: ctx.state.confirmedLevel ?? ctx.state.userLevel, blocks,
-          };
-          return { artifact };
-        }
-
-        case 'generateQuiz': {
-          const data = await generateSchemaContent({ topic, level, uiLanguage });
-          if (data.quiz?.length) {
-            const artifact: import('../../lib/contracts').QuizArtifact = {
-              type: 'quiz', title: data.title,
-              questions: data.quiz.map(q => ({
-                question: q.question,
-                options: q.options.map((opt, i) => ({ text: opt, correct: i === q.correct })),
-              })),
-            };
-            return { artifact };
-          }
-          console.error('[execution-engine] generateQuiz: no quiz in schema output — returning empty, not wrong artifact');
-          return {};
-        }
-
-        case 'generateTable': {
-          const data = await generateSchemaContent({ topic, level, uiLanguage });
-          if (data.tableRows?.length) {
-            const artifact: import('../../lib/contracts').TableArtifact = {
-              type: 'table', title: data.title, columns: ['', ''],
-              rows: data.tableRows.map(row => [row.left, row.right]),
-            };
-            return { artifact };
-          }
-          console.error('[execution-engine] generateTable: no tableRows in output — returning empty, not wrong artifact');
-          return {};
-        }
-
-        case 'generateTableMatrix': {
-          // SEEK 3.4: generateTableMatrixRich produces tone-aware RCell rows for color rendering
-          const { generateTableMatrixRich } = await import('../tools/schema-generator');
-          const richArtifact = await generateTableMatrixRich({ topic, level, uiLanguage });
-          if (richArtifact) return { artifact: richArtifact, patch: topicPatch };
-          // Fallback to basic schema if rich fails
-          const data = await generateSchemaContent({ topic, level, uiLanguage });
-          if (data.tableRows?.length) {
-            const artifact: import('../../lib/contracts').TableMatrixArtifact = {
-              type: 'table_matrix', title: data.title,
-              columns: ['Concepto', 'Valor'],
-              rows: data.tableRows.map(row => [{ value: row.left, tone: 'neutral' as const }, { value: row.right }]),
-            };
-            return { artifact };
-          }
-          console.error('[execution-engine] generateTableMatrix: no tableRows in output — returning empty, not wrong artifact');
-          return {};
-        }
-
-        case 'buildRoadmapArtifact': {
-          if (!ctx.state.curriculumPlan) {
-            const topicFallback = resolveSchemaTopicFromState(ctx.request.message, ctx.state, '') || topic;
-            const fallbackModules = [
-              { index: 0, title: 'Diagnóstico de nivel',          focus: 'Evaluación inicial',    completed: false, current: true },
-              { index: 1, title: `Fundamentos: ${topicFallback}`, focus: 'Conceptos clave',       completed: false, current: false },
-              { index: 2, title: 'Práctica guiada',               focus: 'Ejercicios aplicados',  completed: false, current: false },
-              { index: 3, title: 'Errores frecuentes',            focus: 'Corrección',            completed: false, current: false },
-              { index: 4, title: 'Simulacro final',               focus: 'Evaluación de dominio', completed: false, current: false },
-            ];
-            const artifact: import('../../lib/contracts').RoadmapBlock = {
-              type: 'roadmap', title: topicFallback, modules: fallbackModules,
-            };
-            return { artifact };
-          }
-          const artifact: import('../../lib/contracts').RoadmapBlock = {
-            type: 'roadmap', title: ctx.state.curriculumPlan.topic,
-            modules: ctx.state.curriculumPlan.modules.map(m => ({
-              index: m.index, title: m.title, focus: m.focus,
-              completed: !!(ctx.state.masteryByModule[m.index]?.passed),
-              current: m.index === (ctx.state.currentModuleIndex ?? 0),
-            })),
-          };
-          return { artifact };
-        }
-
-        default: {
-          console.error(`[execution-engine] tool_schema: unsupported action "${step.action}" — no artifact produced`);
-          return {};
-        }
-      }
+      return { artifact, patch: topicPatch };
     }
-
-    // ── PDF generator ────────────────────────────────────────────────────────
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
-      const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
-      // SEEK 3.5 — observable logging for Vercel diagnosis
-      console.log(`[PDF] step.action: ${step.action}`);
-      console.log(`[PDF] title: ${title}`);
+      const title = state.lastConcept ?? 'LINGORA Study Guide';
+      console.log(`[PDF:stream] step.action: ${step.action}`);
 
       if (step.action === 'exportChatPdf') {
-        // G6a — SEEK 3.3: structured PDF with UNED-style format
-        const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
-        const now = new Date();
-        const dateStr = now.toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
-        const mentorName = (ctx.state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
-                           (ctx.state.mentorProfile ?? 'Alex').slice(1);
-        // IS fix H2: use userLevel, not level
-        const levelStr  = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'N/A';
-        const tokensStr = String(ctx.state.tokens ?? 0);
+        const content = request.exportTranscript || request.message;
+        const result = await generatePDF({ title: 'Chat Export', content });
 
-        const lines = rawTranscript.split('\n').filter(Boolean);
-        const formattedLines = lines.map((line: string) => {
-          if (line.startsWith('[Student]:') || line.startsWith('[USER]:')) {
-            return line.replace(/^\[(?:Student|USER)\]:/, '▶ Estudiante:');
-          }
-          const mentorMatch = line.match(/^\[([A-Z]+)\]:/);
-          if (mentorMatch) return line.replace(/^\[[A-Z]+\]:/, `◆ ${mentorName}:`);
-          return line;
-        }).join('\n');
+        const messageCount =
+          (request.exportTranscript
+            ? String(request.exportTranscript).split('\n').filter(Boolean).length
+            : 0) || (request.message ? 1 : 0);
 
-        // IS fix H1: clean template literals (no backslash escaping)
-        const header = [
-          '══════════════════════════════════════════',
-          '   LINGORA — HISTORIAL DE SESIÓN',
-          '══════════════════════════════════════════',
-          `Mentor:   ${mentorName}`,
-          `Nivel:    ${levelStr}`,
-          `Turnos:   ${tokensStr}`,
-          `Fecha:    ${dateStr}`,
-          '──────────────────────────────────────────',
-          '',
-        ].join('\n');
-
-        const footer = [
-          '',
-          '──────────────────────────────────────────',
-          'LINGORA · AI Cultural Immersion Platform for Spanish',
-          'Learn → Connect → Experience',
-          `Exportado el ${dateStr}`,
-        ].join('\n');
-
-        const content = header + formattedLines + footer;
-        const result = await generatePDF({ title: `LINGORA · Sesión · ${dateStr}`, content });
-        console.log(`[PDF] exportChatPdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
-        if (!result.success) console.error(`[PDF] exportChatPdf error: ${result.error} — ${result.message}`);
-
-        // IS fix H3: include messageCount in pdf_chat artifact
-        const messageCount = rawTranscript
-          ? rawTranscript.split('\n').filter(Boolean).length
-          : 0;
-
-        const artifact = result.success
-          ? { type: 'pdf_chat' as const, url: result.url, messageCount }
-          : undefined;
-
-        return { artifact };
+        return {
+          artifact: result.success
+            ? { type: 'pdf_chat' as const, url: result.url, messageCount }
+            : undefined,
+        };
       }
-
       if (step.action === 'generateCoursePdf') {
         // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
-        // No intermediate text → parser step. One LLM call → typed object → professional template.
-        // Matches the exact CourseContent / CourseModule interfaces in generateCoursePdf.ts.
+        // No intermediate text → parser. One typed object → professional template.
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        const topic    = ctx.plan.resolvedTopic
-          || resolveSchemaTopicFromState(ctx.request.message, ctx.state, '');
-        const level    = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'A1';
-        const lang     = ctx.state.interfaceLanguage ?? 'en';
-        const mentor   = ctx.state.mentorProfile ?? 'Sarah';
-        const now      = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+        const topic  = priorContext?.trim() || request.message?.trim()
+          || state.lastConcept || state.curriculumPlan?.topic || 'Español general';
+        const level  = state.confirmedLevel ?? state.userLevel ?? 'A1';
+        const lang   = state.interfaceLanguage ?? 'en';
+        const mentor = state.mentorProfile ?? 'Sarah';
+        const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
         const coursePrompt = `You are LINGORA's course generator. Produce a complete Spanish course as valid JSON.
 Topic: "${topic}". Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
@@ -415,38 +389,30 @@ Return ONLY valid JSON matching this exact structure (no markdown, no extra text
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string — course title in the student's language",
-  "objective": "string — 2-3 sentence learning objective",
+  "courseTitle": "string",
+  "objective": "string",
   "nativeLanguage": "${lang}",
   "totalModules": 5,
   "modules": [
     {
       "index": 1,
       "title": "string",
-      "vocabulary": [["spanish word", "translation/definition"], ...],
-      "grammar": "string — the 80/20 core grammar rule in one sentence",
-      "exercise": "string — one production exercise the student completes",
-      "communicativeFunction": "string — what the student CAN DO after this module",
-      "tip": "string — one practical tip, cultural note, or DELE strategy"
+      "vocabulary": [["spanish word", "translation"], ...],
+      "grammar": "string",
+      "exercise": "string",
+      "communicativeFunction": "string",
+      "tip": "string"
     }
   ],
-  "nextStep": "string — recommended next step after completing this course",
+  "nextStep": "string",
   "generatedAt": "${now}"
 }
-
-Requirements:
-- Exactly 5 modules, each addressing a distinct sub-topic of "${topic}"
-- vocabulary: 4-6 pairs per module, level-appropriate
-- grammar: one actionable rule, not an abstract definition
-- exercise: a concrete sentence or task the student produces
-- All content pedagogically appropriate for CEFR ${level}`;
+Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
         try {
           const completion = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            temperature: 0.3,
-            max_tokens: 3000,
+            model: 'gpt-4o', temperature: 0.3, max_tokens: 3000,
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -454,137 +420,115 @@ Requirements:
           const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
           if (parsed.modules?.length > 0) courseContent = parsed;
         } catch (e) {
-          console.error('[execution-engine] generateCoursePdf: JSON parse failed:', e);
+          console.error('[stream] generateCoursePdf: JSON parse failed:', e);
         }
 
-        if (!courseContent) {
-          console.error('[execution-engine] generateCoursePdf: no courseContent — aborting');
-          return {};
-        }
+        if (!courseContent) return {};
 
         const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
-        console.log(`[PDF] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
+        console.log(`[PDF:stream] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
-        console.log(`[PDF] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
-        if (!result.success) console.error(`[PDF] generateCoursePdf error: ${result.error} — ${result.message}`);
-        const artifact = result.success
+        console.log(`[PDF:stream] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
+        if (!result.success) console.error(`[PDF:stream] error: ${result.error} — ${result.message}`);
+        return { artifact: result.success
           ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
-          : undefined;
-        return { artifact };
+          : undefined };
       }
-
-      const result = await generatePDF({ title, content: ctx.request.message });
-      const artifact = result.success
-        ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url }
-        : undefined;
-      return { artifact };
+      const result = await generatePDF({ title, content: request.message });
+      return { artifact: result.success ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url } : undefined };
     }
-
-    // ── Image generator ──────────────────────────────────────────────────────
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
-      const prompt = priorText || ctx.request.message;
+      const prompt = priorContext || request.message;
       const result = await generateImage(prompt);
       if (result?.success && result.url) {
         return { artifact: {
-          type: 'illustration' as const, prompt, url: result.url,
+          type: 'illustration' as const,
+          prompt,
+          url: result.url,
           caption: result.message ?? undefined,
         }};
       }
       return {};
     }
-
-    // ── Audio toolkit ────────────────────────────────────────────────────────
     case 'tool_audio': {
 
+      // FIX-EE3 (stream): generateTTS step — speak only the mentor response (priorContext)
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
-        const mentorPriorText = Array.from(ctx.priorResults.values())
-          .filter(r => r.executor === 'mentor' && r.text)
-          .sort((a, b) => b.stepOrder - a.stepOrder)[0]?.text;
-        const textToSpeak = (mentorPriorText ?? priorText)?.trim() || ctx.request.message?.trim();
+        const textToSpeak = priorContext?.trim() || request.message?.trim();
         if (!textToSpeak) return {};
-        // G2 — SEEK 3.3: map mentor identity to correct OpenAI voice
-        const MENTOR_VOICES: Record<string, string> = {
+        // F4 — SEEK 3.4: map mentor identity to correct voice (was 'nova' hardcoded)
+        // execution-engine-stream.ts missed the G2 fix applied to execution-engine.ts
+        const STREAM_MENTOR_VOICES: Record<string, string> = {
           sarah: 'shimmer',
           alex:  'fable',
           nick:  'onyx',
         };
-        const mentorKey = (ctx.state.mentorProfile ?? 'alex').toLowerCase();
-        const ttsVoice  = MENTOR_VOICES[mentorKey] ?? 'fable';
-        const result = await generateSpeech(textToSpeak, { voice: ttsVoice });
+        const streamMentorKey = (state.mentorProfile ?? 'alex').toLowerCase();
+        const streamVoice = STREAM_MENTOR_VOICES[streamMentorKey] ?? 'fable';
+        const result = await generateSpeech(textToSpeak, { voice: streamVoice });
         if (result?.success && result.url) {
           return { artifact: { type: 'audio' as const, dataUrl: result.url } };
         }
         return {};
       }
 
-      // Default: transcribe audio input
+      // default: transcribe audio input
       const { transcribeAudio } = await import('../tools/audio-toolkit');
-      const audioData = ctx.request.audioDataUrl
-        ? { data: ctx.request.audioDataUrl.split(',')[1] || ctx.request.audioDataUrl, format: ctx.request.audioMimeType?.split('/')[1] || 'webm' }
-        : null;
 
-      if (!audioData && ctx.request.files?.length) {
-        const audioFile = ctx.request.files.find(
-          f => f.type?.startsWith('audio/') || f.type === 'video/webm',
-        );
+      let audioData: { data: string; format: string } | null = null;
+      if (request.audioDataUrl) {
+        audioData = {
+          data:   request.audioDataUrl.split(',')[1] || request.audioDataUrl,
+          format: request.audioMimeType?.split('/')[1] || 'webm',
+        };
+      } else if (request.files?.length) {
+        const audioFile = request.files.find(f => f.type?.startsWith('audio/') || f.type === 'video/webm');
         if (audioFile) {
-          const raw = audioFile.base64
-            ?? (audioFile.dataUrl ? audioFile.dataUrl.split(',')[1] ?? audioFile.dataUrl : '');
-          const result = await transcribeAudio({ data: raw, format: audioFile.type?.split('/')[1] || 'webm' });
-          return { text: result.success ? result.text : undefined };
+          const raw = audioFile.base64 ?? (audioFile.dataUrl ? audioFile.dataUrl.split(',')[1] ?? audioFile.dataUrl : '');
+          audioData = { data: raw, format: audioFile.type?.split('/')[1] || 'webm' };
         }
       }
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
-      // G5 — SEEK 3.3: persist transcript so subsequent turns don't lose it
+      // SEEK 3.7 — Parity with execution-engine.ts: persist transcript to state.
       const transcriptText = result.success ? result.text : undefined;
-      // IS fix H4: use patch (not statePatch) — DispatchOutput contract
       return {
         text: transcriptText,
-        patch: transcriptText
-          ? { lastUserAudioTranscript: transcriptText }
-          : undefined,
+        patch: transcriptText ? { lastUserAudioTranscript: transcriptText } : undefined,
       };
     }
-
-    // ── Attachment processor ─────────────────────────────────────────────────
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
-      const filesToProcess = (ctx.request.files ?? []).map(f => ({
-        name: f.name, type: f.type, size: f.size,
+      // Map AttachedFile[] to the shape processAttachment expects
+      const filesToProcess = (request.files ?? []).map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.size,
         data: f.base64 ?? (f.dataUrl ? f.dataUrl.split(',')[1] ?? f.dataUrl : ''),
       }));
-      const result = await processAttachment(
-        filesToProcess, ctx.state as unknown as Record<string, unknown>,
+      const r = await processAttachment(
+        filesToProcess,
+        state as unknown as Record<string, unknown>,
       );
-      const text = result?.extractedTexts?.[0] ?? undefined;
+      const text = r?.extractedTexts?.[0] ?? undefined;
       return { text };
     }
-
-    // ── Storage ───────────────────────────────────────────────────────────────
-    case 'tool_storage': {
-      return {};
-    }
-
-    // ── Knowledge / RAG ───────────────────────────────────────────────────────
     case 'knowledge': {
       const { getRagContext } = await import('../knowledge/rag');
-      const result = await getRagContext(ctx.request.message);
+      const result = await getRagContext(request.message);
       return { text: result?.text ?? undefined };
     }
-
-    // ── Diagnostics ───────────────────────────────────────────────────────────
     case 'diagnostic': {
       const { evaluateLevel } = await import('./diagnostics');
-      const sampleCount = (ctx.state.diagnosticSamples ?? 0) + 1;
+      const sampleCount = (state.diagnosticSamples ?? 0) + 1;
       const samples = [
-        ctx.request.message,
-        ...(ctx.state.lastConcept  ? [ctx.state.lastConcept]  : []),
-        ...(ctx.state.lastUserGoal ? [ctx.state.lastUserGoal] : []),
-        ...(ctx.state.lastMistake  ? [ctx.state.lastMistake]  : []),
+        request.message,
+        ...(state.lastConcept  ? [state.lastConcept]  : []),
+        ...(state.lastUserGoal ? [state.lastUserGoal] : []),
+        ...(state.lastMistake  ? [state.lastMistake]  : []),
       ];
       const result = await evaluateLevel(samples);
       const patch = {
@@ -595,139 +539,59 @@ Requirements:
       };
       return { patch };
     }
-
-    // ── Commercial ────────────────────────────────────────────────────────────
-    case 'commercial': {
+    case 'tool_storage':
+    case 'commercial':
       return {};
-    }
-
-    default: {
-      console.warn(`[execution-engine] unknown executor: "${step.executor}" in step ${step.order}. Skipping.`);
+    default:
+      console.warn(`[stream] unknown executor "${step.executor}" — skipping`);
       return {};
-    }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RESULT COMPILER
+// SUGGESTED ACTIONS — identical to execution-engine.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface CompiledResult {
-  message: string;
-  artifact?: ArtifactPayload;
-  suggestedActions: SuggestedAction[];
-  statePatch: StatePatch;
-}
+function buildSuggestedActions(
+  plan: ExecutionPlan,
+  artifact: ArtifactPayload | undefined,
+  state: SessionState,
+): SuggestedAction[] {
+  const lang = state.interfaceLanguage ?? 'en';
+  const a: SuggestedAction[] = [];
 
-function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: ExecutionStepResult[]): CompiledResult {
-  const outputs = Array.from(ctx.priorResults.values());
-
-  const textParts = outputs
-    .sort((a, b) => a.stepOrder - b.stepOrder)
-    .map(o => o.text)
-    .filter((t): t is string => !!t && t.trim() !== '');
-
-  const message = textParts.join('\n\n') || buildFallbackMessage(plan, ctx.state.interfaceLanguage);
-
-  const toolArtifact   = outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact;
-  const mentorArtifact = outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
-  const artifact       = toolArtifact ?? mentorArtifact;
-
-  const statePatch: StatePatch = outputs.reduce(
-    (acc, o) => (o.patch ? { ...acc, ...o.patch } : acc),
-    {} as StatePatch,
-  );
-
-  statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
-
-  // SEEK 3.7 — FIX: Persist the resolved topic back to state every turn.
-  // This is the missing link: resolveCurrentTopic reads lastConcept but nothing
-  // was ever WRITING it. Without this, topic continuity is impossible across turns.
-  // Only persist if resolvedTopic is a real topic (not the fallback default).
-  const resolvedTopic = plan.resolvedTopic?.trim();
-  if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
-    statePatch.lastConcept = resolvedTopic;
-  }
-
-  if (plan.priority >= 100) {
-    (statePatch as StatePatch).requestedOperation = null;
-  }
-
-  if (!plan.skipPhaseAdvance && ctx.state.activeMode === 'structured') {
-    const { advanceTutorPhase } = require('./state-manager');
-    statePatch.tutorPhase = advanceTutorPhase(ctx.state.tutorPhase, ctx.state.activeMode);
-  }
-
-  const suggestedActions = buildSuggestedActions(plan, artifact, ctx.state);
-  return { message, artifact, suggestedActions, statePatch };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SUGGESTED ACTIONS
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildSuggestedActions(plan: ExecutionPlan, artifact: ArtifactPayload | undefined, state: SessionState): SuggestedAction[] {
-  const actions: SuggestedAction[] = [];
-  if (artifact) {
-    if (artifact.type === 'quiz')                                      actions.push({ type: 'start_quiz',      label: getLabel('start_quiz',      state.interfaceLanguage) });
-    if (artifact.type === 'schema' || artifact.type === 'schema_pro') actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-    if (artifact.type === 'roadmap')                                   actions.push({ type: 'start_course',    label: getLabel('start_course',    state.interfaceLanguage) });
-  }
-  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured') actions.push({ type: 'next_module', label: getLabel('next_module', state.interfaceLanguage) });
-  if (plan.pedagogicalAction === 'lesson')                             actions.push({ type: 'show_schema',     label: getLabel('show_schema',     state.interfaceLanguage) });
-  actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-  return actions.filter((a, i, arr) => arr.findIndex(b => b.type === a.type) === i);
-}
-
-const LABELS: Record<string, Record<string, string>> = {
-  start_quiz:      { en: 'Start quiz',      es: 'Empezar quiz',       no: 'Start quiz' },
-  export_chat_pdf: { en: 'Export as PDF',   es: 'Exportar a PDF',     no: 'Eksporter som PDF' },
-  next_module:     { en: 'Next module',     es: 'Siguiente módulo',   no: 'Neste modul' },
-  start_course:    { en: 'Start course',    es: 'Empezar curso',      no: 'Start kurs' },
-  show_schema:     { en: 'Show schema',     es: 'Ver esquema',        no: 'Vis skjema' },
-  retry_quiz:      { en: 'Try again',       es: 'Intentar de nuevo',  no: 'Prøv igjen' },
-};
-
-function getLabel(type: SuggestedActionType, lang: string): string {
-  return LABELS[type]?.[lang] ?? LABELS[type]?.['en'] ?? type;
+  if (artifact?.type === 'quiz')                                         a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
+  if (artifact?.type === 'schema' || artifact?.type === 'schema_pro')    a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
+  if (artifact?.type === 'roadmap')                                      a.push({ type: 'start_course',    label: loc('start_course', lang) });
+  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured')
+                                                                          a.push({ type: 'next_module',     label: loc('next_module', lang) });
+  if (plan.pedagogicalAction === 'lesson')                               a.push({ type: 'show_schema',     label: loc('show_schema', lang) });
+  a.push({ type: 'export_chat_pdf', label: loc('export_chat_pdf', lang) });
+  return a.filter((x, i, arr) => arr.findIndex(b => b.type === x.type) === i);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function collectPriorText(results: Map<number, StepOutput>, currentOrder: number): string {
-  return Array.from(results.values())
-    .filter(r => r.stepOrder < currentOrder && r.text)
+function collectPriorText(r: Map<number, StepOutput>, order: number): string {
+  return Array.from(r.values())
+    .filter(s => s.stepOrder < order && s.text)
     .sort((a, b) => a.stepOrder - b.stepOrder)
-    .map(r => r.text!)
+    .map(s => s.text!)
     .join('\n\n');
 }
 
-function buildDegradedStep(step: ExecutionStep, reason: string, durationMs: number = 0): StepOutput {
+function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): StepOutput {
   return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
 }
 
-function toStepResult(output: StepOutput, plan: ExecutionPlan): ExecutionStepResult {
-  return {
-    stepOrder: output.stepOrder,
-    executor: output.executor,
-    action: plan.executionOrder.find(s => s.order === output.stepOrder)?.action ?? 'unknown',
-    durationMs: output.durationMs,
-    success: output.success,
-    error: output.error,
-    producedArtifacts: output.artifact ? [output.artifact.type] : [],
-  };
-}
-
-function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
-  const fallbacks: Record<string, string> = {
-    en: "I'm here to help. What would you like to work on?",
-    es: "Estoy aquí para ayudarte. ¿En qué quieres trabajar?",
-    no: "Jeg er her for å hjelpe. Hva vil du jobbe med?",
-    it: "Sono qui per aiutarti. Su cosa vuoi lavorare?",
-    fr: "Je suis là pour t'aider. Sur quoi veux-tu travailler?",
-  };
-  return fallbacks[lang] ?? fallbacks['en'];
-}
+const LABELS: Record<string, Record<string, string>> = {
+  start_quiz:      { en: 'Start quiz',    es: 'Empezar quiz',     no: 'Start quiz' },
+  export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter som PDF' },
+  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul' },
+  start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs' },
+  show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
+};
+function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
 
