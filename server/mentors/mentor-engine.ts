@@ -1,4 +1,7 @@
 // =============================================================================
+
+// SEEK 3.8 — Single model source of truth.
+const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 // server/mentors/mentor-engine.ts
 // LINGORA SEEK 3.8 — Mentor Engine
 // =============================================================================
@@ -412,7 +415,7 @@ export async function getMentorResponse(
 
     const completion = await Promise.race([
       openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: RUNTIME_MODEL,
         messages: [
           { role: 'system', content: system },
           { role: 'user',   content: user },
@@ -449,7 +452,7 @@ export async function getMentorResponseStream(
 
   try {
     const stream = await openai.chat.completions.create({
-      model:    'gpt-4o',
+      model:    RUNTIME_MODEL,
       stream:   true,
       messages: [
         { role: 'system', content: system },
@@ -475,4 +478,3 @@ export async function getMentorResponseStream(
     })()
   }
 }
-
