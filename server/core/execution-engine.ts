@@ -56,6 +56,9 @@ import {
 
 import { advanceTutorPhase } from './state-manager';
 
+// SEEK 3.8 — Single model source of truth.
+const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEEK 3.1 Fase 0-A — TOPIC RESOLVER
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,7 +449,7 @@ Requirements:
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
         try {
           const completion = await openai.chat.completions.create({
-            model: 'gpt-4o',
+            model: RUNTIME_MODEL,
             temperature: 0.3,
             max_tokens: 3000,
             response_format: { type: 'json_object' },
@@ -733,3 +736,4 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
+
