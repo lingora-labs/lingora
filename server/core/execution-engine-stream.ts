@@ -133,12 +133,20 @@ export function executePlanStream(
         for (const step of orderedSteps) {
 
           // dependsOn resolution
+          // SEEK 3.8 — If dep step failed but THIS step is a mentor step in a hybrid plan,
+          // attempt the mentor anyway with empty priorContext rather than silently skipping.
+          // Silent skips leave the user with a blank screen — that is never acceptable.
           if (step.dependsOn !== undefined) {
             const dep = priorResults.get(step.dependsOn);
             if (!dep || !dep.success) {
-              priorResults.set(step.order, degradedStep(step, `dep ${step.dependsOn} failed`));
-              console.error(`[stream] step ${step.order} skipped: dep ${step.dependsOn} failed`);
-              continue;
+              if (step.executor === 'mentor') {
+                // Mentor can run without artifact — continue with empty priorContext
+                console.warn(`[stream] step ${step.order}: dep ${step.dependsOn} failed — running mentor with empty context`);
+              } else {
+                priorResults.set(step.order, degradedStep(step, `dep ${step.dependsOn} failed`));
+                console.error(`[stream] step ${step.order} skipped: dep ${step.dependsOn} failed`);
+                continue;
+              }
             }
           }
 
@@ -186,7 +194,22 @@ export function executePlanStream(
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               console.error(`[stream] mentor step ${step.order} failed:`, msg);
-              priorResults.set(step.order, degradedStep(step, msg));
+              // SEEK 3.8 — Emit a visible, dignified degradation message instead of silence.
+              // A blank stream is worse than an honest error. The user must see SOMETHING.
+              const is429 = msg.includes('429') || msg.toLowerCase().includes('quota');
+              const lang = state.interfaceLanguage ?? 'en';
+              const degradedMsg = is429
+                ? ({ en: 'The tutor is momentarily unavailable — API quota reached. Please try again shortly.',
+                     es: 'El tutor no está disponible en este momento — cuota de API alcanzada. Por favor, inténtalo de nuevo en breve.',
+                     no: 'Læreren er midlertidig utilgjengelig — API-kvote nådd. Prøv igjen om litt.' }[lang] ?? 'The tutor is momentarily unavailable. Please try again.')
+                : ({ en: 'The tutor could not generate a response right now. Please try again.',
+                     es: 'El tutor no pudo generar una respuesta en este momento. Por favor, inténtalo de nuevo.',
+                     no: 'Læreren kunne ikke generere et svar akkurat nå. Prøv igjen.' }[lang] ?? 'Could not generate a response. Please try again.');
+              emit({ delta: degradedMsg });
+              priorResults.set(step.order, {
+                stepOrder: step.order, executor: 'mentor',
+                text: degradedMsg, durationMs: Date.now() - start, success: false,
+              });
             }
 
           // ── NON-MENTOR STEP — execute synchronously ───────────────────────
