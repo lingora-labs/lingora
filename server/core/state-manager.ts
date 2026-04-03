@@ -1,6 +1,6 @@
 // ============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.8 — State Manager
+// LINGORA SEEK 3.4 — State Manager
 // ============================================================================
 // FIX LOG:
 //   SEEK 3.1 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
@@ -119,7 +119,7 @@ export function repairState(state: SessionState, errors: string[]): SessionState
     for (const mod of repaired.curriculumPlan.modules) {
       const idx = mod.index;
       if (typeof idx === 'number' && !(idx in repaired.masteryByModule)) {
-        repaired.masteryByModule[idx] = { score: 0, attempts: 0, passed: false };
+        repaired.masteryByModule[idx] = { score: 0, attempts: 0, lastAttemptAt: 0, passed: false };
       }
     }
   }
@@ -323,3 +323,4 @@ export function getNextUnlockedModule(state: SessionState): number | undefined {
 // mergeStatePatch — constitutional translation layer between StatePatch
 // (allows null-as-clear) and SessionState (requires undefined or value)
 // ============================================================================
+
