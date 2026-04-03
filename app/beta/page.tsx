@@ -1284,7 +1284,7 @@ export default function BetaPage() {
           : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' }] })
     } catch (e) {
       const m = e instanceof Error ? e.message : ''
-      addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó demasiado. Intenta de nuevo.' : 'Error de conexión. Intenta de nuevo.' })
+      addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó más de lo esperado. Por favor, inténtalo de nuevo en un momento.' : m.includes('429') ? 'El servicio está temporalmente ocupado (cuota de API). Inténtalo de nuevo en unos segundos.' : 'Error de conexión. Verifica tu red e inténtalo de nuevo.' })
     } finally { setLoading(false) }
   }, [addMsg, setMsgs])
 
@@ -1717,4 +1717,3 @@ export default function BetaPage() {
     </>
   )
 }
-
