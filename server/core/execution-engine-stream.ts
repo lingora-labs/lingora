@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.7 — Streaming Execution Engine
+// LINGORA SEEK 3.8 — Streaming Execution Engine
 // =============================================================================
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
@@ -340,7 +340,13 @@ async function dispatchSync(
         data,
         state.confirmedLevel ?? state.userLevel,
       );
-      return { artifact };
+      // SEEK 3.8 — Parity with execution-engine.ts: persist topic immediately.
+      // buildStatePatch() also writes lastConcept, but this guarantees artifact
+      // branch sovereignty even if streaming path diverges.
+      const topicPatch = (topic && topic !== 'Spanish grammar')
+        ? { lastConcept: topic }
+        : undefined;
+      return { artifact, patch: topicPatch };
     }
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
@@ -588,4 +594,3 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
