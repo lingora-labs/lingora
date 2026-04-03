@@ -1,6 +1,6 @@
 // ============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.7 — State Manager
+// LINGORA SEEK 3.8 — State Manager
 // ============================================================================
 // FIX LOG:
 //   SEEK 3.1 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
