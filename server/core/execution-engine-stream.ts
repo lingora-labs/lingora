@@ -618,7 +618,7 @@ function getDegradedMentorMessage(lang: string, is429: boolean): string {
     es: 'El tutor no pudo generar una respuesta en este momento. Por favor, inténtalo de nuevo.',
     no: 'Læreren kunne ikke generere et svar akkurat nå. Prøv igjen.',
     de: 'Der Tutor konnte gerade keine Antwort generieren. Bitte versuche es erneut.',
-    fr: 'Le tuteur n'a pas pu générer de réponse pour l'instant. Réessaie.',
+    fr: "Le tuteur n'a pas pu générer de réponse pour l'instant. Réessaie.",
     it: 'Il tutor non ha potuto generare una risposta in questo momento. Riprova.',
   };
   return is429 ? (quotaMsgs[lang] ?? quotaMsgs['en']) : (genericMsgs[lang] ?? genericMsgs['en']);
@@ -637,3 +637,4 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
+
