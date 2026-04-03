@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.4 — Beta Tutor Interface
+// LINGORA SEEK 3.8 — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -666,7 +666,7 @@ function ArtifactRender({ a }: { a: Artifact }) {
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
-          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc && typeof qc.title !== 'object' && qc.title != null ? String(qc.title) : ''}</span>
+          <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{qc.title}</span>
         </div>
         <div style={{ padding:14 }}><QuizBlock quiz={qc.questions} /></div>
       </div>
@@ -716,9 +716,15 @@ function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'audio' && (a.dataUrl || a.url || (a.content as Record<string,unknown>)?.dataUrl)) {
     const src = a.dataUrl ?? a.url ?? (a.content as Record<string,unknown>)?.dataUrl as string
     return (
-      <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:4 }}>
+      <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:6 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', letterSpacing:'.06em', textTransform:'uppercase' }}>🔊 Respuesta de audio</div>
-        <audio controls autoPlay src={src} style={{ width:'100%', borderRadius:10, outline:'none', accentColor:'var(--teal)' }} />
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:12, background:'rgba(0,201,167,.08)', border:'1px solid rgba(0,201,167,.2)' }}>
+          <button
+            onClick={() => { const el = document.getElementById('audio-'+src.slice(-8)); if (el) (el as HTMLAudioElement).play().catch(() => {}) }}
+            style={{ flexShrink:0, width:32, height:32, borderRadius:'50%', border:'none', background:'var(--teal)', color:'var(--navy)', fontSize:14, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>▶</button>
+          <audio id={'audio-'+src.slice(-8)} controls src={src} style={{ flex:1, height:28, minWidth:0, borderRadius:8, outline:'none', accentColor:'var(--teal)' }}
+            onError={() => {}} />
+        </div>
       </div>
     )
   }
@@ -1027,7 +1033,7 @@ function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
               <audio controls src={msg.audioUrl} style={{ flex:1, height:24, minWidth:0 }} />
             </div>
           )}
-          {msg.artifact && <ArtifactRender a={msg.artifact} />}
+          {msg.artifact && <div className="artifact-in"><ArtifactRender a={msg.artifact} /></div>}
           {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
         </div>
       </div>
@@ -1426,7 +1432,9 @@ export default function BetaPage() {
         @keyframes fadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
         @keyframes fadeIn { from{opacity:0} to{opacity:1} }
         @keyframes pulse { 0%,100%{opacity:.6} 50%{opacity:1} }
+        @keyframes artifactIn { from{opacity:0;transform:translateY(12px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
         .fade-up { animation: fadeUp .5s cubic-bezier(.22,1,.36,1) both }
+        .artifact-in { animation: artifactIn .4s cubic-bezier(.22,1,.36,1) both }
         ::-webkit-scrollbar { width:5px } ::-webkit-scrollbar-thumb { background:var(--border); border-radius:999px }
         textarea:focus, button:focus, input:focus, select:focus { outline:none }
       `}</style>
