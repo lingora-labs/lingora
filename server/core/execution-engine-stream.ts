@@ -76,6 +76,9 @@ import { ExecutionResult }                    from './execution-engine';
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
+// SEEK 3.8 — Single model source of truth for the entire runtime.
+const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SSE WIRE FORMAT — exactly what app/beta/page.tsx SEEK 2.6 consumes
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,13 +201,7 @@ export function executePlanStream(
               // A blank stream is worse than an honest error. The user must see SOMETHING.
               const is429 = msg.includes('429') || msg.toLowerCase().includes('quota');
               const lang = state.interfaceLanguage ?? 'en';
-              const degradedMsg = is429
-                ? ({ en: 'The tutor is momentarily unavailable — API quota reached. Please try again shortly.',
-                     es: 'El tutor no está disponible en este momento — cuota de API alcanzada. Por favor, inténtalo de nuevo en breve.',
-                     no: 'Læreren er midlertidig utilgjengelig — API-kvote nådd. Prøv igjen om litt.' }[lang] ?? 'The tutor is momentarily unavailable. Please try again.')
-                : ({ en: 'The tutor could not generate a response right now. Please try again.',
-                     es: 'El tutor no pudo generar una respuesta en este momento. Por favor, inténtalo de nuevo.',
-                     no: 'Læreren kunne ikke generere et svar akkurat nå. Prøv igjen.' }[lang] ?? 'Could not generate a response. Please try again.');
+              const degradedMsg = getDegradedMentorMessage(lang, is429);
               emit({ delta: degradedMsg });
               priorResults.set(step.order, {
                 stepOrder: step.order, executor: 'mentor',
@@ -435,7 +432,7 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
         try {
           const completion = await openai.chat.completions.create({
-            model: 'gpt-4o', temperature: 0.3, max_tokens: 3000,
+            model: RUNTIME_MODEL, temperature: 0.3, max_tokens: 3000,
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -604,6 +601,29 @@ function collectPriorText(r: Map<number, StepOutput>, order: number): string {
     .map(s => s.text!)
     .join('\n\n');
 }
+
+// SEEK 3.8 — Dignified degradation messages, language-aware.
+// Uses a Record with string index to avoid TypeScript implicit index errors.
+function getDegradedMentorMessage(lang: string, is429: boolean): string {
+  const quotaMsgs: Record<string, string> = {
+    en: 'The tutor is momentarily unavailable. API quota reached. Please try again shortly.',
+    es: 'El tutor no está disponible en este momento. Cuota de API alcanzada. Por favor, inténtalo de nuevo en breve.',
+    no: 'Læreren er midlertidig utilgjengelig. API-kvote nådd. Prøv igjen om litt.',
+    de: 'Der Tutor ist momentan nicht verfügbar. API-Kontingent erreicht. Bitte versuche es in Kürze erneut.',
+    fr: 'Le tuteur est momentanément indisponible. Quota API atteint. Réessaie dans quelques instants.',
+    it: 'Il tutor non è al momento disponibile. Quota API raggiunta. Riprova tra breve.',
+  };
+  const genericMsgs: Record<string, string> = {
+    en: 'The tutor could not generate a response right now. Please try again.',
+    es: 'El tutor no pudo generar una respuesta en este momento. Por favor, inténtalo de nuevo.',
+    no: 'Læreren kunne ikke generere et svar akkurat nå. Prøv igjen.',
+    de: 'Der Tutor konnte gerade keine Antwort generieren. Bitte versuche es erneut.',
+    fr: 'Le tuteur n'a pas pu générer de réponse pour l'instant. Réessaie.',
+    it: 'Il tutor non ha potuto generare una risposta in questo momento. Riprova.',
+  };
+  return is429 ? (quotaMsgs[lang] ?? quotaMsgs['en']) : (genericMsgs[lang] ?? genericMsgs['en']);
+}
+
 
 function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): StepOutput {
   return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
