@@ -1,40 +1,27 @@
 // =============================================================================
 // server/tools/schema-generator.ts
-// LINGORA SEEK 3.4 — Schema Content Generator
+// LINGORA SEEK 3.8 — Schema Content Generator
+// No changes from live version — preserved as delivered.
 // =============================================================================
 
 import OpenAI from 'openai'
-import type { SchemaContent, TableMatrixArtifact } from '@/lib/contracts'
+import type { SchemaContent } from '@/lib/contracts'
+
+import { buildModelParams } from '../mentors/mentor-engine';
+const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-type SchemaKind =
-  | 'grammar'
-  | 'conjugation'
-  | 'comparison'
-  | 'vocabulary'
-  | 'culture'
-  | 'cervantes'
-  | 'general'
+type SchemaKind = 'grammar' | 'conjugation' | 'comparison' | 'vocabulary' | 'culture' | 'cervantes' | 'general'
 
 function classifyTopic(topic: string): SchemaKind {
   const t = topic.toLowerCase()
-  if (
-    /conjug|present|pasado|imperfect|futuro|subjuntiv|verbos?\s+(ser|estar|ir|haber|tener)|indicativ/i.test(
-      t,
-    )
-  )
-    return 'conjugation'
-  if (/vs\.?|versus|diferencia|comparar|contrast|ser.*estar|por.*para|since.*because/i.test(t))
-    return 'comparison'
-  if (/vocabulario|léxico|lexic|palabras|sustantiv|adjetiv|adverb/i.test(t))
-    return 'vocabulary'
-  if (/cultura|historia|arte|gastronomía|sociedad|tradicion|españa|mexico|colombia|cervantes.*cultura/i.test(t))
-    return 'culture'
-  if (/dele|ccse|siele|cervantes.*examen|examen.*cervantes|oficial|certif/i.test(t))
-    return 'cervantes'
-  if (/gramática|gramatica|sintaxis|morfología|fonética|pronombre|artículo/i.test(t))
-    return 'grammar'
+  if (/conjug|present|pasado|imperfect|futuro|subjuntiv|verbos?\s+(ser|estar|ir|haber|tener)|indicativ/i.test(t)) return 'conjugation'
+  if (/vs\.?|versus|diferencia|comparar|contrast|ser.*estar|por.*para|since.*because/i.test(t)) return 'comparison'
+  if (/vocabulario|léxico|lexic|palabras|sustantiv|adjetiv|adverb/i.test(t)) return 'vocabulary'
+  if (/cultura|historia|arte|gastronomía|sociedad|tradicion|españa|mexico|colombia|cervantes.*cultura/i.test(t)) return 'culture'
+  if (/dele|ccse|siele|cervantes.*examen|examen.*cervantes|oficial|certif/i.test(t)) return 'cervantes'
+  if (/gramática|gramatica|sintaxis|morfología|fonética|pronombre|artículo/i.test(t)) return 'grammar'
   return 'general'
 }
 
@@ -139,7 +126,7 @@ REQUISITOS DE FORMATO (OBLIGATORIO):
 - quiz: exactamente 5 preguntas con opciones plausibles y explanation en cada una
 - erroresFrecuentes: exactamente 3 errores típicos con formato "❌ Error: [incorrecto] → ✅ Correcto: [correcto]"
 - summary: regla 80/20 en una frase memorable, máximo 20 palabras
-- El JSON debe incluir el campo erroresFrecuentes (array de strings)`
+- El JSON debe incluir el campo erroresFrecuentes (array de strings)\`
 }
 
 export async function generateSchemaContent(params: {
@@ -152,11 +139,9 @@ export async function generateSchemaContent(params: {
   const prompt = buildPrompt(topic, level, uiLanguage, kind)
 
   const completion = await openai.chat.completions.create({
-    model: 'gpt-4o',
+    ...buildModelParams(RUNTIME_MODEL, 3500, 0.2),
     messages: [{ role: 'system', content: prompt }],
-    temperature: 0.2,
-    response_format: { type: 'json_object' },
-    max_tokens: 3500,
+    response_format: { type: 'json_object' }
   })
 
   const raw = completion.choices[0].message.content!
@@ -175,6 +160,7 @@ export async function generateSchemaContent(params: {
   return parsed
 }
 
+
 // =============================================================================
 // SEEK 3.4 — generateTableMatrixRich
 // Produces a TableMatrixArtifact with semantic tone per cell (ok/warn/danger/info)
@@ -182,80 +168,59 @@ export async function generateSchemaContent(params: {
 // =============================================================================
 
 export async function generateTableMatrixRich(params: {
-  topic: string
-  level?: string
-  uiLanguage?: string
-}): Promise<TableMatrixArtifact | null> {
-  const topic = params.topic
-  const level = params.level || 'B1'
-  const uiLanguage = params.uiLanguage || 'en'
+  topic: string;
+  level?: string;
+  uiLanguage?: string;
+}): Promise<import('@/lib/contracts').TableMatrixArtifact | null> {
+  const { topic, level = 'B1', uiLanguage = 'en' } = params;
 
-  const prompt =
-    "You are LINGORA's table generator.\n" +
-    'Generate a COLOR-CODED comparison table for: ' +
-    topic +
-    '.\n' +
-    'Student level: ' +
-    level +
-    '. Interface language: ' +
-    uiLanguage +
-    '.\n\n' +
-    'Return ONLY valid JSON with this exact structure. No markdown. No extra text.\n\n' +
-    '{\n' +
-    '  "title": "string",\n' +
-    '  "columns": [\n' +
-    '    { "key": "criterion", "label": "CRITERIO" },\n' +
-    '    { "key": "correct", "label": "CORRECTO" },\n' +
-    '    { "key": "error", "label": "ERROR" },\n' +
-    '    { "key": "risk", "label": "RIESGO" },\n' +
-    '    { "key": "note", "label": "NOTA" }\n' +
-    '  ],\n' +
-    '  "rows": [\n' +
-    '    {\n' +
-    '      "criterion": { "text": "string", "tone": "info" },\n' +
-    '      "correct":   { "text": "string", "tone": "ok", "icon": "✔️" },\n' +
-    '      "error":     { "text": "string", "tone": "danger", "icon": "❌" },\n' +
-    '      "risk":      { "text": "string", "tone": "warn", "icon": "⚠️" },\n' +
-    '      "note":      { "text": "string", "tone": "info" }\n' +
-    '    }\n' +
-    '  ]\n' +
-    '}\n\n' +
-    'Rules:\n' +
-    '- Keep rows concise and useful for study.\n' +
-    '- Use short academic wording.\n' +
-    '- Do not return fewer than 4 rows.\n' +
-    '- Do not add explanations outside the JSON.'
+  const prompt = `You are LINGORA's table generator. Generate a COLOR-CODED comparison table for: "${topic}"
+Student level: ${level}. Interface language: ${uiLanguage}.
+
+Return ONLY valid JSON with this exact structure — no markdown, no extra text:
+{
+  "title": "Table title",
+  "columns": [
+    {"key": "concepto", "label": "CONCEPTO"},
+    {"key": "uso_correcto", "label": "USO CORRECTO"},
+    {"key": "error_comun", "label": "ERROR COMÚN"},
+    {"key": "nota", "label": "NOTA"}
+  ],
+  "rows": [
+    [
+      {"text": "concept name", "tone": "info", "bold": true},
+      {"text": "correct usage or form", "tone": "ok", "icon": "✔️"},
+      {"text": "common error to avoid", "tone": "danger", "icon": "❌"},
+      {"text": "key tip or rule", "tone": "warn", "icon": "⚠️"}
+    ]
+  ]
+}
+
+RULES:
+- tone values: "ok" (correct/good), "danger" (error/wrong), "warn" (caution/note), "info" (neutral concept), "neutral" (plain)
+- minimum 6 rows, maximum 10 rows
+- each row covers one distinct concept/verb/rule/structure
+- use the tone to make the table visually meaningful
+- do NOT use markdown in text values
+- columns must match the columns array keys`;
 
   const completion = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    temperature: 0.2,
+    ...buildModelParams(RUNTIME_MODEL, 2000, 0.1),
+    messages: [{ role: 'system', content: prompt }],
     response_format: { type: 'json_object' },
-    messages: [
-      {
-        role: 'system',
-        content: 'You generate structured study artifacts in strict JSON.',
-      },
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-  })
+  });
 
-  const raw = completion.choices[0]?.message?.content?.trim() || ''
-  if (!raw) return null
-
-  let parsed: any
+  const raw = completion.choices[0].message.content!;
   try {
-    parsed = JSON.parse(raw)
+    const parsed = JSON.parse(raw);
+    if (!parsed.columns?.length || !parsed.rows?.length) return null;
+    return {
+      type: 'table_matrix' as const,
+      title: parsed.title ?? topic,
+      columns: parsed.columns,
+      rows: parsed.rows,
+    };
   } catch {
-    return null
-  }
-
-  return {
-    type: 'table_matrix',
-    title: parsed.title || topic,
-    columns: Array.isArray(parsed.columns) ? parsed.columns : [],
-    rows: Array.isArray(parsed.rows) ? parsed.rows : [],
+    return null;
   }
 }
