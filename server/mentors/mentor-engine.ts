@@ -2,6 +2,41 @@
 
 // SEEK 3.8 — Single model source of truth.
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEEK 3.8 — Model-compatible parameter builder
+// OpenAI changed the API contract between model families:
+//   - gpt-4o family       → max_tokens, top_p supported
+//   - gpt-5.x family      → max_completion_tokens required; top_p not supported
+// This helper ensures the correct parameter set is used regardless of which
+// model is configured in OPENAI_MAIN_MODEL, so alternating between
+// gpt-4o-mini / gpt-5.4-nano / gpt-5.4-mini requires no code changes.
+// ─────────────────────────────────────────────────────────────────────────────
+export function buildModelParams(
+  model: string,
+  tokens: number,
+  temperature?: number,
+  topP?: number,
+): Record<string, unknown> {
+  const isGPT5Family = /^gpt-5/i.test(model) || /^o[0-9]/i.test(model);
+  if (isGPT5Family) {
+    // GPT-5.x and o-series: max_completion_tokens, no top_p
+    return {
+      model,
+      max_completion_tokens: tokens,
+      // temperature is supported but top_p is not on these models
+      ...(temperature !== undefined ? { temperature } : {}),
+    };
+  }
+  // GPT-4o and earlier: max_tokens, top_p supported
+  return {
+    model,
+    max_tokens: tokens,
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(topP      !== undefined ? { top_p: topP }  : {}),
+  };
+}
+
 // server/mentors/mentor-engine.ts
 // LINGORA SEEK 3.8 — Mentor Engine
 // =============================================================================
@@ -415,14 +450,11 @@ export async function getMentorResponse(
 
     const completion = await Promise.race([
       openai.chat.completions.create({
-        model: RUNTIME_MODEL,
+        ...buildModelParams(RUNTIME_MODEL, 650, 0.7, 0.88),
         messages: [
           { role: 'system', content: system },
           { role: 'user',   content: user },
         ],
-        temperature: 0.7,
-        top_p:       0.88,
-        max_tokens:  650,
       }),
       timeout,
     ])
@@ -452,15 +484,12 @@ export async function getMentorResponseStream(
 
   try {
     const stream = await openai.chat.completions.create({
-      model:    RUNTIME_MODEL,
+      ...buildModelParams(RUNTIME_MODEL, 650, 0.7, 0.88),
       stream:   true,
       messages: [
         { role: 'system', content: system },
         { role: 'user',   content: user },
       ],
-      temperature: 0.7,
-      top_p:       0.88,
-      max_tokens:  650,
     })
 
     return (async function* () {
