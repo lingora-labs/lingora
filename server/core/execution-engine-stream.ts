@@ -76,6 +76,8 @@ import { ExecutionResult }                    from './execution-engine';
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
+import { buildModelParams } from '../mentors/mentor-engine';
+
 // SEEK 3.8 — Single model source of truth for the entire runtime.
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
@@ -432,7 +434,7 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
         try {
           const completion = await openai.chat.completions.create({
-            model: RUNTIME_MODEL, temperature: 0.3, max_tokens: 3000,
+            ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -637,4 +639,3 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
