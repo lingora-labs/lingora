@@ -55,6 +55,7 @@ import {
 } from '../../lib/contracts';
 
 import { advanceTutorPhase } from './state-manager';
+import { buildModelParams } from '../mentors/mentor-engine';
 
 // SEEK 3.8 — Single model source of truth.
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
@@ -449,9 +450,7 @@ Requirements:
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
         try {
           const completion = await openai.chat.completions.create({
-            model: RUNTIME_MODEL,
-            temperature: 0.3,
-            max_tokens: 3000,
+            ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -736,4 +735,3 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
-
