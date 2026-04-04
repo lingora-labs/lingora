@@ -177,27 +177,27 @@ export async function generateTableMatrixRich(params: {
   const prompt = `You are LINGORA's table generator. Generate a COLOR-CODED comparison table for: "${topic}"
 Student level: ${level}. Interface language: ${uiLanguage}.
 
-Return ONLY valid JSON with this exact structure — no markdown, no extra text:
+Return ONLY valid JSON with this exact structure - no markdown, no extra text:
 {
   "title": "Table title",
   "columns": [
     {"key": "concepto", "label": "CONCEPTO"},
     {"key": "uso_correcto", "label": "USO CORRECTO"},
-    {"key": "error_comun", "label": "ERROR COMÚN"},
+    {"key": "error_comun", "label": "ERROR COMUN"},
     {"key": "nota", "label": "NOTA"}
   ],
   "rows": [
     [
       {"text": "concept name", "tone": "info", "bold": true},
-      {"text": "correct usage or form", "tone": "ok", "icon": "✔️"},
-      {"text": "common error to avoid", "tone": "danger", "icon": "❌"},
-      {"text": "key tip or rule", "tone": "warn", "icon": "⚠️"}
+      {"text": "correct usage or form", "tone": "ok", "icon": "OK"},
+      {"text": "common error to avoid", "tone": "danger", "icon": "ERR"},
+      {"text": "key tip or rule", "tone": "warn", "icon": "TIP"}
     ]
   ]
 }
 
 RULES:
-- tone values: "ok" (correct/good), "danger" (error/wrong), "warn" (caution/note), "info" (neutral concept), "neutral" (plain)
+- tone values: ok (correct/good), danger (error/wrong), warn (caution/note), info (neutral concept), neutral (plain)
 - minimum 6 rows, maximum 10 rows
 - each row covers one distinct concept/verb/rule/structure
 - use the tone to make the table visually meaningful
