@@ -12,23 +12,34 @@ const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 // model is configured in OPENAI_MAIN_MODEL, so alternating between
 // gpt-4o-mini / gpt-5.4-nano / gpt-5.4-mini requires no code changes.
 // ─────────────────────────────────────────────────────────────────────────────
+// Explicit return type — ModelParams — so TypeScript can infer `model` and
+// token params when spread into openai.chat.completions.create({...}).
+// Record<string,unknown> was too loose and triggered "Property 'model' missing"
+// in strict Next.js type-check.
+export interface ModelParams {
+  model: string;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+}
+
 export function buildModelParams(
   model: string,
   tokens: number,
   temperature?: number,
   topP?: number,
-): Record<string, unknown> {
+): ModelParams {
   const isGPT5Family = /^gpt-5/i.test(model) || /^o[0-9]/i.test(model);
   if (isGPT5Family) {
-    // GPT-5.x and o-series: max_completion_tokens, no top_p
+    // GPT-5.x and o-series: max_completion_tokens required; top_p not supported
     return {
       model,
       max_completion_tokens: tokens,
-      // temperature is supported but top_p is not on these models
       ...(temperature !== undefined ? { temperature } : {}),
     };
   }
-  // GPT-4o and earlier: max_tokens, top_p supported
+  // GPT-4o and earlier: max_tokens + top_p both supported
   return {
     model,
     max_tokens: tokens,
