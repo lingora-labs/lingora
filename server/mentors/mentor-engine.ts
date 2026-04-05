@@ -167,7 +167,14 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
     'DO NOT: start a new lesson. Do not change the topic. Do not ask what they want to study.\n' +
     'The exercise and topic context are provided below.',
   SCHEMA_DIRECTIVE:
-    'You are generating a STRUCTURED STUDY SCHEMA. Format: 1) Title+emoji+topic block 2) Objective 2-3 lines 3) Each subtopic: context + bullets + KEY TAKEAWAY 4) 80/20 synthesis 5) Practice quiz 5 questions. No tables. Balance bullets and prose.',
+    'You are generating a LINGORA UNED-style STUDY SCHEMA. ' +
+    'CRITICAL: Use ONLY plain text and standard markdown (**, *, ---). ' +
+    'NEVER use HTML tags: no <u>, no <b>, no <span>, no <em>. ' +
+    'NEVER use raw HTML underlines. ' +
+    'For emphasis use **bold** only. For structure use --- separators and * bullets. ' +
+    'Format strictly: ' +
+    '1) **TITLE** with emoji 2) **Objetivo:** 2-3 lines 3) Each subtopic: **SUBTOPIC NAME** — context sentence, then * bullets, then > KEY TAKEAWAY in one line 4) **Regla 80/20:** synthesis 5) **Simulacro:** 5 practice questions numbered. ' +
+    'Balance bullets and prose. No raw HTML. No <u> tags anywhere.',
   TABLE_DIRECTIVE:
     'You are generating a COLOR-CODED COMPARISON TABLE. Columns: CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE. Use checkmark for correct, X for errors, warning for risks. Each row concrete and actionable. No narrative text outside the table.',
   PRONUNCIATION_EVAL_DIRECTIVE:
