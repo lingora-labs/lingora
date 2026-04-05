@@ -462,20 +462,45 @@ CONTENT RULES:
           if (!raw.trim()) {
             courseGenError = 'Model returned empty content for course generation.';
           } else {
-            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent & {
-              modules: Array<import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }>;
-            };
-            if (parsed.modules?.length > 0) {
-              // SEEK 3.9 — FIX-DENSITY adapter: merge 'development' into exercise
-              // so the existing PDF template renders the full content without
-              // requiring changes to generateCoursePdf.ts (not in our deploy set).
-              parsed.modules = parsed.modules.map(m => ({
-                ...m,
-                exercise: m.development
-                  ? `${m.exercise}\n\nDesarrollo: ${m.development}`
-                  : m.exercise,
-              }));
-              courseContent = parsed;
+            // SEEK 3.9 — TYPE-SAFE: deserialize as Record<string, unknown>, read
+            // development from raw structure, reconstruct CourseContent cleanly.
+            // Avoids TypeScript losing the extended type in .map() callbacks.
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            const rawModules = Array.isArray(parsed.modules)
+              ? parsed.modules as Array<Record<string, unknown>>
+              : [];
+
+            if (rawModules.length > 0) {
+              const normalizedModules = rawModules.map((m) => {
+                const exercise     = typeof m.exercise     === 'string' ? m.exercise     : '';
+                const development  = typeof m.development  === 'string' ? m.development  : '';
+                return {
+                  index: typeof m.index === 'number' ? m.index : 0,
+                  title: typeof m.title === 'string' ? m.title : 'Module',
+                  vocabulary: Array.isArray(m.vocabulary)
+                    ? (m.vocabulary as Array<[string, string]>)
+                    : [],
+                  grammar: typeof m.grammar === 'string' ? m.grammar : '',
+                  exercise: development
+                    ? `${exercise}\n\nDesarrollo: ${development}`
+                    : exercise,
+                  communicativeFunction: typeof m.communicativeFunction === 'string'
+                    ? m.communicativeFunction : '',
+                  tip: typeof m.tip === 'string' ? m.tip : '',
+                };
+              });
+              courseContent = {
+                mentorName:    typeof parsed.mentorName   === 'string' ? parsed.mentorName   : mentor,
+                level:         typeof parsed.level        === 'string' ? parsed.level        : level,
+                studentName:   typeof parsed.studentName  === 'string' ? parsed.studentName  : 'Estudiante',
+                courseTitle:   typeof parsed.courseTitle  === 'string' ? parsed.courseTitle  : `Curso — ${topic}`,
+                objective:     typeof parsed.objective    === 'string' ? parsed.objective    : '',
+                nativeLanguage:typeof parsed.nativeLanguage === 'string' ? parsed.nativeLanguage : lang,
+                totalModules:  typeof parsed.totalModules === 'number'  ? parsed.totalModules : normalizedModules.length,
+                modules:       normalizedModules,
+                nextStep:      typeof parsed.nextStep     === 'string' ? parsed.nextStep     : '',
+                generatedAt:   typeof parsed.generatedAt  === 'string' ? parsed.generatedAt  : now,
+              } as import('../tools/pdf/generateCoursePdf').CourseContent;
             } else {
               courseGenError = 'Model returned JSON with no modules.';
             }
