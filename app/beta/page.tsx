@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.8 — Beta Tutor Interface
+// LINGORA SEEK 3.9 — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -17,6 +17,11 @@
 //   FIX-8D   SEEK 3.1 Fase 0-A: ArtifactRender roadmap case updated to
 //            handle RoadmapBlock contract (modules[]) from execution-engine,
 //            with backward-compatible fallback for legacy steps[] shape.
+//   FIX-TRANSCRIPT-A  SEEK 3.9: export_chat_pdf suggested action now injects
+//            exportTranscript from msgs array so backend PDF contains real
+//            chat history (not just the trigger phrase).
+//   FIX-TRANSCRIPT-B  SEEK 3.9: sendComposer detects typed export intent and
+//            injects exportTranscript so PDF contains real chat history.
 // =============================================================================
 
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ChangeEvent } from 'react'
@@ -1247,9 +1252,6 @@ export default function BetaPage() {
                   })
                 }
                 // F3 — SEEK 3.4: always update artifact and suggestedActions on done.
-                // Previous condition (parsed.artifact || parsed.suggestedActions) could silently
-                // skip the update if the done chunk was split across network frames.
-                // Now unconditional: suggestedActions defaults to the export action if missing.
                 const defaultActions = [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' as const }];
                 const finalActions = (parsed.suggestedActions && parsed.suggestedActions.length > 0)
                   ? parsed.suggestedActions
@@ -1278,7 +1280,6 @@ export default function BetaPage() {
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
       addMsg({ sender: mentorRef.current, text: text || 'Material listo:',
         artifact: data.artifact ?? null, score: data.pronunciationScore,
-        // F3 — SEEK 3.4: ensure suggestedActions always has at least export action
         suggestedActions: (data.suggestedActions && data.suggestedActions.length > 0)
           ? data.suggestedActions
           : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' }] })
@@ -1314,11 +1315,26 @@ export default function BetaPage() {
       const actionKey = a.action ?? a.type ?? ''
       const msg = actionMessages[actionKey] ?? a.label
       addMsg({ sender: 'user', text: msg })
-      callAPI({ message: msg })
+      // FIX-TRANSCRIPT-A — SEEK 3.9: export_chat_pdf via suggested action button
+      // must include exportTranscript so the backend PDF contains the real chat
+      // history. Without this, only the trigger phrase arrives at the backend.
+      if (actionKey === 'export_chat_pdf') {
+        const transcript = msgs
+          .map(m => ({
+            sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
+            text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+          }))
+          .filter(l => l.text.length > 0)
+          .map(l => `[${l.sender}]: ${l.text}`)
+          .join('\n\n')
+        callAPI({ message: msg, exportTranscript: transcript })
+      } else {
+        callAPI({ message: msg })
+      }
     }
     window.addEventListener('lingora-suggested-action', handler)
     return () => window.removeEventListener('lingora-suggested-action', handler)
-  }, [loading, addMsg, callAPI])
+  }, [loading, addMsg, callAPI, msgs])
 
   // Roadmap step handler
   useEffect(() => {
@@ -1351,6 +1367,21 @@ export default function BetaPage() {
 
     const payload: Record<string, unknown> = {}
     if (hasText) payload.message = msg
+    // FIX-TRANSCRIPT-B — SEEK 3.9: detect export intent from typed message and
+    // inject exportTranscript so the backend PDF contains the real chat history.
+    // Without this, typing "Exporta esta conversación a PDF" produces an empty PDF.
+    const EXPORT_RE = /\bexport(a|ar)?\b.*\bpdf\b|\bexporta\b|export.*chat/i
+    if (hasText && EXPORT_RE.test(msg)) {
+      const transcript = msgs
+        .map(m => ({
+          sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
+          text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+        }))
+        .filter(l => l.text.length > 0)
+        .map(l => `[${l.sender}]: ${l.text}`)
+        .join('\n\n')
+      payload.exportTranscript = transcript
+    }
 
     if (hasAudio) {
       const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno', 'corrige mi pronunciación']
@@ -1717,3 +1748,4 @@ export default function BetaPage() {
     </>
   )
 }
+
