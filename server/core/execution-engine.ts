@@ -377,46 +377,75 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+        // SEEK 3.9 — FIX-TOPIC: resolvedTopic must use the pedagogically active
+        // topic, not the literal request message ("hazme un curso en PDF").
+        // Priority: plan.resolvedTopic → lastConcept → currentLessonTopic → message.
+        // This prevents the meta-topic ("pedir un curso en PDF") from becoming
+        // the course subject when the conversation already has an active theme.
         const topic    = ctx.plan.resolvedTopic
+          || ctx.state.currentLessonTopic?.trim()
+          || (ctx.state.lastConcept?.trim() && ctx.state.lastConcept !== 'Spanish grammar'
+              ? ctx.state.lastConcept
+              : null)
           || resolveSchemaTopicFromState(ctx.request.message, ctx.state, '');
         const level    = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'A1';
         const lang     = ctx.state.interfaceLanguage ?? 'en';
         const mentor   = ctx.state.mentorProfile ?? 'Sarah';
         const now      = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
-        const coursePrompt = `You are LINGORA's course generator. Produce a complete Spanish course as valid JSON.
-Topic: "${topic}". Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+        // SEEK 3.9 — FIX-DENSITY: topic thematic isolation.
+        // If topic is a non-Spanish domain (acupuncture, medicine, law, business, etc.)
+        // the course teaches SPANISH LANGUAGE SKILLS for that domain — NOT the domain itself.
+        // The course title and modules must reflect: "Spanish for [domain]", not "[domain] theory".
+        const isSpanishDomain = /gramatica|grammar|vocabulario|vocabulary|subjuntivo|tiempos|verbos|pronunciacion|conjugacion|dele|ccse|siele|presentacion|saludos|restaurante|viaje|travel|negocios|business|conversacion/i.test(topic);
+        const domainFrame = isSpanishDomain
+          ? `The course is about the Spanish language topic: "${topic}".`
+          : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
+
+        const coursePrompt = `You are LINGORA's course generator. Produce a complete, dense, pedagogically rich Spanish course as valid JSON.
+
+${domainFrame}
+Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+
+DENSITY REQUIREMENTS — MANDATORY (this is the most important instruction):
+- vocabulary: MINIMUM 8 pairs per module, MAXIMUM 12. Include full-sentence usage examples.
+- grammar: 3-5 sentences explaining the rule, its exceptions, and a memory anchor.
+- exercise: 3-part exercise: (1) fill-in-the-blank, (2) production sentence, (3) real-world micro-simulation.
+- development: a 60-100 word paragraph developing the module theme with examples, context, and cultural notes.
+- communicativeFunction: what the student CAN DO after this module (start with "Puedes...").
+- tip: DELE/UNED-style strategy tip, memory hook, or cultural insight (2-3 sentences).
 
 Return ONLY valid JSON matching this exact structure (no markdown, no extra text):
 {
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string — course title in the student's language",
-  "objective": "string — 2-3 sentence learning objective",
+  "courseTitle": "string — specific, engaging course title in the interface language",
+  "objective": "string — 3-4 sentence learning objective explaining practical outcomes",
   "nativeLanguage": "${lang}",
   "totalModules": 5,
   "modules": [
     {
       "index": 1,
-      "title": "string",
-      "vocabulary": [["spanish word", "translation/definition"], ...],
-      "grammar": "string — the 80/20 core grammar rule in one sentence",
-      "exercise": "string — one production exercise the student completes",
-      "communicativeFunction": "string — what the student CAN DO after this module",
-      "tip": "string — one practical tip, cultural note, or DELE strategy"
+      "title": "string — specific module title",
+      "vocabulary": [["spanish word or phrase", "translation + usage note"], ...],
+      "grammar": "string — 3-5 sentences: rule, exception, memory anchor",
+      "exercise": "string — 3-part exercise with instructions for each part",
+      "development": "string — 60-100 word paragraph developing the theme with examples",
+      "communicativeFunction": "string — starts with Puedes...",
+      "tip": "string — 2-3 sentence DELE/UNED tip or cultural insight"
     }
   ],
-  "nextStep": "string — recommended next step after completing this course",
+  "nextStep": "string — specific recommended next step with action",
   "generatedAt": "${now}"
 }
 
-Requirements:
-- Exactly 5 modules, each addressing a distinct sub-topic of "${topic}"
-- vocabulary: 4-6 pairs per module, level-appropriate
-- grammar: one actionable rule, not an abstract definition
-- exercise: a concrete sentence or task the student produces
-- All content pedagogically appropriate for CEFR ${level}`;
+CONTENT RULES:
+- Exactly 5 modules covering distinct sub-topics of the theme
+- Each module must be COMPLETE and SELF-CONTAINED — no placeholders, no "etc."
+- vocabulary minimum 8 pairs — no exceptions
+- All content CEFR ${level} appropriate
+- If the topic is a non-Spanish domain, every module must frame content around SPANISH USE, not domain theory`;
 
         // SEEK 3.9 — F1: capture LLM/parse errors explicitly and return honest text
         // instead of silently returning {} which causes mentor fallback "No pude generar".
@@ -425,7 +454,7 @@ Requirements:
 
         try {
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
+            ...buildModelParams(RUNTIME_MODEL, 4500, 0.3),
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -433,8 +462,19 @@ Requirements:
           if (!raw.trim()) {
             courseGenError = 'Model returned empty content for course generation.';
           } else {
-            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent & {
+              modules: Array<import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }>;
+            };
             if (parsed.modules?.length > 0) {
+              // SEEK 3.9 — FIX-DENSITY adapter: merge 'development' into exercise
+              // so the existing PDF template renders the full content without
+              // requiring changes to generateCoursePdf.ts (not in our deploy set).
+              parsed.modules = parsed.modules.map(m => ({
+                ...m,
+                exercise: m.development
+                  ? `${m.exercise}\n\nDesarrollo: ${m.development}`
+                  : m.exercise,
+              }));
               courseContent = parsed;
             } else {
               courseGenError = 'Model returned JSON with no modules.';
@@ -623,11 +663,27 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
     .map(o => o.text)
     .filter((t): t is string => !!t && t.trim() !== '');
 
-  const message = textParts.join('\n\n') || buildFallbackMessage(plan, ctx.state.interfaceLanguage);
-
+  // SEEK 3.9 — FIX-PDF-MSG: artifact must be resolved BEFORE message so the
+  // success-message branch can reference artifact.type without forward-reference error.
+  // IS-flagged build risk: original code used artifact before declaration — fixed here.
   const toolArtifact   = outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact;
   const mentorArtifact = outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
   const artifact       = toolArtifact ?? mentorArtifact;
+
+  // Now that artifact is resolved, compute message with full context.
+  // When a blocking hard-override produced an artifact but no mentor text,
+  // textParts is empty and the old code fell through to buildFallbackMessage —
+  // the user saw an error even though the PDF was generated successfully.
+  const lang = ctx.state.interfaceLanguage ?? 'en';
+  let message: string;
+  if (textParts.length > 0) {
+    message = textParts.join('\n\n');
+  } else if (artifact && plan.blocking && plan.priority >= 100) {
+    // Blocking hard-override produced an artifact — communicate success, not error
+    message = buildArtifactSuccessMessage(artifact.type, lang);
+  } else {
+    message = buildFallbackMessage(plan, lang);
+  }
 
   const statePatch: StatePatch = outputs.reduce(
     (acc, o) => (o.patch ? { ...acc, ...o.patch } : acc),
@@ -732,6 +788,37 @@ function toStepResult(output: StepOutput, plan: ExecutionPlan): ExecutionStepRes
     error: output.error,
     producedArtifacts: output.artifact ? [output.artifact.type] : [],
   };
+}
+
+// SEEK 3.9 — FIX-PDF-MSG: success message when blocking tool produced artifact.
+// Called when textParts is empty but artifact exists — avoids false error feedback.
+function buildArtifactSuccessMessage(artifactType: string, lang: string): string {
+  const msgs: Record<string, Record<string, string>> = {
+    course_pdf: {
+      en: 'Your course PDF is ready. You can download it below.',
+      es: 'Tu curso en PDF está listo. Puedes descargarlo a continuación.',
+      no: 'Kurset ditt i PDF er klart. Du kan laste det ned nedenfor.',
+      it: 'Il tuo corso in PDF è pronto. Puoi scaricarlo qui sotto.',
+      fr: 'Ton cours en PDF est prêt. Tu peux le télécharger ci-dessous.',
+      de: 'Dein PDF-Kurs ist fertig. Du kannst ihn unten herunterladen.',
+    },
+    pdf_chat: {
+      en: 'Conversation exported to PDF. You can download it below.',
+      es: 'Conversación exportada a PDF. Puedes descargarla a continuación.',
+      no: 'Samtalen er eksportert til PDF. Du kan laste den ned nedenfor.',
+      it: 'Conversazione esportata in PDF. Puoi scaricarla qui sotto.',
+      fr: 'Conversation exportée en PDF. Tu peux la télécharger ci-dessous.',
+      de: 'Gespräch als PDF exportiert. Du kannst es unten herunterladen.',
+    },
+    pdf: {
+      en: 'Your PDF is ready.',
+      es: 'Tu PDF está listo.',
+      no: 'PDF-en din er klar.',
+    },
+  };
+  return msgs[artifactType]?.[lang]
+    ?? msgs[artifactType]?.['en']
+    ?? 'PDF ready.';
 }
 
 // SEEK 3.9 — buildFallbackMessage is only reached when ALL steps produced no text.
