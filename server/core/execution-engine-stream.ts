@@ -431,8 +431,13 @@ Exactly 5 modules. Minimum 8 vocabulary pairs each. CEFR ${level}. No placeholde
               modules: Array<import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }>;
             };
             if (parsed.modules?.length > 0) {
-              // SEEK 3.9 — FIX-DENSITY adapter (stream parity): merge development into exercise
-              parsed.modules = parsed.modules.map(m => ({
+              // SEEK 3.9 — FIX-DENSITY adapter (stream parity): merge development into exercise.
+              // IS fix: explicit retype before map so TypeScript preserves { development?: string }
+              // and does not narrow m back to CourseModule in the callback.
+              const modulesWithDevelopment = parsed.modules as Array<
+                import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }
+              >;
+              parsed.modules = modulesWithDevelopment.map((m) => ({
                 ...m,
                 exercise: m.development
                   ? `${m.exercise}\n\nDesarrollo: ${m.development}`
