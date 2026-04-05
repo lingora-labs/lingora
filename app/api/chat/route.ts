@@ -1,9 +1,16 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.8 — Thin Router (Entry Point)
+// LINGORA SEEK 3.9 — Thin Router (Entry Point)
 // =============================================================================
-// SEEK-3.7: topic persistence (lastConcept), universal TTS, neutral first turn.
-// *1357*# diagnostic + *2468*# pipeline tracer active.
+// SEEK 3.9 CHANGES:
+//   T1 — *1357*#: architecture string bumped to 'SEEK-3.9'.
+//        IMPORTANT: update Vercel env vars to match:
+//          LINGORA_BUILD_SIGNATURE = seek-3.9-<your-commit-hash>
+//          LINGORA_COMMIT_HINT     = SEEK 3.9 — honest course errors
+//   T2 — *2468*#: allPdfPipelinesActive logic fixed. Previous formula used
+//        `!t.testCase.includes('pdf')` which incorrectly short-circuited
+//        generate_course_pdf when it was labeled without 'pdf' in testCase.
+//        New formula: checks pdfWillFire explicitly for both PDF test cases.
 // =============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,18 +30,18 @@ import {
 } from '../../../server/core/state-manager';
 
 import { classifyIntent } from '../../../server/core/intent-router';
-import { orchestrate } from '../../../server/core/orchestrator';
-import { executePlan } from '../../../server/core/execution-engine';
+import { orchestrate }    from '../../../server/core/orchestrator';
+import { executePlan }    from '../../../server/core/execution-engine';
 import { executePlanStream } from '../../../server/core/execution-engine-stream';
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
-export const runtime = 'nodejs';
+export const runtime     = 'nodejs';
 export const maxDuration = 60;  // SEEK 3.8: restored — 30s caused timeouts on course PDF generation
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
 const BUILD_SIG         = process.env.LINGORA_BUILD_SIGNATURE ?? 'unset';
-const COMMIT_HINT       = process.env.LINGORA_COMMIT_HINT ?? 'SEEK-3.1';
+const COMMIT_HINT       = process.env.LINGORA_COMMIT_HINT ?? 'SEEK-3.9';
 
 export async function POST(req: NextRequest): Promise<NextResponse | Response> {
   let callerState: SessionState | undefined;
@@ -66,8 +73,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     callerState = baseState;
     const validation = validateStateInvariants(baseState);
-    // SEEK 3.7: always run repairState to normalize structural issues (e.g. module indexes)
-    // even when there are no hard errors — warnings can indicate silent state corruption.
     const state = repairState(baseState, validation.errors);
     const stateValidationStatus = validation.valid ? 'passed' : 'repaired';
 
@@ -80,7 +85,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       const diagPayload = {
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      'SEEK-3.8',  // SEEK 3.7 — topic persistence + universal TTS + neutral first turn
+        architecture:      'SEEK-3.9',  // T1 — bumped from SEEK-3.8
         runtime:           'LINGORA-ARCH-9.11',
         timestamp:         new Date().toISOString(),
         orchestratorActive: true,
@@ -100,13 +105,10 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       });
     }
 
-    // ── SEEK 3.5 PIPELINE TRACER — *2468*# ───────────────────────────────────
-    // Live diagnosis: runs the full intent→orchestrate pipeline against two
-    // known PDF test inputs and returns the exact decisions the system makes.
-    // Does NOT call OpenAI. Does NOT produce artifacts. Pure routing trace.
+    // ── SEEK 3.9 PIPELINE TRACER — *2468*# ───────────────────────────────────
     if (message?.trim() === '*2468*#') {
       const testCases = [
-        { label: 'export_chat_pdf',    msg: 'Exporta esta conversación a PDF' },
+        { label: 'export_chat_pdf',    msg: 'Exporta esta conversacion a PDF' },
         { label: 'generate_course_pdf', msg: 'Quiero un curso completo A0-A2 en PDF' },
         { label: 'table_matrix',        msg: 'Dame una tabla de 8 columnas de ser y estar' },
       ];
@@ -142,18 +144,25 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
               action:   s.action,
             })),
           },
-          pdfWillFire: testPlan.executionOrder.some(s => s.executor === 'tool_pdf'),
+          pdfWillFire:      testPlan.executionOrder.some(s => s.executor === 'tool_pdf'),
           mentorIntercepts: testPlan.executionOrder.every(s => s.executor === 'mentor'),
         };
       });
 
+      // SEEK 3.9 — T2: allPdfPipelinesActive now explicitly checks both PDF test cases.
+      // Old formula: traces.every(t => t.pdfWillFire || !t.testCase.includes('pdf'))
+      // was a logical short-circuit that could report true even when course PDF failed.
+      const pdfTraces = traces.filter(t =>
+        t.testCase === 'export_chat_pdf' || t.testCase === 'generate_course_pdf',
+      );
+      const allPdfPipelinesActive = pdfTraces.every(t => t.pdfWillFire);
+      const noMentorInterceptionOnPdf = pdfTraces.every(t => !t.mentorIntercepts);
+
       const summary = {
-        allPdfPipelinesActive: traces.every(t => t.pdfWillFire || !t.testCase.includes('pdf')),
-        noMentorInterception: traces
-          .filter(t => t.testCase.includes('pdf'))
-          .every(t => !t.mentorIntercepts),
+        allPdfPipelinesActive,
+        noMentorInterception: noMentorInterceptionOnPdf,
         streamingEnabled: STREAMING_ENABLED,
-        architecture: 'SEEK-3.8',
+        architecture: 'SEEK-3.9',
         timestamp: new Date().toISOString(),
       };
 
@@ -173,10 +182,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       (hasFiles && files?.some(f => f.type?.startsWith('audio/') || f.type === 'video/webm'))
     );
 
-    // G4 — SEEK 3.3: when gallery audio is attached, the composer text disappears
-    // and the backend receives the filename (e.g. "6c83090c-84a4.webm") as the message.
-    // Normalize: if message looks like an audio filename, treat as empty string so
-    // the intent-router can classify it correctly as a transcription request.
     const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
     const normalizedMessage =
       hasAudio && (message ?? '').trim() !== '' && AUDIO_FILENAME_RE.test((message ?? '').trim())
@@ -199,12 +204,11 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const plan = orchestrate(ctx);
 
     const chatRequest: ChatRequest = {
-      message: normalizedMessage,  // G4: use normalized message (filename → empty)
+      message: normalizedMessage,
       state,
       files,
       audioDataUrl,
       audioMimeType,
-      // F-B3: propagate exportTranscript so execution-engine can use real chat history for PDF
       exportTranscript: body.exportTranscript,
     };
 
