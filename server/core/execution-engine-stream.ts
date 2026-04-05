@@ -1,7 +1,13 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.8 — Streaming Execution Engine
+// LINGORA SEEK 3.9 — Streaming Execution Engine
 // =============================================================================
+//
+// SEEK 3.9 CHANGES:
+//   F1 — generateCoursePdf (stream): LLM/parse failure → honest error delta
+//        instead of silent {} return. Parity with execution-engine.ts F1.
+//   F2 — PDF render failure in stream path also surfaces as honest delta.
+//   F3 — Header bumped to SEEK-3.9.
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
@@ -13,51 +19,14 @@
 //     data: {"delta":"...commercial suffix..."}\n\n      (0–1 times, if triggered)
 //     data: {"done":true,"state":{...},...}\n\n          (exactly once)
 //
-//   Commercial parity:
-//     The commercial suffix is emitted as a FINAL delta event, immediately
-//     before the terminal done. This ensures it is accumulated by the frontend
-//     into the same message as the mentor text — identical to the JSON branch
-//     where it is appended to result.message before returning.
-//
-//     JSON:  message = mentorText + "\n\n" + commercialSuffix  →  in ChatResponse.message
-//     SSE:   delta(mentorText) + delta(commercialSuffix)        →  accumulated in frontend
-//     Result: user sees same content in both branches. ✅
-//
-// ── getMentorResponseStream — REQUIRED EXTENSION ────────────────────────────
-//
-//   SEEK 2.6 mentor-engine.ts only exports getMentorResponse() (non-streaming).
-//   The streaming branch requires getMentorResponseStream() which must be added
-//   to mentor-engine.ts as part of Sprint 2.7.
-//
-//   Required contract (formal declaration):
-//
-//     export async function getMentorResponseStream(params: {
-//       request:      ChatRequest;
-//       state:        SessionState;
-//       plan:         ExecutionPlan;
-//       priorContext: string;
-//       action:       string;
-//     }): Promise<AsyncGenerator<string>>
-//
-//   Until getMentorResponseStream() is implemented in mentor-engine.ts,
-//   the stream engine falls back to getMentorResponse() and emits the complete
-//   text as a single delta. This preserves the SSE wire format contract and
-//   keeps the frontend compatible, at the cost of no incremental streaming
-//   for the mentor text. The fallback is declared explicitly and logs a warning.
-//
 // ── INVARIANTS ────────────────────────────────────────────────────────────────
 //   1. ORDER: Steps walk executionOrder ascending. No grouping by executor.
 //   2. DEPENDSON: Failure → visible degraded step, not silent skip.
-//   3. MENTOR GATE: executor='mentor' always runs. plan.mentor is metadata only.
+//   3. MENTOR GATE: executor='mentor' always runs.
 //   4. PATCH/STATE: buildStatePatch() → StatePatch (delta).
 //                   mergeStatePatch() → updatedState (final).
-//                   Terminal done emits updatedState, not statePatch.
-//   5. COMMERCIAL: Emitted as final delta before done (observable in UI).
-//                  Evaluated with post-merge updatedState — same as JSON branch.
+//   5. COMMERCIAL: Emitted as final delta before done.
 //
-// Commit   : fix(execution-engine-stream): commercial as final delta for UI
-//            observability; getMentorResponseStream formally declared;
-//            fallback to getMentorResponse if stream variant unavailable
 // =============================================================================
 
 import {
@@ -78,11 +47,11 @@ import { evaluateCommercial }                 from './commercial-engine-adapter'
 
 import { buildModelParams } from '../mentors/mentor-engine';
 
-// SEEK 3.8 — Single model source of truth for the entire runtime.
+// Single model source of truth — change via OPENAI_MAIN_MODEL env var.
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SSE WIRE FORMAT — exactly what app/beta/page.tsx SEEK 2.6 consumes
+// SSE WIRE FORMAT
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SSEDelta { delta: string; }
@@ -107,6 +76,7 @@ interface StepOutput {
   durationMs: number;
   success:    boolean;
   error?:     string;
+  isUserVisibleError?: boolean; // SEEK 3.9 — F3: explicit honest-error signal (stream parity)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,18 +104,12 @@ export function executePlanStream(
           (a, b) => a.order - b.order,
         );
 
-        // ── Walk steps in exact plan order ────────────────────────────────
         for (const step of orderedSteps) {
 
-          // dependsOn resolution
-          // SEEK 3.8 — If dep step failed but THIS step is a mentor step in a hybrid plan,
-          // attempt the mentor anyway with empty priorContext rather than silently skipping.
-          // Silent skips leave the user with a blank screen — that is never acceptable.
           if (step.dependsOn !== undefined) {
             const dep = priorResults.get(step.dependsOn);
             if (!dep || !dep.success) {
               if (step.executor === 'mentor') {
-                // Mentor can run without artifact — continue with empty priorContext
                 console.warn(`[stream] step ${step.order}: dep ${step.dependsOn} failed — running mentor with empty context`);
               } else {
                 priorResults.set(step.order, degradedStep(step, `dep ${step.dependsOn} failed`));
@@ -157,7 +121,7 @@ export function executePlanStream(
 
           const priorText = collectPriorText(priorResults, step.order);
 
-          // ── MENTOR STEP — always executes; streams if possible ────────────
+          // ── MENTOR STEP ───────────────────────────────────────────────────
           if (step.executor === 'mentor') {
             if (!plan.mentor) {
               console.warn(`[stream] step ${step.order}: plan.mentor missing — will use default directive`);
@@ -167,14 +131,13 @@ export function executePlanStream(
               const { getMentorResponseStream, getMentorResponse } = await import('../mentors/mentor-engine');
 
               if (typeof getMentorResponseStream === 'function') {
-                // ── Streaming path (Sprint 2.7+ when getMentorResponseStream exists) ──
                 const stream = await getMentorResponseStream({
                   request, state, plan, priorContext: priorText, action: step.action,
                 });
                 let fullText = '';
                 for await (const delta of stream) {
                   fullText += delta;
-                  emit({ delta }); // frontend accumulates
+                  emit({ delta });
                 }
                 priorResults.set(step.order, {
                   stepOrder: step.order, executor: 'mentor',
@@ -182,14 +145,11 @@ export function executePlanStream(
                 });
 
               } else {
-                // ── Fallback path (SEEK 2.6 mentor-engine without stream variant) ──
-                // Emits complete mentor text as a single delta.
-                // SSE wire format is preserved; incremental streaming is not available.
                 console.warn(`[stream] getMentorResponseStream not found — falling back to getMentorResponse`);
                 const fullText = await getMentorResponse({
                   request, state, plan, priorContext: priorText, action: step.action,
                 });
-                emit({ delta: fullText }); // single delta — still valid SSE
+                emit({ delta: fullText });
                 priorResults.set(step.order, {
                   stepOrder: step.order, executor: 'mentor',
                   text: fullText, durationMs: Date.now() - start, success: true,
@@ -199,8 +159,6 @@ export function executePlanStream(
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               console.error(`[stream] mentor step ${step.order} failed:`, msg);
-              // SEEK 3.8 — Emit a visible, dignified degradation message instead of silence.
-              // A blank stream is worse than an honest error. The user must see SOMETHING.
               const is429 = msg.includes('429') || msg.toLowerCase().includes('quota');
               const lang = state.interfaceLanguage ?? 'en';
               const degradedMsg = getDegradedMentorMessage(lang, is429);
@@ -211,45 +169,40 @@ export function executePlanStream(
               });
             }
 
-          // ── NON-MENTOR STEP — execute synchronously ───────────────────────
+          // ── NON-MENTOR STEP ───────────────────────────────────────────────
           } else {
             const output = await executeSyncStep(plan, step, request, state, priorText);
             priorResults.set(step.order, output);
-            // Non-mentor artifacts travel in terminal done event — not mid-stream
+
+            // SEEK 3.9 — F3: emit honest error text as immediate delta only when
+            // the step explicitly flagged it as a user-visible error.
+            // Using !output.success was too broad — it could classify legitimate
+            // text outputs (transcription, attachment, knowledge) as errors.
+            if (output.isUserVisibleError && output.text) {
+              emit({ delta: output.text });
+            }
           }
         }
 
-        // ── Build statePatch (delta) ───────────────────────────────────────
         const statePatch   = buildStatePatch(plan, state, priorResults);
-
-        // ── Merge → updatedState (final) ──────────────────────────────────
-        // These two are kept separate throughout.
-        // Terminal event emits updatedState (not statePatch).
         const updatedState = mergeStatePatch(state, statePatch);
 
-        // ── Artifact ──────────────────────────────────────────────────────
         const outputs = Array.from(priorResults.values());
         const artifact =
           outputs.find(o => o.artifact && o.executor !== 'mentor')?.artifact
           ?? outputs.find(o => o.artifact && o.executor === 'mentor')?.artifact;
 
-        // ── Suggested actions ─────────────────────────────────────────────
-        const suggestedActions = buildSuggestedActions(plan, artifact, updatedState);
+        // SEEK 3.9 — F3: detect honest error in stream outputs, same logic as JSON engine.
+        const hasErrorText = outputs.some(o => o.isUserVisibleError === true && o.text);
+        const suggestedActions = buildSuggestedActions(plan, artifact, updatedState, hasErrorText);
 
-        // ── Commercial — evaluated post-merge with updatedState ───────────
-        // Parity: same evaluateCommercial(), same updatedState, same timing as JSON.
-        // Observable: emitted as a final DELTA before done, so frontend accumulates
-        // it into the same message as mentor text — identical user experience to JSON.
         if (!plan.blocking) {
           const commercial = await evaluateCommercial(updatedState, plan);
           if (commercial.triggered && commercial.message) {
-            // Emit as final delta: "\n\n" + suffix — same separator as JSON branch
             emit({ delta: `\n\n${commercial.message}` });
           }
         }
 
-        // ── Terminal event — frontend wire format ─────────────────────────
-        // state: updatedState (already merged) — not statePatch
         const donePayload: SSEDone = {
           done:  true,
           state: updatedState,
@@ -262,7 +215,6 @@ export function executePlanStream(
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Stream error';
         console.error('[stream] fatal:', msg);
-        // Terminal event even on fatal — frontend must not hang
         emit({
           done:  true,
           state: mergeStatePatch(state, { tokens: (state.tokens ?? 0) + 1 }),
@@ -275,7 +227,6 @@ export function executePlanStream(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE PATCH BUILDER
-// Mirrors execution-engine.ts compileResult() lines 381–408 exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildStatePatch(
@@ -292,9 +243,6 @@ function buildStatePatch(
 
   patch.tokens = (state.tokens ?? 0) + 1;
 
-  // SEEK 3.7 — Mirror of execution-engine.ts: persist resolvedTopic to lastConcept.
-  // Stream engine must write the same state as the JSON engine. Without this,
-  // topic continuity only works when streaming is disabled.
   const resolvedTopic = plan.resolvedTopic?.trim();
   if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
     patch.lastConcept = resolvedTopic;
@@ -310,10 +258,10 @@ function buildStatePatch(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYNC DISPATCHER — mirrors execution-engine.ts
+// SYNC DISPATCHER
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; }
+interface SyncOut { text?: string; artifact?: ArtifactPayload; patch?: StatePatch; isUserVisibleError?: boolean; }
 
 async function executeSyncStep(
   plan: ExecutionPlan,
@@ -328,7 +276,12 @@ async function executeSyncStep(
     return {
       stepOrder: step.order, executor: step.executor,
       text: out.text, artifact: out.artifact, patch: out.patch,
-      durationMs: Date.now() - start, success: true,
+      durationMs: Date.now() - start,
+      // SEEK 3.9 — F3: preserve explicit error signal from dispatcher.
+      // success stays true (step ran without throwing).
+      // isUserVisibleError is the only signal used to emit an immediate delta.
+      success: true,
+      isUserVisibleError: out.isUserVisibleError,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -347,9 +300,6 @@ async function dispatchSync(
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
-      // SEEK 3.7 — Parity with execution-engine.ts: use plan.resolvedTopic first,
-      // then fall back to priorContext (mentor output) or request.message.
-      // Using raw request.message here was the parity gap that caused topic drift in streaming.
       const topic = plan.resolvedTopic?.trim()
         || (priorContext?.trim() && priorContext.length > 4 ? priorContext : null)
         || request.message;
@@ -362,14 +312,12 @@ async function dispatchSync(
         data,
         state.confirmedLevel ?? state.userLevel,
       );
-      // SEEK 3.8 — Parity with execution-engine.ts: persist topic immediately.
-      // buildStatePatch() also writes lastConcept, but this guarantees artifact
-      // branch sovereignty even if streaming path diverges.
       const topicPatch = (topic && topic !== 'Spanish grammar')
         ? { lastConcept: topic }
         : undefined;
       return { artifact, patch: topicPatch };
     }
+
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = state.lastConcept ?? 'LINGORA Study Guide';
@@ -390,14 +338,13 @@ async function dispatchSync(
             : undefined,
         };
       }
+
       if (step.action === 'generateCoursePdf') {
-        // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
-        // No intermediate text → parser. One typed object → professional template.
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
         const topic  = priorContext?.trim() || request.message?.trim()
-          || state.lastConcept || state.curriculumPlan?.topic || 'Español general';
+          || state.lastConcept || state.curriculumPlan?.topic || 'Espanol general';
         const level  = state.confirmedLevel ?? state.userLevel ?? 'A1';
         const lang   = state.interfaceLanguage ?? 'en';
         const mentor = state.mentorProfile ?? 'Sarah';
@@ -431,7 +378,10 @@ Return ONLY valid JSON matching this exact structure (no markdown, no extra text
 }
 Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 
+        // SEEK 3.9 — F1 (stream parity): capture errors explicitly.
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
+        let courseGenError: string | null = null;
+
         try {
           const completion = await openai.chat.completions.create({
             ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
@@ -439,26 +389,58 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
             messages: [{ role: 'user', content: coursePrompt }],
           });
           const raw = completion.choices?.[0]?.message?.content ?? '';
-          const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
-          if (parsed.modules?.length > 0) courseContent = parsed;
+          if (!raw.trim()) {
+            courseGenError = 'Model returned empty content.';
+          } else {
+            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+            if (parsed.modules?.length > 0) {
+              courseContent = parsed;
+            } else {
+              courseGenError = 'Model returned JSON with no modules.';
+            }
+          }
         } catch (e) {
-          console.error('[stream] generateCoursePdf: JSON parse failed:', e);
+          courseGenError = e instanceof Error ? e.message : String(e);
+          console.error('[stream] generateCoursePdf: LLM/parse failed:', courseGenError);
         }
 
-        if (!courseContent) return {};
+        // SEEK 3.9 — F1: honest error text, not silent {}.
+        // executeSyncStep() detects text+no-artifact → marks success:false → emits delta.
+        if (!courseContent) {
+          const errorMsgs: Record<string, string> = {
+            en: `Could not generate the course for "${topic}" right now. The content engine returned an error. Please try again in a moment.`,
+            es: `No se pudo generar el curso sobre "${topic}" en este momento. El motor de contenido devolvio un error. Intentalo de nuevo en un instante.`,
+            no: `Kunne ikke generere kurset om "${topic}" akkurat na. Innholdsmotoren returnerte en feil. Proev igjen om et oyeblikk.`,
+          };
+          console.error(`[stream] generateCoursePdf: aborting — ${courseGenError}`);
+          return { text: errorMsgs[lang] ?? errorMsgs['en'], isUserVisibleError: true };
+        }
 
         const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
         console.log(`[PDF:stream] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
         console.log(`[PDF:stream] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
-        if (!result.success) console.error(`[PDF:stream] error: ${result.error} — ${result.message}`);
+
+        if (!result.success) {
+          console.error(`[PDF:stream] error: ${result.error} — ${result.message}`);
+          // SEEK 3.9 — F2: PDF render failure → honest delta, not silence.
+          const pdfErrorMsgs: Record<string, string> = {
+            en: `The course content was generated but the PDF could not be rendered. Error: ${result.error ?? 'unknown'}. Please try again.`,
+            es: `El contenido del curso se genero pero el PDF no pudo renderizarse. Error: ${result.error ?? 'desconocido'}. Intentalo de nuevo.`,
+            no: `Kursinnholdet ble generert, men PDF-en kunne ikke gjengis. Proev igjen.`,
+          };
+          return { text: pdfErrorMsgs[lang] ?? pdfErrorMsgs['en'], isUserVisibleError: true };
+        }
+
         return { artifact: result.success
           ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
           : undefined };
       }
+
       const result = await generatePDF({ title, content: request.message });
       return { artifact: result.success ? { type: 'pdf' as const, title, url: result.url, dataUrl: result.url } : undefined };
     }
+
     case 'tool_image': {
       const { generateImage } = await import('../tools/image-generator');
       const prompt = priorContext || request.message;
@@ -473,15 +455,12 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
       }
       return {};
     }
-    case 'tool_audio': {
 
-      // FIX-EE3 (stream): generateTTS step — speak only the mentor response (priorContext)
+    case 'tool_audio': {
       if (step.action === 'generateTTS') {
         const { generateSpeech } = await import('../tools/audio-toolkit');
         const textToSpeak = priorContext?.trim() || request.message?.trim();
         if (!textToSpeak) return {};
-        // F4 — SEEK 3.4: map mentor identity to correct voice (was 'nova' hardcoded)
-        // execution-engine-stream.ts missed the G2 fix applied to execution-engine.ts
         const STREAM_MENTOR_VOICES: Record<string, string> = {
           sarah: 'shimmer',
           alex:  'fable',
@@ -496,7 +475,6 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
         return {};
       }
 
-      // default: transcribe audio input
       const { transcribeAudio } = await import('../tools/audio-toolkit');
 
       let audioData: { data: string; format: string } | null = null;
@@ -515,16 +493,15 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
-      // SEEK 3.7 — Parity with execution-engine.ts: persist transcript to state.
       const transcriptText = result.success ? result.text : undefined;
       return {
         text: transcriptText,
         patch: transcriptText ? { lastUserAudioTranscript: transcriptText } : undefined,
       };
     }
+
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
-      // Map AttachedFile[] to the shape processAttachment expects
       const filesToProcess = (request.files ?? []).map(f => ({
         name: f.name,
         type: f.type,
@@ -538,11 +515,13 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
       const text = r?.extractedTexts?.[0] ?? undefined;
       return { text };
     }
+
     case 'knowledge': {
       const { getRagContext } = await import('../knowledge/rag');
       const result = await getRagContext(request.message);
       return { text: result?.text ?? undefined };
     }
+
     case 'diagnostic': {
       const { evaluateLevel } = await import('./diagnostics');
       const sampleCount = (state.diagnosticSamples ?? 0) + 1;
@@ -561,9 +540,11 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
       };
       return { patch };
     }
+
     case 'tool_storage':
     case 'commercial':
       return {};
+
     default:
       console.warn(`[stream] unknown executor "${step.executor}" — skipping`);
       return {};
@@ -571,15 +552,23 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SUGGESTED ACTIONS — identical to execution-engine.ts
+// SUGGESTED ACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildSuggestedActions(
   plan: ExecutionPlan,
   artifact: ArtifactPayload | undefined,
   state: SessionState,
+  hasErrorText = false,
 ): SuggestedAction[] {
   const lang = state.interfaceLanguage ?? 'en';
+
+  // SEEK 3.9 — stream parity with execution-engine.ts F3:
+  // honest error with no artifact → no suggested actions.
+  if (hasErrorText && !artifact) {
+    return [];
+  }
+
   const a: SuggestedAction[] = [];
 
   if (artifact?.type === 'quiz')                                         a.push({ type: 'start_quiz',      label: loc('start_quiz', lang) });
@@ -604,28 +593,25 @@ function collectPriorText(r: Map<number, StepOutput>, order: number): string {
     .join('\n\n');
 }
 
-// SEEK 3.8 — Dignified degradation messages, language-aware.
-// Uses a Record with string index to avoid TypeScript implicit index errors.
 function getDegradedMentorMessage(lang: string, is429: boolean): string {
   const quotaMsgs: Record<string, string> = {
     en: 'The tutor is momentarily unavailable. API quota reached. Please try again shortly.',
-    es: 'El tutor no está disponible en este momento. Cuota de API alcanzada. Por favor, inténtalo de nuevo en breve.',
-    no: 'Læreren er midlertidig utilgjengelig. API-kvote nådd. Prøv igjen om litt.',
-    de: 'Der Tutor ist momentan nicht verfügbar. API-Kontingent erreicht. Bitte versuche es in Kürze erneut.',
-    fr: 'Le tuteur est momentanément indisponible. Quota API atteint. Réessaie dans quelques instants.',
-    it: 'Il tutor non è al momento disponibile. Quota API raggiunta. Riprova tra breve.',
+    es: 'El tutor no esta disponible en este momento. Cuota de API alcanzada. Por favor, intentalo de nuevo en breve.',
+    no: 'Laereren er midlertidig utilgjengelig. API-kvote nadd. Proev igjen om litt.',
+    de: 'Der Tutor ist momentan nicht verfuegbar. API-Kontingent erreicht. Bitte versuche es in Kuerze erneut.',
+    fr: 'Le tuteur est momentanement indisponible. Quota API atteint. Reessaie dans quelques instants.',
+    it: 'Il tutor non e al momento disponibile. Quota API raggiunta. Riprova tra breve.',
   };
   const genericMsgs: Record<string, string> = {
     en: 'The tutor could not generate a response right now. Please try again.',
-    es: 'El tutor no pudo generar una respuesta en este momento. Por favor, inténtalo de nuevo.',
-    no: 'Læreren kunne ikke generere et svar akkurat nå. Prøv igjen.',
+    es: 'El tutor no pudo generar una respuesta en este momento. Por favor, intentalo de nuevo.',
+    no: 'Laereren kunne ikke generere et svar akkurat na. Proev igjen.',
     de: 'Der Tutor konnte gerade keine Antwort generieren. Bitte versuche es erneut.',
-    fr: "Le tuteur n'a pas pu générer de réponse pour l'instant. Réessaie.",
+    fr: "Le tuteur n'a pas pu generer de reponse pour l'instant. Reessaie.",
     it: 'Il tutor non ha potuto generare una risposta in questo momento. Riprova.',
   };
   return is429 ? (quotaMsgs[lang] ?? quotaMsgs['en']) : (genericMsgs[lang] ?? genericMsgs['en']);
 }
-
 
 function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): StepOutput {
   return { stepOrder: step.order, executor: step.executor, durationMs, success: false, error: reason };
@@ -634,7 +620,7 @@ function degradedStep(step: ExecutionStep, reason: string, durationMs = 0): Step
 const LABELS: Record<string, Record<string, string>> = {
   start_quiz:      { en: 'Start quiz',    es: 'Empezar quiz',     no: 'Start quiz' },
   export_chat_pdf: { en: 'Export as PDF', es: 'Exportar a PDF',   no: 'Eksporter som PDF' },
-  next_module:     { en: 'Next module',   es: 'Siguiente módulo', no: 'Neste modul' },
+  next_module:     { en: 'Next module',   es: 'Siguiente modulo', no: 'Neste modul' },
   start_course:    { en: 'Start course',  es: 'Empezar curso',    no: 'Start kurs' },
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
