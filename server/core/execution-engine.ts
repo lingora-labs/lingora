@@ -1,18 +1,36 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.9 — Execution Engine
+// LINGORA SEEK 3.9-b — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
 //            Resolves dependsOn. Collects results. Returns compiled outputs.
 //
-// SEEK 3.9 CHANGES:
+// SEEK 3.9 CHANGES (base):
 //   F1 — generateCoursePdf: LLM/parse failure → honest error artifact instead
 //        of silent {} return. User sees a real message, not mentor fallback.
 //   F2 — buildFallbackMessage: course PDF failure produces a specific, honest
 //        error message, not the generic "try again" fallback.
 //   F3 — Header and architecture string bumped to SEEK-3.9.
 //
+// SEEK 3.9-b CHANGES (this file — Operación Liberen a Willy):
+//   LW1 — coursePrompt: rigid 5-module fixed structure replaced with elastic
+//         content contract. Modules 5-8 (LLM decides). Vocabulary with full
+//         sentence usage examples, not just term-translation pairs. Exercise
+//         includes real domain simulation. Development field 60-200 words
+//         (free expansion per domain density). Grammar adapts to complexity.
+//         Tip matches domain context (clinical/DELE/cultural/corporate).
+//   LW2 — TOPIC SOVEREIGNTY RULE: explicit clause forbids the LLM from
+//         producing a course about "requesting a course" or meta-content.
+//         The course must remain about the requested domain at all times.
+//   LW3 — Stream engine receives identical prompt (parity guaranteed).
+//   LW4 — normalizedModules reconstruction handles variable module count
+//         (rawModules.length already drives totalModules — no change needed).
+//
+// Approved by: IS + CSJ — consensus 5 de abril de 2026
+// Sprint: SEEK 3.9-b · Operación Liberen a Willy
+// Files changed: execution-engine.ts, execution-engine-stream.ts ONLY
+// Files unchanged: template PDF, contracts, routing, orchestrator, frontend
 // =============================================================================
 
 import {
@@ -402,50 +420,62 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
           ? `The course is about the Spanish language topic: "${topic}".`
           : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
 
-        const coursePrompt = `You are LINGORA's course generator. Produce a complete, dense, pedagogically rich Spanish course as valid JSON.
+        // SEEK 3.9-b — LW1+LW2: ELASTIC CONTENT CONTRACT (Operación Liberen a Willy)
+        // The prompt no longer mandates exactly 5 modules or fixed densities.
+        // The LLM decides module count (5-8) based on topic complexity.
+        // All content boundaries are minimums + guidance, not ceilings.
+        // LW2: TOPIC SOVEREIGNTY RULE is non-negotiable — prevents meta-course generation.
+        const coursePrompt = `You are LINGORA's expert course generator. Produce a complete, authentic, pedagogically rich Spanish course as valid JSON.
 
 ${domainFrame}
 Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
 
-DENSITY REQUIREMENTS — MANDATORY (this is the most important instruction):
-- vocabulary: MINIMUM 8 pairs per module, MAXIMUM 12. Include full-sentence usage examples.
-- grammar: 3-5 sentences explaining the rule, its exceptions, and a memory anchor.
-- exercise: 3-part exercise: (1) fill-in-the-blank, (2) production sentence, (3) real-world micro-simulation.
-- development: a 60-100 word paragraph developing the module theme with examples, context, and cultural notes.
-- communicativeFunction: what the student CAN DO after this module (start with "Puedes...").
-- tip: DELE/UNED-style strategy tip, memory hook, or cultural insight (2-3 sentences).
+CONTENT SOVEREIGNTY RULE (non-negotiable):
+This course must be entirely about the requested domain: "${topic}".
+It must NOT be a course about "how to request a course", "how to use LINGORA", or any meta-topic.
+If the topic is medical, clinical, legal, scientific, or professional — generate real domain vocabulary in Spanish.
+A domain expert teaching Spanish for "${topic}" would produce this course. Be that expert.
 
-Return ONLY valid JSON matching this exact structure (no markdown, no extra text):
+CONTENT REQUIREMENTS — ELASTIC (adjust depth to domain complexity):
+- totalModules: between 5 and 8. Simple topics: 5. Complex domains (medicine, law, TCM): 7-8.
+- vocabulary: MINIMUM 8 pairs per module. Each pair must include a full-sentence example showing real usage, not just the translation.
+- grammar: 2 to 8 sentences depending on grammatical complexity of the domain. Simple topic: 2-3 sentences. Complex domain: up to 8.
+- exercise: 3 parts: (1) fill-in-the-blank with domain vocabulary, (2) production sentence using the grammar rule, (3) real-world domain simulation (e.g. "You are talking to a patient in Spanish — complete the dialogue").
+- development: 60 to 200 words. Expand freely to cover the domain authentically. Cultural notes, practical context, domain-specific insights. Do not pad — expand when the content demands it.
+- communicativeFunction: what the student CAN DO in the real domain after this module (start with "Puedes..."). Be specific to the domain, not generic.
+- tip: match the domain — clinical tip for medical topics, exam strategy for DELE, cultural insight for travel/social, corporate phrasing for business. 2-4 sentences.
+
+Return ONLY valid JSON (no markdown, no extra text):
 {
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string — specific, engaging course title in the interface language",
-  "objective": "string — 3-4 sentence learning objective explaining practical outcomes",
+  "courseTitle": "string — specific, domain-authentic title in the interface language",
+  "objective": "string — 3-4 sentence learning objective describing real-world outcomes in the domain",
   "nativeLanguage": "${lang}",
-  "totalModules": 5,
+  "totalModules": <number between 5 and 8>,
   "modules": [
     {
       "index": 1,
-      "title": "string — specific module title",
-      "vocabulary": [["spanish word or phrase", "translation + usage note"], ...],
-      "grammar": "string — 3-5 sentences: rule, exception, memory anchor",
-      "exercise": "string — 3-part exercise with instructions for each part",
-      "development": "string — 60-100 word paragraph developing the theme with examples",
-      "communicativeFunction": "string — starts with Puedes...",
-      "tip": "string — 2-3 sentence DELE/UNED tip or cultural insight"
+      "title": "string — specific module title tied to a distinct domain sub-topic",
+      "vocabulary": [["spanish word or phrase", "translation — full-sentence usage example in Spanish"], ...],
+      "grammar": "string — 2-8 sentences: rule, exception, memory anchor, domain-specific usage",
+      "exercise": "string — 3-part exercise: part 1 fill-in, part 2 production, part 3 domain simulation",
+      "development": "string — 60-200 word paragraph: domain context, authentic examples, cultural notes",
+      "communicativeFunction": "string — starts with Puedes... and is domain-specific",
+      "tip": "string — 2-4 sentences matched to domain type"
     }
   ],
-  "nextStep": "string — specific recommended next step with action",
+  "nextStep": "string — specific, actionable next step in the domain learning path",
   "generatedAt": "${now}"
 }
 
-CONTENT RULES:
-- Exactly 5 modules covering distinct sub-topics of the theme
-- Each module must be COMPLETE and SELF-CONTAINED — no placeholders, no "etc."
-- vocabulary minimum 8 pairs — no exceptions
+QUALITY RULES:
+- Every module must cover a DISTINCT sub-topic of "${topic}" — no repetition
+- Each module must be COMPLETE and SELF-CONTAINED — no placeholders, no "see above", no "etc."
+- vocabulary minimum 8 pairs per module — no exceptions
 - All content CEFR ${level} appropriate
-- If the topic is a non-Spanish domain, every module must frame content around SPANISH USE, not domain theory`;
+- Non-Spanish domain: every module frames content around SPANISH USE IN THE DOMAIN, not domain theory`;
 
         // SEEK 3.9 — F1: capture LLM/parse errors explicitly and return honest text
         // instead of silently returning {} which causes mentor fallback "No pude generar".
@@ -859,4 +889,3 @@ function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
-
