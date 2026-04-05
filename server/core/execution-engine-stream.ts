@@ -196,6 +196,17 @@ export function executePlanStream(
         const hasErrorText = outputs.some(o => o.isUserVisibleError === true && o.text);
         const suggestedActions = buildSuggestedActions(plan, artifact, updatedState, hasErrorText);
 
+        // SEEK 3.9 — FIX-PDF-MSG (stream parity): when a blocking hard-override plan
+        // produced an artifact but no mentor text, the user would see nothing before
+        // the done event (which carries only state/artifact, not a visible message).
+        // Fix: emit a success delta so the user sees a confirmation message.
+        const noTextEmitted = Array.from(priorResults.values()).every(o => !o.text || o.isUserVisibleError);
+        if (artifact && plan.blocking && (plan.priority ?? 0) >= 100 && noTextEmitted) {
+          const lang = state.interfaceLanguage ?? 'en';
+          const successMsg = buildStreamArtifactSuccessMessage(artifact.type, lang);
+          emit({ delta: successMsg });
+        }
+
         if (!plan.blocking) {
           const commercial = await evaluateCommercial(updatedState, plan);
           if (commercial.triggered && commercial.message) {
@@ -343,40 +354,64 @@ async function dispatchSync(
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        const topic  = priorContext?.trim() || request.message?.trim()
-          || state.lastConcept || state.curriculumPlan?.topic || 'Espanol general';
+        // SEEK 3.9 — FIX-TOPIC (stream parity): same priority as execution-engine.ts
+        const topic  = plan.resolvedTopic?.trim()
+          || state.currentLessonTopic?.trim()
+          || (state.lastConcept?.trim() && state.lastConcept !== 'Spanish grammar'
+              ? state.lastConcept : null)
+          || priorContext?.trim()
+          || request.message?.trim()
+          || state.curriculumPlan?.topic
+          || 'Espanol general';
         const level  = state.confirmedLevel ?? state.userLevel ?? 'A1';
         const lang   = state.interfaceLanguage ?? 'en';
         const mentor = state.mentorProfile ?? 'Sarah';
         const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
-        const coursePrompt = `You are LINGORA's course generator. Produce a complete Spanish course as valid JSON.
-Topic: "${topic}". Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+        // SEEK 3.9 — FIX-DENSITY (stream parity): identical prompt to execution-engine.ts
+        const isSpanishDomainS = /gramatica|grammar|vocabulario|vocabulary|subjuntivo|tiempos|verbos|pronunciacion|conjugacion|dele|ccse|siele|presentacion|saludos|restaurante|viaje|travel|negocios|business|conversacion/i.test(topic);
+        const domainFrameS = isSpanishDomainS
+          ? `The course is about the Spanish language topic: "${topic}".`
+          : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
 
-Return ONLY valid JSON matching this exact structure (no markdown, no extra text):
+        const coursePrompt = `You are LINGORA's course generator. Produce a complete, dense, pedagogically rich Spanish course as valid JSON.
+
+${domainFrameS}
+Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
+
+DENSITY REQUIREMENTS — MANDATORY:
+- vocabulary: MINIMUM 8 pairs per module, MAXIMUM 12. Include usage examples.
+- grammar: 3-5 sentences explaining the rule, exceptions, and a memory anchor.
+- exercise: 3-part exercise: (1) fill-in-the-blank, (2) production sentence, (3) real-world micro-simulation.
+- development: a 60-100 word paragraph developing the module theme with examples and cultural notes.
+- communicativeFunction: what the student CAN DO (starts with "Puedes...").
+- tip: DELE/UNED-style strategy tip or cultural insight (2-3 sentences).
+
+Return ONLY valid JSON (no markdown, no extra text):
 {
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string",
-  "objective": "string",
+  "courseTitle": "string — specific, engaging title",
+  "objective": "string — 3-4 sentence learning objective",
   "nativeLanguage": "${lang}",
   "totalModules": 5,
   "modules": [
     {
       "index": 1,
-      "title": "string",
-      "vocabulary": [["spanish word", "translation"], ...],
-      "grammar": "string",
-      "exercise": "string",
-      "communicativeFunction": "string",
-      "tip": "string"
+      "title": "string — specific module title",
+      "vocabulary": [["spanish word or phrase", "translation + usage note"], ...],
+      "grammar": "string — 3-5 sentences: rule, exception, memory anchor",
+      "exercise": "string — 3-part exercise",
+      "development": "string — 60-100 word paragraph",
+      "communicativeFunction": "string — starts with Puedes...",
+      "tip": "string — 2-3 sentence tip"
     }
   ],
-  "nextStep": "string",
+  "nextStep": "string — specific next step",
   "generatedAt": "${now}"
 }
-Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
+Exactly 5 modules. Minimum 8 vocabulary pairs each. CEFR ${level}. No placeholders.`;
 
         // SEEK 3.9 — F1 (stream parity): capture errors explicitly.
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
@@ -384,7 +419,7 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 
         try {
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
+            ...buildModelParams(RUNTIME_MODEL, 4500, 0.3),
             response_format: { type: 'json_object' },
             messages: [{ role: 'user', content: coursePrompt }],
           });
@@ -392,8 +427,17 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
           if (!raw.trim()) {
             courseGenError = 'Model returned empty content.';
           } else {
-            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent & {
+              modules: Array<import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }>;
+            };
             if (parsed.modules?.length > 0) {
+              // SEEK 3.9 — FIX-DENSITY adapter (stream parity): merge development into exercise
+              parsed.modules = parsed.modules.map(m => ({
+                ...m,
+                exercise: m.development
+                  ? `${m.exercise}\n\nDesarrollo: ${m.development}`
+                  : m.exercise,
+              }));
               courseContent = parsed;
             } else {
               courseGenError = 'Model returned JSON with no modules.';
@@ -555,6 +599,30 @@ Exactly 5 modules. 4-6 vocabulary pairs each. CEFR ${level} appropriate.`;
 // SUGGESTED ACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// SEEK 3.9 — FIX-PDF-MSG: stream parity with execution-engine.ts
+function buildStreamArtifactSuccessMessage(artifactType: string, lang: string): string {
+  const msgs: Record<string, Record<string, string>> = {
+    course_pdf: {
+      en: 'Your course PDF is ready. You can download it below.',
+      es: 'Tu curso en PDF está listo. Puedes descargarlo a continuación.',
+      no: 'Kurset ditt i PDF er klart. Du kan laste det ned nedenfor.',
+      it: 'Il tuo corso in PDF è pronto. Puoi scaricarlo qui sotto.',
+      fr: 'Ton cours en PDF est prêt. Tu peux le télécharger ci-dessous.',
+      de: 'Dein PDF-Kurs ist fertig. Du kannst ihn unten herunterladen.',
+    },
+    pdf_chat: {
+      en: 'Conversation exported to PDF. You can download it below.',
+      es: 'Conversación exportada a PDF. Puedes descargarla a continuación.',
+      no: 'Samtalen er eksportert til PDF. Du kan laste den ned nedenfor.',
+      it: 'Conversazione esportata in PDF. Puoi scaricarla qui sotto.',
+      fr: 'Conversation exportée en PDF. Tu peux la télécharger ci-dessous.',
+      de: 'Gespräch als PDF exportiert. Du kannst es unten herunterladen.',
+    },
+    pdf: { en: 'Your PDF is ready.', es: 'Tu PDF está listo.', no: 'PDF-en din er klar.' },
+  };
+  return msgs[artifactType]?.[lang] ?? msgs[artifactType]?.['en'] ?? 'PDF ready.';
+}
+
 function buildSuggestedActions(
   plan: ExecutionPlan,
   artifact: ArtifactPayload | undefined,
@@ -625,3 +693,4 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
+
