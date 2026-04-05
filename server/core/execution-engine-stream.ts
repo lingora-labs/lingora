@@ -1,13 +1,25 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.9 — Streaming Execution Engine
+// LINGORA SEEK 3.9-b — Streaming Execution Engine
 // =============================================================================
 //
-// SEEK 3.9 CHANGES:
+// SEEK 3.9 CHANGES (base):
 //   F1 — generateCoursePdf (stream): LLM/parse failure → honest error delta
 //        instead of silent {} return. Parity with execution-engine.ts F1.
 //   F2 — PDF render failure in stream path also surfaces as honest delta.
 //   F3 — Header bumped to SEEK-3.9.
+//
+// SEEK 3.9-b CHANGES (Operación Liberen a Willy — stream parity):
+//   LW1 — coursePrompt: elastic content contract, identical to execution-engine.ts.
+//         Modules 5-8, vocabulary with sentence examples, development 60-200 words,
+//         grammar adapts to domain complexity, exercise includes domain simulation.
+//   LW2 — TOPIC SOVEREIGNTY RULE: identical clause to execution-engine.ts.
+//         Prevents meta-course generation ("curso sobre cómo pedir un curso").
+//   LW3 — All other stream logic preserved from SEEK 3.9.
+//
+// Approved by: IS + CSJ — consensus 5 de abril de 2026
+// Sprint: SEEK 3.9-b · Operación Liberen a Willy
+// Files changed: execution-engine.ts, execution-engine-stream.ts ONLY
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
@@ -374,44 +386,60 @@ async function dispatchSync(
           ? `The course is about the Spanish language topic: "${topic}".`
           : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
 
-        const coursePrompt = `You are LINGORA's course generator. Produce a complete, dense, pedagogically rich Spanish course as valid JSON.
+        // SEEK 3.9-b — LW1+LW2: ELASTIC CONTENT CONTRACT — stream parity with execution-engine.ts
+        // Identical prompt to execution-engine.ts to guarantee consistent output
+        // regardless of whether streaming is active. Parity is architectural requirement.
+        const coursePrompt = `You are LINGORA's expert course generator. Produce a complete, authentic, pedagogically rich Spanish course as valid JSON.
 
 ${domainFrameS}
 Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
 
-DENSITY REQUIREMENTS — MANDATORY:
-- vocabulary: MINIMUM 8 pairs per module, MAXIMUM 12. Include usage examples.
-- grammar: 3-5 sentences explaining the rule, exceptions, and a memory anchor.
-- exercise: 3-part exercise: (1) fill-in-the-blank, (2) production sentence, (3) real-world micro-simulation.
-- development: a 60-100 word paragraph developing the module theme with examples and cultural notes.
-- communicativeFunction: what the student CAN DO (starts with "Puedes...").
-- tip: DELE/UNED-style strategy tip or cultural insight (2-3 sentences).
+CONTENT SOVEREIGNTY RULE (non-negotiable):
+This course must be entirely about the requested domain: "${topic}".
+It must NOT be a course about "how to request a course", "how to use LINGORA", or any meta-topic.
+If the topic is medical, clinical, legal, scientific, or professional — generate real domain vocabulary in Spanish.
+A domain expert teaching Spanish for "${topic}" would produce this course. Be that expert.
+
+CONTENT REQUIREMENTS — ELASTIC (adjust depth to domain complexity):
+- totalModules: between 5 and 8. Simple topics: 5. Complex domains (medicine, law, TCM): 7-8.
+- vocabulary: MINIMUM 8 pairs per module. Each pair must include a full-sentence example showing real usage, not just the translation.
+- grammar: 2 to 8 sentences depending on grammatical complexity of the domain. Simple topic: 2-3 sentences. Complex domain: up to 8.
+- exercise: 3 parts: (1) fill-in-the-blank with domain vocabulary, (2) production sentence using the grammar rule, (3) real-world domain simulation (e.g. "You are talking to a patient in Spanish — complete the dialogue").
+- development: 60 to 200 words. Expand freely to cover the domain authentically. Cultural notes, practical context, domain-specific insights. Do not pad — expand when the content demands it.
+- communicativeFunction: what the student CAN DO in the real domain after this module (start with "Puedes..."). Be specific to the domain, not generic.
+- tip: match the domain — clinical tip for medical topics, exam strategy for DELE, cultural insight for travel/social, corporate phrasing for business. 2-4 sentences.
 
 Return ONLY valid JSON (no markdown, no extra text):
 {
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string — specific, engaging title",
-  "objective": "string — 3-4 sentence learning objective",
+  "courseTitle": "string — specific, domain-authentic title in the interface language",
+  "objective": "string — 3-4 sentence learning objective describing real-world outcomes in the domain",
   "nativeLanguage": "${lang}",
-  "totalModules": 5,
+  "totalModules": <number between 5 and 8>,
   "modules": [
     {
       "index": 1,
-      "title": "string — specific module title",
-      "vocabulary": [["spanish word or phrase", "translation + usage note"], ...],
-      "grammar": "string — 3-5 sentences: rule, exception, memory anchor",
-      "exercise": "string — 3-part exercise",
-      "development": "string — 60-100 word paragraph",
-      "communicativeFunction": "string — starts with Puedes...",
-      "tip": "string — 2-3 sentence tip"
+      "title": "string — specific module title tied to a distinct domain sub-topic",
+      "vocabulary": [["spanish word or phrase", "translation — full-sentence usage example in Spanish"], ...],
+      "grammar": "string — 2-8 sentences: rule, exception, memory anchor, domain-specific usage",
+      "exercise": "string — 3-part exercise: part 1 fill-in, part 2 production, part 3 domain simulation",
+      "development": "string — 60-200 word paragraph: domain context, authentic examples, cultural notes",
+      "communicativeFunction": "string — starts with Puedes... and is domain-specific",
+      "tip": "string — 2-4 sentences matched to domain type"
     }
   ],
-  "nextStep": "string — specific next step",
+  "nextStep": "string — specific, actionable next step in the domain learning path",
   "generatedAt": "${now}"
 }
-Exactly 5 modules. Minimum 8 vocabulary pairs each. CEFR ${level}. No placeholders.`;
+
+QUALITY RULES:
+- Every module must cover a DISTINCT sub-topic of "${topic}" — no repetition
+- Each module must be COMPLETE and SELF-CONTAINED — no placeholders, no "see above", no "etc."
+- vocabulary minimum 8 pairs per module — no exceptions
+- All content CEFR ${level} appropriate
+- Non-Spanish domain: every module frames content around SPANISH USE IN THE DOMAIN, not domain theory`;
 
         // SEEK 3.9 — F1 (stream parity): capture errors explicitly.
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
@@ -719,4 +747,3 @@ const LABELS: Record<string, Record<string, string>> = {
   show_schema:     { en: 'Show schema',   es: 'Ver esquema',      no: 'Vis skjema' },
 };
 function loc(k: string, l: string): string { return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k; }
-
