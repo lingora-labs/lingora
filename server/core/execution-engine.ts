@@ -1,44 +1,18 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 3.8 — Execution Engine
+// LINGORA SEEK 3.9 — Execution Engine
 // =============================================================================
 // Purpose  : Execute the ExecutionPlan produced by orchestrator.ts.
 //            Reads executionOrder. Executes steps in declared order.
 //            Resolves dependsOn. Collects results. Returns compiled outputs.
 //
-//            THIS MODULE:
-//            ✅ Reads ExecutionPlan.executionOrder
-//            ✅ Executes steps in order (1 → 2 → 3...)
-//            ✅ Resolves dependsOn — step N waits for step M
-//            ✅ Collects results from execution layers
-//            ✅ Returns ExecutionResult (message + artifact + patch)
-//            ❌ Does NOT decide what to execute
-//            ❌ Does NOT choose executor types
-//            ❌ Does NOT modify priority or blocking
-//            ❌ Does NOT reinterpret intent
-//            ❌ Does NOT generate ad-hoc routing logic
+// SEEK 3.9 CHANGES:
+//   F1 — generateCoursePdf: LLM/parse failure → honest error artifact instead
+//        of silent {} return. User sees a real message, not mentor fallback.
+//   F2 — buildFallbackMessage: course PDF failure produces a specific, honest
+//        error message, not the generic "try again" fallback.
+//   F3 — Header and architecture string bumped to SEEK-3.9.
 //
-//            ARCHITECTURAL RULE:
-//            If this engine needs to "decide", the architecture has failed.
-//            Any decision logic found here is a bug and must be moved to
-//            orchestrator.ts.
-//
-// Riesgo principal : Step result contamination — a step producing output that
-//                    implicitly influences subsequent steps outside the declared
-//                    dependsOn chain. All inter-step data must flow through
-//                    StepContext.priorResults explicitly.
-//
-// Dependencias     : lib/contracts.ts
-//                    server/mentors/mentor-engine.ts
-//                    server/tools/schema-generator.ts
-//                    server/tools/pdf-generator.ts
-//                    server/tools/image-generator.ts
-//                    server/tools/audio-toolkit.ts
-//                    server/knowledge/rag.ts
-//                    server/core/diagnostics.ts
-//
-// Commit   : feat(execution-engine): SEEK 3.5 — ordered step execution with
-//            dependsOn resolution, no decision logic.
 // =============================================================================
 
 import {
@@ -57,7 +31,8 @@ import {
 import { advanceTutorPhase } from './state-manager';
 import { buildModelParams } from '../mentors/mentor-engine';
 
-// SEEK 3.8 — Single model source of truth.
+// Single model source of truth — change via OPENAI_MAIN_MODEL env var.
+// Supports: gpt-4o-mini, gpt-5.4-nano, gpt-5.4-mini (no code changes needed).
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +86,11 @@ interface StepOutput {
   durationMs: number;
   success: boolean;
   error?: string;
+  // SEEK 3.9 — F3: explicit signal for user-visible error text.
+  // Distinct from success:false (which means the step threw/failed internally).
+  // isUserVisibleError means the step succeeded in running but intentionally
+  // returned an honest error message instead of an artifact.
+  isUserVisibleError?: boolean;
 }
 
 export async function executePlan(
@@ -154,6 +134,10 @@ async function executeStep(step: ExecutionStep, ctx: StepContext): Promise<StepO
       patch: output.patch,
       durationMs: Date.now() - start,
       success: true,
+      // SEEK 3.9 — F3: preserve explicit error signal from dispatcher.
+      // success stays true (step ran without throwing) but isUserVisibleError
+      // tells compileResult() that the text is an honest error message.
+      isUserVisibleError: output.isUserVisibleError,
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -166,6 +150,7 @@ interface DispatchOutput {
   text?: string;
   artifact?: ArtifactPayload;
   patch?: StatePatch;
+  isUserVisibleError?: boolean; // SEEK 3.9 — F3: propagated from dispatchToExecutor to StepOutput
 }
 
 async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promise<DispatchOutput> {
@@ -214,10 +199,6 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       const level      = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'B1';
       const uiLanguage = ctx.state.interfaceLanguage ?? 'en';
 
-      // SEEK 3.8 — FIX: tool_schema persists lastConcept immediately.
-      // compileResult() also writes lastConcept, but that runs AFTER all steps.
-      // If the mentor step changes context, the artifact topic would be lost.
-      // Writing it here guarantees topic sovereignty for the artifact branch.
       const topicPatch = (topic && topic !== 'Spanish grammar')
         ? { lastConcept: topic }
         : undefined;
@@ -263,7 +244,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             };
             return { artifact };
           }
-          console.error('[execution-engine] generateQuiz: no quiz in schema output — returning empty, not wrong artifact');
+          console.error('[execution-engine] generateQuiz: no quiz in schema output — returning empty');
           return {};
         }
 
@@ -276,16 +257,14 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             };
             return { artifact };
           }
-          console.error('[execution-engine] generateTable: no tableRows in output — returning empty, not wrong artifact');
+          console.error('[execution-engine] generateTable: no tableRows — returning empty');
           return {};
         }
 
         case 'generateTableMatrix': {
-          // SEEK 3.4: generateTableMatrixRich produces tone-aware RCell rows for color rendering
           const { generateTableMatrixRich } = await import('../tools/schema-generator');
           const richArtifact = await generateTableMatrixRich({ topic, level, uiLanguage });
           if (richArtifact) return { artifact: richArtifact, patch: topicPatch };
-          // Fallback to basic schema if rich fails
           const data = await generateSchemaContent({ topic, level, uiLanguage });
           if (data.tableRows?.length) {
             const artifact: import('../../lib/contracts').TableMatrixArtifact = {
@@ -295,7 +274,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             };
             return { artifact };
           }
-          console.error('[execution-engine] generateTableMatrix: no tableRows in output — returning empty, not wrong artifact');
+          console.error('[execution-engine] generateTableMatrix: no tableRows — returning empty');
           return {};
         }
 
@@ -326,7 +305,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         }
 
         default: {
-          console.error(`[execution-engine] tool_schema: unsupported action "${step.action}" — no artifact produced`);
+          console.error(`[execution-engine] tool_schema: unsupported action "${step.action}"`);
           return {};
         }
       }
@@ -336,18 +315,15 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
     case 'tool_pdf': {
       const { generatePDF } = await import('../tools/pdf-generator');
       const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
-      // SEEK 3.5 — observable logging for Vercel diagnosis
       console.log(`[PDF] step.action: ${step.action}`);
       console.log(`[PDF] title: ${title}`);
 
       if (step.action === 'exportChatPdf') {
-        // G6a — SEEK 3.3: structured PDF with UNED-style format
         const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
         const now = new Date();
         const dateStr = now.toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
         const mentorName = (ctx.state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
                            (ctx.state.mentorProfile ?? 'Alex').slice(1);
-        // IS fix H2: use userLevel, not level
         const levelStr  = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'N/A';
         const tokensStr = String(ctx.state.tokens ?? 0);
 
@@ -361,10 +337,9 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
           return line;
         }).join('\n');
 
-        // IS fix H1: clean template literals (no backslash escaping)
         const header = [
           '══════════════════════════════════════════',
-          '   LINGORA — HISTORIAL DE SESIÓN',
+          '   LINGORA - HISTORIAL DE SESION',
           '══════════════════════════════════════════',
           `Mentor:   ${mentorName}`,
           `Nivel:    ${levelStr}`,
@@ -377,17 +352,16 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         const footer = [
           '',
           '──────────────────────────────────────────',
-          'LINGORA · AI Cultural Immersion Platform for Spanish',
-          'Learn → Connect → Experience',
+          'LINGORA - AI Cultural Immersion Platform for Spanish',
+          'Learn -> Connect -> Experience',
           `Exportado el ${dateStr}`,
         ].join('\n');
 
         const content = header + formattedLines + footer;
-        const result = await generatePDF({ title: `LINGORA · Sesión · ${dateStr}`, content });
+        const result = await generatePDF({ title: `LINGORA - Sesion - ${dateStr}`, content });
         console.log(`[PDF] exportChatPdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
         if (!result.success) console.error(`[PDF] exportChatPdf error: ${result.error} — ${result.message}`);
 
-        // IS fix H3: include messageCount in pdf_chat artifact
         const messageCount = rawTranscript
           ? rawTranscript.split('\n').filter(Boolean).length
           : 0;
@@ -400,9 +374,6 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       }
 
       if (step.action === 'generateCoursePdf') {
-        // P2 — SEEK 3.4 FINAL: LLM produces CourseContent JSON directly.
-        // No intermediate text → parser step. One LLM call → typed object → professional template.
-        // Matches the exact CourseContent / CourseModule interfaces in generateCoursePdf.ts.
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -447,7 +418,11 @@ Requirements:
 - exercise: a concrete sentence or task the student produces
 - All content pedagogically appropriate for CEFR ${level}`;
 
+        // SEEK 3.9 — F1: capture LLM/parse errors explicitly and return honest text
+        // instead of silently returning {} which causes mentor fallback "No pude generar".
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
+        let courseGenError: string | null = null;
+
         try {
           const completion = await openai.chat.completions.create({
             ...buildModelParams(RUNTIME_MODEL, 3000, 0.3),
@@ -455,25 +430,54 @@ Requirements:
             messages: [{ role: 'user', content: coursePrompt }],
           });
           const raw = completion.choices?.[0]?.message?.content ?? '';
-          const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
-          if (parsed.modules?.length > 0) courseContent = parsed;
+          if (!raw.trim()) {
+            courseGenError = 'Model returned empty content for course generation.';
+          } else {
+            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent;
+            if (parsed.modules?.length > 0) {
+              courseContent = parsed;
+            } else {
+              courseGenError = 'Model returned JSON with no modules.';
+            }
+          }
         } catch (e) {
-          console.error('[execution-engine] generateCoursePdf: JSON parse failed:', e);
+          courseGenError = e instanceof Error ? e.message : String(e);
+          console.error('[execution-engine] generateCoursePdf: LLM/parse failed:', courseGenError);
         }
 
+        // SEEK 3.9 — F1: if content generation failed, return honest error text.
+        // This surfaces in compileResult() as the response message instead of
+        // triggering the generic mentor fallback "No pude generar una respuesta".
         if (!courseContent) {
-          console.error('[execution-engine] generateCoursePdf: no courseContent — aborting');
-          return {};
+          const lang2 = ctx.state.interfaceLanguage ?? 'en';
+          const errorMsgs: Record<string, string> = {
+            en: `Could not generate the course for "${topic}" right now. The content engine returned an error. Please try again in a moment.`,
+            es: `No se pudo generar el curso sobre "${topic}" en este momento. El motor de contenido devolvió un error. Inténtalo de nuevo en un instante.`,
+            no: `Kunne ikke generere kurset om "${topic}" akkurat nå. Innholdsmotoren returnerte en feil. Prøv igjen om et øyeblikk.`,
+            it: `Non è stato possibile generare il corso su "${topic}" in questo momento. Riprova tra un istante.`,
+            fr: `Impossible de générer le cours sur "${topic}" pour l'instant. Réessaie dans un moment.`,
+            de: `Der Kurs zu "${topic}" konnte gerade nicht generiert werden. Bitte versuche es erneut.`,
+          };
+          console.error(`[execution-engine] generateCoursePdf: aborting — ${courseGenError}`);
+          return { text: errorMsgs[lang2] ?? errorMsgs['en'], isUserVisibleError: true };
         }
 
         const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
         console.log(`[PDF] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
         console.log(`[PDF] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
-        if (!result.success) console.error(`[PDF] generateCoursePdf error: ${result.error} — ${result.message}`);
-        const artifact = result.success
-          ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
-          : undefined;
+        if (!result.success) {
+          console.error(`[PDF] generateCoursePdf error: ${result.error} — ${result.message}`);
+          // SEEK 3.9 — F1: PDF render failure also surfaces honestly.
+          const lang2 = ctx.state.interfaceLanguage ?? 'en';
+          const pdfErrorMsgs: Record<string, string> = {
+            en: `The course content was generated but the PDF could not be rendered. Error: ${result.error ?? 'unknown'}. Please try again.`,
+            es: `El contenido del curso se generó pero el PDF no pudo renderizarse. Error: ${result.error ?? 'desconocido'}. Inténtalo de nuevo.`,
+            no: `Kursinnholdet ble generert, men PDF-en kunne ikke gjengis. Feil: ${result.error ?? 'ukjent'}. Prøv igjen.`,
+          };
+          return { text: pdfErrorMsgs[lang2] ?? pdfErrorMsgs['en'], isUserVisibleError: true };
+        }
+        const artifact = { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) };
         return { artifact };
       }
 
@@ -508,7 +512,6 @@ Requirements:
           .sort((a, b) => b.stepOrder - a.stepOrder)[0]?.text;
         const textToSpeak = (mentorPriorText ?? priorText)?.trim() || ctx.request.message?.trim();
         if (!textToSpeak) return {};
-        // G2 — SEEK 3.3: map mentor identity to correct OpenAI voice
         const MENTOR_VOICES: Record<string, string> = {
           sarah: 'shimmer',
           alex:  'fable',
@@ -523,7 +526,6 @@ Requirements:
         return {};
       }
 
-      // Default: transcribe audio input
       const { transcribeAudio } = await import('../tools/audio-toolkit');
       const audioData = ctx.request.audioDataUrl
         ? { data: ctx.request.audioDataUrl.split(',')[1] || ctx.request.audioDataUrl, format: ctx.request.audioMimeType?.split('/')[1] || 'webm' }
@@ -543,9 +545,7 @@ Requirements:
 
       if (!audioData) return {};
       const result = await transcribeAudio(audioData);
-      // G5 — SEEK 3.3: persist transcript so subsequent turns don't lose it
       const transcriptText = result.success ? result.text : undefined;
-      // IS fix H4: use patch (not statePatch) — DispatchOutput contract
       return {
         text: transcriptText,
         patch: transcriptText
@@ -568,19 +568,14 @@ Requirements:
       return { text };
     }
 
-    // ── Storage ───────────────────────────────────────────────────────────────
-    case 'tool_storage': {
-      return {};
-    }
+    case 'tool_storage': return {};
 
-    // ── Knowledge / RAG ───────────────────────────────────────────────────────
     case 'knowledge': {
       const { getRagContext } = await import('../knowledge/rag');
       const result = await getRagContext(ctx.request.message);
       return { text: result?.text ?? undefined };
     }
 
-    // ── Diagnostics ───────────────────────────────────────────────────────────
     case 'diagnostic': {
       const { evaluateLevel } = await import('./diagnostics');
       const sampleCount = (ctx.state.diagnosticSamples ?? 0) + 1;
@@ -600,10 +595,7 @@ Requirements:
       return { patch };
     }
 
-    // ── Commercial ────────────────────────────────────────────────────────────
-    case 'commercial': {
-      return {};
-    }
+    case 'commercial': return {};
 
     default: {
       console.warn(`[execution-engine] unknown executor: "${step.executor}" in step ${step.order}. Skipping.`);
@@ -644,10 +636,6 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
 
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
-  // SEEK 3.7 — FIX: Persist the resolved topic back to state every turn.
-  // This is the missing link: resolveCurrentTopic reads lastConcept but nothing
-  // was ever WRITING it. Without this, topic continuity is impossible across turns.
-  // Only persist if resolvedTopic is a real topic (not the fallback default).
   const resolvedTopic = plan.resolvedTopic?.trim();
   if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
     statePatch.lastConcept = resolvedTopic;
@@ -661,7 +649,14 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
     statePatch.tutorPhase = advanceTutorPhase(ctx.state.tutorPhase, ctx.state.activeMode);
   }
 
-  const suggestedActions = buildSuggestedActions(plan, artifact, ctx.state);
+  // SEEK 3.9 — F3: detect error state. If all non-mentor steps failed to produce
+  // an artifact and the message came from an error text path, suppress contextually
+  // irrelevant suggested actions. An honest error message must not arrive with
+  // buttons that imply the operation succeeded.
+  // SEEK 3.9 — F3 FINAL: use explicit isUserVisibleError flag, not !o.success.
+  // success:false means the step threw internally — different from an honest error message.
+  const hasErrorText = outputs.some(o => o.isUserVisibleError === true && o.text);
+  const suggestedActions = buildSuggestedActions(plan, artifact, ctx.state, hasErrorText);
   return { message, artifact, suggestedActions, statePatch };
 }
 
@@ -669,8 +664,24 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, stepResults: Execu
 // SUGGESTED ACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildSuggestedActions(plan: ExecutionPlan, artifact: ArtifactPayload | undefined, state: SessionState): SuggestedAction[] {
+function buildSuggestedActions(
+  plan: ExecutionPlan,
+  artifact: ArtifactPayload | undefined,
+  state: SessionState,
+  hasErrorText = false,
+): SuggestedAction[] {
   const actions: SuggestedAction[] = [];
+
+  // SEEK 3.9 — F3: when the response is an honest error (no artifact, error text present),
+  // only offer a retry action. Do not suggest export, schema, or quiz — they are not
+  // contextually valid when the requested operation failed.
+  // SEEK 3.9 — F3 FINAL: honest error with no artifact → no suggested actions.
+  // Offering export_chat_pdf after a course generation failure is semantically wrong.
+  // The user received an error message, not content worth exporting or acting on.
+  if (hasErrorText && !artifact) {
+    return [];
+  }
+
   if (artifact) {
     if (artifact.type === 'quiz')                                      actions.push({ type: 'start_quiz',      label: getLabel('start_quiz',      state.interfaceLanguage) });
     if (artifact.type === 'schema' || artifact.type === 'schema_pro') actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
@@ -685,10 +696,10 @@ function buildSuggestedActions(plan: ExecutionPlan, artifact: ArtifactPayload | 
 const LABELS: Record<string, Record<string, string>> = {
   start_quiz:      { en: 'Start quiz',      es: 'Empezar quiz',       no: 'Start quiz' },
   export_chat_pdf: { en: 'Export as PDF',   es: 'Exportar a PDF',     no: 'Eksporter som PDF' },
-  next_module:     { en: 'Next module',     es: 'Siguiente módulo',   no: 'Neste modul' },
+  next_module:     { en: 'Next module',     es: 'Siguiente modulo',   no: 'Neste modul' },
   start_course:    { en: 'Start course',    es: 'Empezar curso',      no: 'Start kurs' },
   show_schema:     { en: 'Show schema',     es: 'Ver esquema',        no: 'Vis skjema' },
-  retry_quiz:      { en: 'Try again',       es: 'Intentar de nuevo',  no: 'Prøv igjen' },
+  retry_quiz:      { en: 'Try again',       es: 'Intentar de nuevo',  no: 'Proev igjen' },
 };
 
 function getLabel(type: SuggestedActionType, lang: string): string {
@@ -723,15 +734,16 @@ function toStepResult(output: StepOutput, plan: ExecutionPlan): ExecutionStepRes
   };
 }
 
+// SEEK 3.9 — buildFallbackMessage is only reached when ALL steps produced no text.
+// Course PDF errors are now returned as text from the step itself (F1), so this
+// generic fallback should rarely fire in practice.
 function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
-  // SEEK 3.8 — Dignified fallback: never leave user with a generic placeholder.
-  // If the system couldn't respond, say something honest and useful.
   const fallbacks: Record<string, string> = {
     en: "I wasn't able to generate a response right now — please try again in a moment.",
-    es: "No pude generar una respuesta en este momento. Por favor, inténtalo de nuevo en un instante.",
-    no: "Jeg kunne ikke generere et svar akkurat nå. Prøv igjen om et øyeblikk.",
+    es: "No pude generar una respuesta en este momento. Por favor, intentalo de nuevo en un instante.",
+    no: "Jeg kunne ikke generere et svar akkurat na. Proev igjen om et oyeblikk.",
     it: "Non ho potuto generare una risposta in questo momento. Riprova tra un attimo.",
-    fr: "Je n'ai pas pu générer une réponse pour l'instant. Réessaie dans un moment.",
+    fr: "Je n'ai pas pu generer une reponse pour l'instant. Reessaie dans un moment.",
   };
   return fallbacks[lang] ?? fallbacks['en'];
 }
