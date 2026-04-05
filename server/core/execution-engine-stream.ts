@@ -427,23 +427,44 @@ Exactly 5 modules. Minimum 8 vocabulary pairs each. CEFR ${level}. No placeholde
           if (!raw.trim()) {
             courseGenError = 'Model returned empty content.';
           } else {
-            const parsed = JSON.parse(raw) as import('../tools/pdf/generateCoursePdf').CourseContent & {
-              modules: Array<import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }>;
-            };
-            if (parsed.modules?.length > 0) {
-              // SEEK 3.9 — FIX-DENSITY adapter (stream parity): merge development into exercise.
-              // IS fix: explicit retype before map so TypeScript preserves { development?: string }
-              // and does not narrow m back to CourseModule in the callback.
-              const modulesWithDevelopment = parsed.modules as Array<
-                import('../tools/pdf/generateCoursePdf').CourseModule & { development?: string }
-              >;
-              parsed.modules = modulesWithDevelopment.map((m) => ({
-                ...m,
-                exercise: m.development
-                  ? `${m.exercise}\n\nDesarrollo: ${m.development}`
-                  : m.exercise,
-              }));
-              courseContent = parsed;
+            // SEEK 3.9 — TYPE-SAFE (stream parity): same raw-reconstruction pattern
+            // as execution-engine.ts — no direct m.development access on typed CourseModule.
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            const rawModules = Array.isArray(parsed.modules)
+              ? parsed.modules as Array<Record<string, unknown>>
+              : [];
+
+            if (rawModules.length > 0) {
+              const normalizedModules = rawModules.map((m) => {
+                const exercise     = typeof m.exercise     === 'string' ? m.exercise     : '';
+                const development  = typeof m.development  === 'string' ? m.development  : '';
+                return {
+                  index: typeof m.index === 'number' ? m.index : 0,
+                  title: typeof m.title === 'string' ? m.title : 'Module',
+                  vocabulary: Array.isArray(m.vocabulary)
+                    ? (m.vocabulary as Array<[string, string]>)
+                    : [],
+                  grammar: typeof m.grammar === 'string' ? m.grammar : '',
+                  exercise: development
+                    ? `${exercise}\n\nDesarrollo: ${development}`
+                    : exercise,
+                  communicativeFunction: typeof m.communicativeFunction === 'string'
+                    ? m.communicativeFunction : '',
+                  tip: typeof m.tip === 'string' ? m.tip : '',
+                };
+              });
+              courseContent = {
+                mentorName:    typeof parsed.mentorName   === 'string' ? parsed.mentorName   : mentor,
+                level:         typeof parsed.level        === 'string' ? parsed.level        : level,
+                studentName:   typeof parsed.studentName  === 'string' ? parsed.studentName  : 'Estudiante',
+                courseTitle:   typeof parsed.courseTitle  === 'string' ? parsed.courseTitle  : `Curso — ${topic}`,
+                objective:     typeof parsed.objective    === 'string' ? parsed.objective    : '',
+                nativeLanguage:typeof parsed.nativeLanguage === 'string' ? parsed.nativeLanguage : lang,
+                totalModules:  typeof parsed.totalModules === 'number'  ? parsed.totalModules : normalizedModules.length,
+                modules:       normalizedModules,
+                nextStep:      typeof parsed.nextStep     === 'string' ? parsed.nextStep     : '',
+                generatedAt:   typeof parsed.generatedAt  === 'string' ? parsed.generatedAt  : now,
+              } as import('../tools/pdf/generateCoursePdf').CourseContent;
             } else {
               courseGenError = 'Model returned JSON with no modules.';
             }
