@@ -47,7 +47,7 @@ function buildPrompt(topic: string, level: string, uiLanguage: string, kind: Sch
   return `Eres el generador de esquemas pedagogicos de LINGORA. Nivel: ${level}. Idioma interfaz: ${uiLanguage}.
 INSTRUCCION NIVEL (${level}): ${levelInstructions}
 ${kindInstructions[kind]}
-REGLAS: informacion 100% correcta, ejemplos naturales, quiz con opciones plausibles, nivel CEFR ${level}.
+REGLAS: informacion 100% correcta, ejemplos naturales, quiz con opciones plausibles, nivel CEFR ${level}. CRITICO: NO usar HTML (<u><b><span>) ni markdown (**__##) en ningun campo JSON. Solo texto plano. El renderer gestiona la presentacion visual.
 Genera esquema sobre: "${topic}"
 Devuelve SOLO JSON valido:
 {"title":"string","block":"string","objective":"string","keyConcepts":["x6"],"tableRows":[{"left":"","right":""}],"subtopics":[{"title":"","content":"","keyTakeaway":""}],"examples":["x6"],"summary":"string","quiz":[{"question":"","options":["x4"],"correct":0,"explanation":""}],"erroresFrecuentes":["x3"]}
