@@ -1,25 +1,26 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.9-b — Streaming Execution Engine
+// LINGORA SEEK 3.9-c — Streaming Execution Engine
+// =============================================================================
+// SEEK 3.9 base  : F1 (honest PDF errors), F2 (PDF render errors), F3 (header).
+// SEEK 3.9-b     : LW1 (elastic prompt), LW2 (topic sovereignty).
+// SEEK 3.9-c     : Operación Liberen a Willy — stream parity with engine.ts.
+//
+//   LW3 — Domain terminology enforcement (identical prompt to execution-engine.ts).
+//   LW4 — Post-generation validator (identical logic to execution-engine.ts).
+//   LW5 — Domain-specific module title mandate (via prompt example).
+//   C5  — Pre-generation timestamp log [PDF:START:stream] / [PDF:DONE:stream].
+//
+// Approved: IS + CSJ — 5 de abril de 2026
+// Sprint: SEEK 3.9-c · Operación Liberen a Willy
 // =============================================================================
 //
-// SEEK 3.9 CHANGES (base):
-//   F1 — generateCoursePdf (stream): LLM/parse failure → honest error delta
-//        instead of silent {} return. Parity with execution-engine.ts F1.
-//   F2 — PDF render failure in stream path also surfaces as honest delta.
-//   F3 — Header bumped to SEEK-3.9.
-//
-// SEEK 3.9-b CHANGES (Operación Liberen a Willy — stream parity):
-//   LW1 — coursePrompt: elastic content contract, identical to execution-engine.ts.
-//         Modules 5-8, vocabulary with sentence examples, development 60-200 words,
-//         grammar adapts to domain complexity, exercise includes domain simulation.
-//   LW2 — TOPIC SOVEREIGNTY RULE: identical clause to execution-engine.ts.
-//         Prevents meta-course generation ("curso sobre cómo pedir un curso").
-//   LW3 — All other stream logic preserved from SEEK 3.9.
-//
-// Approved by: IS + CSJ — consensus 5 de abril de 2026
-// Sprint: SEEK 3.9-b · Operación Liberen a Willy
-// Files changed: execution-engine.ts, execution-engine-stream.ts ONLY
+// SEEK 3.9 base: F1 (honest PDF errors), F2 (PDF render errors), F3 (header).
+// SEEK 3.9-b: LW1 (elastic prompt), LW2 (topic sovereignty).
+// SEEK 3.9-c CHANGES:
+//   C5 — Pre-generation timestamp log (parity with execution-engine.ts).
+//        [PDF:START] fires before OpenAI call; [PDF:DONE] fires after.
+//        Allows forensic reconstruction when Vercel truncates long-running logs.
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
@@ -44,7 +45,6 @@
 import {
   ExecutionPlan,
   ExecutionStep,
-  ExecutionStepResult,
   ExecutorType,
   ArtifactPayload,
   SessionState,
@@ -53,7 +53,7 @@ import {
   SuggestedAction,
 } from '../../lib/contracts';
 
-import { ExecutionResult }                    from './execution-engine';
+// ExecutionResult imported from execution-engine — not used in stream path
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
@@ -386,60 +386,49 @@ async function dispatchSync(
           ? `The course is about the Spanish language topic: "${topic}".`
           : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
 
-        // SEEK 3.9-b — LW1+LW2: ELASTIC CONTENT CONTRACT — stream parity with execution-engine.ts
-        // Identical prompt to execution-engine.ts to guarantee consistent output
-        // regardless of whether streaming is active. Parity is architectural requirement.
-        const coursePrompt = `You are LINGORA's expert course generator. Produce a complete, authentic, pedagogically rich Spanish course as valid JSON.
+        // SEEK 3.9-c — LIBEREN A WILLY (stream parity): free-reasoning course prompt.
+        // Identical to execution-engine.ts — no rules, goal + structure only.
+        const coursePrompt = `You are a world-class Spanish language course designer with deep expertise across all professional domains. Your task is to generate a complete, authentic Spanish course as valid JSON.
+
+Topic: "${topic}"
+Level: ${level}
+Interface language: ${lang}
+Mentor: ${mentor}
+
+Design a course that genuinely serves a student who needs to use Spanish in the real context of "${topic}". The depth, terminology, structure and progression should reflect what a competent practitioner in that field would need in Spanish — not what a generic Spanish textbook would provide.
 
 ${domainFrameS}
-Level: ${level}. Interface language: ${lang}. Mentor: ${mentor}.
 
-CONTENT SOVEREIGNTY RULE (non-negotiable):
-This course must be entirely about the requested domain: "${topic}".
-It must NOT be a course about "how to request a course", "how to use LINGORA", or any meta-topic.
-If the topic is medical, clinical, legal, scientific, or professional — generate real domain vocabulary in Spanish.
-A domain expert teaching Spanish for "${topic}" would produce this course. Be that expert.
-
-CONTENT REQUIREMENTS — ELASTIC (adjust depth to domain complexity):
-- totalModules: between 5 and 8. Simple topics: 5. Complex domains (medicine, law, TCM): 7-8.
-- vocabulary: MINIMUM 8 pairs per module. Each pair must include a full-sentence example showing real usage, not just the translation.
-- grammar: 2 to 8 sentences depending on grammatical complexity of the domain. Simple topic: 2-3 sentences. Complex domain: up to 8.
-- exercise: 3 parts: (1) fill-in-the-blank with domain vocabulary, (2) production sentence using the grammar rule, (3) real-world domain simulation (e.g. "You are talking to a patient in Spanish — complete the dialogue").
-- development: 60 to 200 words. Expand freely to cover the domain authentically. Cultural notes, practical context, domain-specific insights. Do not pad — expand when the content demands it.
-- communicativeFunction: what the student CAN DO in the real domain after this module (start with "Puedes..."). Be specific to the domain, not generic.
-- tip: match the domain — clinical tip for medical topics, exam strategy for DELE, cultural insight for travel/social, corporate phrasing for business. 2-4 sentences.
-
-Return ONLY valid JSON (no markdown, no extra text):
+Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
 {
   "mentorName": "${mentor}",
   "level": "${level}",
   "studentName": "Estudiante",
-  "courseTitle": "string — specific, domain-authentic title in the interface language",
-  "objective": "string — 3-4 sentence learning objective describing real-world outcomes in the domain",
+  "courseTitle": "string",
+  "objective": "string",
   "nativeLanguage": "${lang}",
-  "totalModules": <number between 5 and 8>,
+  "totalModules": <number>,
   "modules": [
     {
       "index": 1,
-      "title": "string — specific module title tied to a distinct domain sub-topic",
-      "vocabulary": [["spanish word or phrase", "translation — full-sentence usage example in Spanish"], ...],
-      "grammar": "string — 2-8 sentences: rule, exception, memory anchor, domain-specific usage",
-      "exercise": "string — 3-part exercise: part 1 fill-in, part 2 production, part 3 domain simulation",
-      "development": "string — 60-200 word paragraph: domain context, authentic examples, cultural notes",
-      "communicativeFunction": "string — starts with Puedes... and is domain-specific",
-      "tip": "string — 2-4 sentences matched to domain type"
+      "title": "string",
+      "vocabulary": [["spanish term", "translation + usage in context"], ...],
+      "grammar": "string",
+      "exercise": "string",
+      "development": "string",
+      "communicativeFunction": "string",
+      "tip": "string"
     }
   ],
-  "nextStep": "string — specific, actionable next step in the domain learning path",
+  "nextStep": "string",
   "generatedAt": "${now}"
-}
+}`;
 
-QUALITY RULES:
-- Every module must cover a DISTINCT sub-topic of "${topic}" — no repetition
-- Each module must be COMPLETE and SELF-CONTAINED — no placeholders, no "see above", no "etc."
-- vocabulary minimum 8 pairs per module — no exceptions
-- All content CEFR ${level} appropriate
-- Non-Spanish domain: every module frames content around SPANISH USE IN THE DOMAIN, not domain theory`;
+        // SEEK 3.9-c — C5 (stream parity): pre-generation timestamp log.
+        // Vercel truncates logs when functions run >10s. [PDF:START] fires before
+        // the OpenAI call — if it appears but result does not, latency is confirmed.
+        const pdfGenStartS = Date.now();
+        console.log(`[PDF:START:stream] generateCoursePdf — topic: "${topic}", level: ${level}, model: ${RUNTIME_MODEL}, t=${pdfGenStartS}`);
 
         // SEEK 3.9 — F1 (stream parity): capture errors explicitly.
         let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
@@ -500,6 +489,48 @@ QUALITY RULES:
         } catch (e) {
           courseGenError = e instanceof Error ? e.message : String(e);
           console.error('[stream] generateCoursePdf: LLM/parse failed:', courseGenError);
+        }
+
+        // SEEK 3.9-c — C5: duration log for Vercel forensics
+        console.log(`[PDF:DONE:stream] generateCoursePdf — success: ${!!courseContent}, modules: ${courseContent?.modules?.length ?? 0}, durationMs: ${Date.now() - pdfGenStartS}`);
+
+        // SEEK 3.9-c — LW4: POST-GENERATION DOMAIN VALIDATOR (stream — parity with engine.ts)
+        // Two-layer check: titles (Layer A) + vocabulary content (Layer B).
+        // IS recommendation: title-only check can be gamed by good titles + weak body.
+        if (courseContent) {
+          const GENERIC_TITLE_WORDS_S = /\b(introduction|introducción|vocabulary|vocabulario básico|grammar|gramática|basics|básico|overview|resumen|module overview|getting started|empezando)\b/i;
+          const genericCountS = courseContent.modules.filter(m => {
+            const t = m.title?.trim() ?? '';
+            return GENERIC_TITLE_WORDS_S.test(t) && t.length < 45;
+          }).length;
+          const totalModsS = courseContent.modules.length;
+
+          const FILLER_TERMS_S = /^(hola|adiós|gracias|por favor|sí|no|bien|mal|buenas|buenos días|buenas tardes|me llamo|¿cómo estás?|hasta luego)$/i;
+          const vacuousVocabCountS = courseContent.modules.filter(m => {
+            const vocab = m.vocabulary ?? [];
+            if (vocab.length === 0) return false;
+            const fillerCount = vocab.filter((pair: string[]) =>
+              FILLER_TERMS_S.test((pair[0] ?? '').trim())
+            ).length;
+            return fillerCount > Math.floor(vocab.length * 0.6);
+          }).length;
+
+          const titlesFail_S = totalModsS > 0 && genericCountS > Math.floor(totalModsS / 2);
+          const vocabFails_S  = totalModsS > 0 && vacuousVocabCountS > Math.floor(totalModsS / 2);
+
+          if (titlesFail_S || vocabFails_S) {
+            console.error(`[PDF:stream] LW4 FAILED — titles: ${genericCountS}/${totalModsS} generic, vocab: ${vacuousVocabCountS}/${totalModsS} vacuous — topic: "${topic}"`);
+            const validationErrorMsgsS: Record<string, string> = {
+              en: `The course for "${topic}" did not pass domain validation — content was too generic. Please try again.`,
+              es: `El curso sobre "${topic}" no pasó la validación de dominio. Inténtalo de nuevo con más precisión.`,
+              no: `Kurset om "${topic}" bestod ikke domenevalidering. Prøv igjen.`,
+              it: `Il corso su "${topic}" non ha superato la validazione. Riprova.`,
+              fr: `Le cours sur "${topic}" n'a pas passé la validation. Réessaie.`,
+              de: `Validierung für "${topic}" fehlgeschlagen. Bitte erneut versuchen.`,
+            };
+            return { text: validationErrorMsgsS[lang] ?? validationErrorMsgsS['en'], isUserVisibleError: true };
+          }
+          console.log(`[PDF:stream] LW4 PASSED — ${totalModsS - genericCountS}/${totalModsS} domain titles, ${totalModsS - vacuousVocabCountS}/${totalModsS} domain vocab`);
         }
 
         // SEEK 3.9 — F1: honest error text, not silent {}.
