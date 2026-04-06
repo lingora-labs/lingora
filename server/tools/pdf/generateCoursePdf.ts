@@ -31,7 +31,7 @@
 //            No más espacio en blanco."
 // =============================================================================
 
-import { PDFDocument, PDFPage, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, PDFPage, PDFFont, rgb, StandardFonts } from 'pdf-lib';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 export interface CourseModule {
@@ -71,13 +71,10 @@ const CONTENT_W   = PAGE_W - MARGIN_L - MARGIN_R;
 const SZ_TITLE    = 22;
 const SZ_SUBTITLE = 13;
 const SZ_MODULE   = 16;
-const SZ_SECTION  = 10;
 const SZ_BODY     = 9.5;
 const SZ_SMALL    = 8.5;
 
 // Line heights
-const LH_MODULE   = 22;
-const LH_SECTION  = 14;
 const LH_BODY     = 13;
 const LH_SMALL    = 12;
 
@@ -141,13 +138,13 @@ function charsPerLine(fontSize: number): number {
 interface PageState {
   pdfDoc:    PDFDocument;
   page:      PDFPage;
-  boldFont:  ReturnType<PDFDocument['embedStandardFont']> extends Promise<infer T> ? T : never;
-  regFont:   ReturnType<PDFDocument['embedStandardFont']> extends Promise<infer T> ? T : never;
+  boldFont:  PDFFont;
+  regFont:   PDFFont;
   currentY:  number;
 }
 
 // ── Core draw helpers ─────────────────────────────────────────────────────────
-async function newPage(pdfDoc: PDFDocument, boldFont: any, regFont: any): Promise<PageState> {
+async function newPage(pdfDoc: PDFDocument, boldFont: PDFFont, regFont: PDFFont): Promise<PageState> {
   const page = pdfDoc.addPage([PAGE_W, PAGE_H]);
   return { pdfDoc, page, boldFont, regFont, currentY: PAGE_H - MARGIN_TOP };
 }
@@ -162,7 +159,7 @@ function drawLine(
   text: string,
   opts: {
     size?:  number;
-    font?:  any;
+    font?:  PDFFont;
     color?: ReturnType<typeof rgb>;
     x?:     number;
     indent?: number;
@@ -181,7 +178,7 @@ function drawWrapped(
   text: string,
   opts: {
     size?:   number;
-    font?:   any;
+    font?:   PDFFont;
     color?:  ReturnType<typeof rgb>;
     indent?: number;
   } = {}
@@ -216,7 +213,7 @@ function sectionLabel(ps: PageState, label: string, color: ReturnType<typeof rgb
 
 // ── Cover page ────────────────────────────────────────────────────────────────
 async function drawCover(ps: PageState, content: CourseContent): Promise<void> {
-  const { page, boldFont, regFont, currentY: _y } = ps;
+  const { page, boldFont, regFont } = ps;
 
   // Background header bar
   page.drawRectangle({ x: 0, y: PAGE_H - 120, width: PAGE_W, height: 120, color: C_DARK });
@@ -262,7 +259,7 @@ async function drawCover(ps: PageState, content: CourseContent): Promise<void> {
   const colW = CONTENT_W / meta.length;
   for (let i = 0; i < meta.length; i++) {
     const x = MARGIN_L + i * colW;
-    page.drawText(meta[i][0].toUpperCase(), { x, y: ps.currentY, size: SZ_SMALL, font: boldFont, color: C_MUTED });
+    page.drawText(safe(meta[i][0].toUpperCase()), { x, y: ps.currentY, size: SZ_SMALL, font: boldFont, color: C_MUTED });
     page.drawText(safe(meta[i][1]), { x, y: ps.currentY - 14, size: SZ_SUBTITLE, font: boldFont, color: C_DARK });
   }
   ps.currentY -= 40;
@@ -284,8 +281,8 @@ async function drawCover(ps: PageState, content: CourseContent): Promise<void> {
 // ── Module page(s) ────────────────────────────────────────────────────────────
 async function drawModule(
   pdfDoc:    PDFDocument,
-  boldFont:  any,
-  regFont:   any,
+  boldFont:  PDFFont,
+  regFont:   PDFFont,
   mod:       CourseModule,
   total:     number,
   mentorName: string,
@@ -308,7 +305,7 @@ async function drawModule(
   ps.page.drawRectangle({
     x: 0, y: ps.currentY - 40, width: PAGE_W, height: 44, color: C_ACCENT,
   });
-  ps.page.drawText(`MODULO ${mod.index}`, {
+  ps.page.drawText(safe(`MODULO ${mod.index}`), {
     x: MARGIN_L, y: ps.currentY - 14, size: SZ_SMALL, font: boldFont, color: C_WHITE,
   });
   const titleLines = wrapText(mod.title, charsPerLine(SZ_MODULE));
@@ -316,7 +313,7 @@ async function drawModule(
     x: MARGIN_L, y: ps.currentY - 30, size: SZ_MODULE, font: boldFont, color: C_WHITE,
   });
   // Page counter top-right
-  ps.page.drawText(`${mod.index} / ${total}`, {
+  ps.page.drawText(safe(`${mod.index} / ${total}`), {
     x: PAGE_W - MARGIN_R - 28, y: ps.currentY - 22, size: SZ_SMALL, font: regFont, color: C_WHITE,
   });
   ps.currentY -= 54;
@@ -419,8 +416,8 @@ async function drawModule(
 async function continueOnNewPage(
   oldPs:      PageState,
   pdfDoc:     PDFDocument,
-  boldFont:   any,
-  regFont:    any,
+  boldFont:   PDFFont,
+  regFont:    PDFFont,
   mod:        CourseModule,
   mentorName: string,
   level:      string,
@@ -430,7 +427,7 @@ async function continueOnNewPage(
   const ps = await newPage(pdfDoc, boldFont, regFont);
   // Minimal continuation header
   ps.page.drawRectangle({ x: 0, y: PAGE_H - 32, width: PAGE_W, height: 32, color: C_DARK });
-  ps.page.drawText(`LINGORA  —  Módulo ${mod.index} (cont.)`, {
+  ps.page.drawText(safe(`LINGORA - Modulo ${mod.index} (cont.)`), {
     x: MARGIN_L, y: PAGE_H - 20, size: SZ_SMALL, font: boldFont, color: C_WHITE,
   });
   ps.currentY = PAGE_H - 48;
@@ -452,7 +449,7 @@ function drawFooter(ps: PageState, mentorName: string, level: string, courseTitl
 
 // ── Closing page ──────────────────────────────────────────────────────────────
 async function drawClosing(ps: PageState, content: CourseContent): Promise<void> {
-  const page = ps.page;
+
   gap(ps, 20);
   hLine(ps, C_ACCENT);
   gap(ps, 16);
@@ -510,3 +507,4 @@ export async function renderCoursePdf(content: CourseContent): Promise<Uint8Arra
 
   return pdfDoc.save();
 }
+
