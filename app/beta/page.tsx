@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.9c — Beta Tutor Interface
+// LINGORA SEEK 3.9 c — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
