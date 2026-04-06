@@ -381,10 +381,10 @@ async function dispatchSync(
         const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
         // SEEK 3.9 — FIX-DENSITY (stream parity): identical prompt to execution-engine.ts
-        const isSpanishDomainS = /gramatica|grammar|vocabulario|vocabulary|subjuntivo|tiempos|verbos|pronunciacion|conjugacion|dele|ccse|siele|presentacion|saludos|restaurante|viaje|travel|negocios|business|conversacion/i.test(topic);
-        const domainFrameS = isSpanishDomainS
-          ? `The course is about the Spanish language topic: "${topic}".`
-          : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
+        // SEEK 3.9-c — DOMAINFRAMES ELIMINATED (stream parity).
+        // See execution-engine.ts for full rationale.
+        // Trust GPT-5.4-mini to read intent from the prompt itself.
+        const domainFrameS = '';
 
         // SEEK 3.9-c — LIBEREN A WILLY (stream parity): free-reasoning course prompt.
         // Identical to execution-engine.ts — no rules, goal + structure only.
