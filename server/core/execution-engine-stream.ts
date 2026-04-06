@@ -381,25 +381,24 @@ async function dispatchSync(
         const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
         // SEEK 3.9 — FIX-DENSITY (stream parity): identical prompt to execution-engine.ts
-        // SEEK 3.9-c — DOMAINFRAMES ELIMINATED (stream parity).
-        // See execution-engine.ts for full rationale.
-        // Trust GPT-5.4-mini to read intent from the prompt itself.
-        const domainFrameS = '';
 
         // SEEK 3.9-c — LIBEREN A WILLY (stream parity): free-reasoning course prompt.
         // Identical to execution-engine.ts — no rules, goal + structure only.
-        const coursePrompt = `You are a world-class Spanish language course designer with deep expertise across all professional domains. Your task is to generate a complete, authentic Spanish course as valid JSON.
+        // SEEK 3.9-c — STREAM PARITY: cleanTopic + system/user split.
+        const cleanTopicS = topic
+          .replace(/\.\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera|no puede ser|nivel profesional|con indice|con guia|con desarrollo).*/i, '')
+          .replace(/,\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera).*/i, '')
+          .trim()
+          || topic;
 
-Topic: "${topic}"
-Level: ${level}
-Interface language: ${lang}
-Mentor: ${mentor}
+        const courseSystemPromptS = `You are a world-class course designer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Your JSON must match the exact structure provided.`;
 
-Design a course that genuinely serves a student who needs to use Spanish in the real context of "${topic}". The depth, terminology, structure and progression should reflect what a competent practitioner in that field would need in Spanish — not what a generic Spanish textbook would provide.
+        const courseUserPromptS = `Generate a complete, authentic course about "${cleanTopicS}" at level ${level}.
+Interface language: ${lang}. Mentor: ${mentor}.
 
-${domainFrameS}
+The course should reflect what someone who works in the field of "${cleanTopicS}" actually needs. If it is a language course, teach language. If it is a professional domain, teach that domain. Decide the right number of modules, depth, and terminology based on the subject matter.
 
-Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
+Return ONLY this JSON structure:
 {
   "mentorName": "${mentor}",
   "level": "${level}",
@@ -412,7 +411,7 @@ Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
     {
       "index": 1,
       "title": "string",
-      "vocabulary": [["spanish term", "translation + usage in context"], ...],
+      "vocabulary": [["term", "translation + sentence"], ...],
       "grammar": "string",
       "exercise": "string",
       "development": "string",
@@ -435,10 +434,14 @@ Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
         let courseGenError: string | null = null;
 
         try {
+          // SEEK 3.9-c stream: system+user split, 6000 tokens, 0.7 temp.
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 4500, 0.3),
+            ...buildModelParams(RUNTIME_MODEL, 6000, 0.7),
             response_format: { type: 'json_object' },
-            messages: [{ role: 'user', content: coursePrompt }],
+            messages: [
+              { role: 'system', content: courseSystemPromptS },
+              { role: 'user',   content: courseUserPromptS   },
+            ],
           });
           const raw = completion.choices?.[0]?.message?.content ?? '';
           if (!raw.trim()) {
