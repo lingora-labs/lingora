@@ -461,33 +461,46 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         // To replicate DeepSeek's behavior (plan then generate), we give GPT the
         // structural contract via system message and the creative task via user.
         // This produces more reliable JSON than a single mixed-role message.
-        const courseSystemPrompt = `You are a world-class course designer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Your JSON must match the exact structure provided.`;
+        // SEEK 4.0 — DocumentBlock[] contract
+        // CEO + IS + CSJ consensus 6 de abril de 2026:
+        // "Un contrato abstracto. Un renderer neutro. Un solo camino. El LLM decide la estructura."
+        const courseSystemPrompt = `You are a world-class document composer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Think carefully about the nature of the request before deciding the document structure.`;
 
-        const courseUserPrompt = `Generate a complete, authentic course about "${cleanTopic}" at level ${level}.
-Interface language: ${lang}. Mentor: ${mentor}.
+        const courseUserPrompt = `Compose a complete, high-quality document about "${cleanTopic}".
+Audience language: ${lang}. Mentor voice: ${mentor}. Reference level: ${level}.
 
-The course should reflect what someone who works in the field of "${cleanTopic}" actually needs. If it is a language course, teach language. If it is a professional domain, teach that domain. Decide the right number of modules, depth, and terminology based on the subject matter.
+STEP 1 — THINK (internally, before writing):
+What type of intellectual object does this request require?
+(curriculum, clinical guide, language course, dossier, academic overview, grammar reference, etc.)
+What is the appropriate depth? Who is the likely reader?
+What sections are NECESSARY for this topic to be useful?
 
-Return ONLY this JSON structure:
+STEP 2 — COMPOSE:
+Build the document using the block types that best serve the topic.
+Use headings, paragraphs, tables, key_value pairs, callouts, exercises, bullets — whatever the content needs.
+If it is a language course: teach the language with appropriate linguistic blocks.
+If it is a professional or academic domain: teach that domain with appropriate conceptual blocks.
+Do NOT force vocabulary/grammar/exercise onto non-linguistic content.
+Do NOT force clinical/academic structure onto simple language exercises.
+
+Return ONLY this JSON:
 {
-  "mentorName": "${mentor}",
+  "title": "string",
+  "subtitle": "string or null",
+  "documentType": "string (e.g. curriculo, guia clinica, curso de idioma, dossier academico)",
   "level": "${level}",
-  "studentName": "Estudiante",
-  "courseTitle": "string",
-  "objective": "string",
+  "mentorName": "${mentor}",
   "nativeLanguage": "${lang}",
-  "totalModules": <number>,
-  "modules": [
-    {
-      "index": 1,
-      "title": "string",
-      "vocabulary": [["term", "translation + sentence"], ...],
-      "grammar": "string",
-      "exercise": "string",
-      "development": "string",
-      "communicativeFunction": "string",
-      "tip": "string"
-    }
+  "studentName": "Estudiante",
+  "blocks": [
+    {"type":"heading","level":1,"content":"Section title"},
+    {"type":"paragraph","content":"Prose text..."},
+    {"type":"key_value","label":"Terminology","items":["term: definition and usage sentence"]},
+    {"type":"table","headers":["Col A","Col B","Col C"],"rows":[["a1","b1","c1"]]},
+    {"type":"callout","label":"Nota clinica","style":"tip","content":"Important note..."},
+    {"type":"bullets","items":["item one","item two"]},
+    {"type":"exercise","label":"Practica","content":"Exercise instructions..."},
+    {"type":"divider"}
   ],
   "nextStep": "string",
   "generatedAt": "${now}"
@@ -522,47 +535,49 @@ Return ONLY this JSON structure:
           if (!raw.trim()) {
             courseGenError = 'Model returned empty content for course generation.';
           } else {
-            // SEEK 3.9 — TYPE-SAFE: deserialize as Record<string, unknown>, read
-            // development from raw structure, reconstruct CourseContent cleanly.
-            // Avoids TypeScript losing the extended type in .map() callbacks.
+            // SEEK 4.0 — TYPE-SAFE: deserialize DocumentContent with DocumentBlock[].
+            // The LLM now returns blocks[] instead of modules[]. The normalizer
+            // validates block structure and falls back gracefully on malformed entries.
             const parsed = JSON.parse(raw) as Record<string, unknown>;
-            const rawModules = Array.isArray(parsed.modules)
-              ? parsed.modules as Array<Record<string, unknown>>
+            const rawBlocks = Array.isArray(parsed.blocks)
+              ? parsed.blocks as Array<Record<string, unknown>>
               : [];
 
-            if (rawModules.length > 0) {
-              const normalizedModules = rawModules.map((m) => {
-                const exercise     = typeof m.exercise     === 'string' ? m.exercise     : '';
-                const development  = typeof m.development  === 'string' ? m.development  : '';
+            const VALID_BLOCK_TYPES = new Set([
+              'heading','paragraph','bullets','numbered','table',
+              'callout','quote','divider','key_value','exercise','summary',
+            ]);
+
+            if (rawBlocks.length > 0) {
+              const normalizedBlocks = rawBlocks.map((b) => {
+                const type = typeof b.type === 'string' && VALID_BLOCK_TYPES.has(b.type)
+                  ? b.type as import('../tools/pdf/generateCoursePdf').DocumentBlockType
+                  : 'paragraph' as const;
                 return {
-                  index: typeof m.index === 'number' ? m.index : 0,
-                  title: typeof m.title === 'string' ? m.title : 'Module',
-                  vocabulary: Array.isArray(m.vocabulary)
-                    ? (m.vocabulary as Array<[string, string]>)
-                    : [],
-                  grammar: typeof m.grammar === 'string' ? m.grammar : '',
-                  exercise: development
-                    ? `${exercise}\n\nDesarrollo: ${development}`
-                    : exercise,
-                  communicativeFunction: typeof m.communicativeFunction === 'string'
-                    ? m.communicativeFunction : '',
-                  tip: typeof m.tip === 'string' ? m.tip : '',
+                  type,
+                  level:   typeof b.level === 'number'    ? b.level as 1|2|3    : undefined,
+                  content: typeof b.content === 'string'  ? b.content           : undefined,
+                  label:   typeof b.label === 'string'    ? b.label             : undefined,
+                  style:   typeof b.style === 'string'    ? b.style as 'info'|'warning'|'exercise'|'quote'|'tip' : undefined,
+                  items:   Array.isArray(b.items)         ? (b.items as string[]).map(String) : undefined,
+                  headers: Array.isArray(b.headers)       ? (b.headers as string[]).map(String) : undefined,
+                  rows:    Array.isArray(b.rows)          ? (b.rows as string[][]) : undefined,
                 };
               });
               courseContent = {
-                mentorName:    typeof parsed.mentorName   === 'string' ? parsed.mentorName   : mentor,
+                title:         typeof parsed.title        === 'string' ? parsed.title        : `Documento — ${cleanTopic}`,
+                subtitle:      typeof parsed.subtitle     === 'string' ? parsed.subtitle     : undefined,
+                documentType:  typeof parsed.documentType === 'string' ? parsed.documentType : 'documento',
                 level:         typeof parsed.level        === 'string' ? parsed.level        : level,
-                studentName:   typeof parsed.studentName  === 'string' ? parsed.studentName  : 'Estudiante',
-                courseTitle:   typeof parsed.courseTitle  === 'string' ? parsed.courseTitle  : `Curso — ${topic}`,
-                objective:     typeof parsed.objective    === 'string' ? parsed.objective    : '',
+                mentorName:    typeof parsed.mentorName   === 'string' ? parsed.mentorName   : mentor,
                 nativeLanguage:typeof parsed.nativeLanguage === 'string' ? parsed.nativeLanguage : lang,
-                totalModules:  typeof parsed.totalModules === 'number'  ? parsed.totalModules : normalizedModules.length,
-                modules:       normalizedModules,
+                studentName:   typeof parsed.studentName  === 'string' ? parsed.studentName  : 'Estudiante',
+                blocks:        normalizedBlocks,
                 nextStep:      typeof parsed.nextStep     === 'string' ? parsed.nextStep     : '',
                 generatedAt:   typeof parsed.generatedAt  === 'string' ? parsed.generatedAt  : now,
-              } as import('../tools/pdf/generateCoursePdf').CourseContent;
+              } as import('../tools/pdf/generateCoursePdf').DocumentContent;
             } else {
-              courseGenError = 'Model returned JSON with no modules.';
+              courseGenError = 'Model returned JSON with no blocks.';
             }
           }
         } catch (e) {
@@ -571,55 +586,33 @@ Return ONLY this JSON structure:
         }
 
         // SEEK 3.9-c — C5: log duration for Vercel forensics regardless of outcome
-        console.log(`[PDF:DONE] generateCoursePdf — success: ${!!courseContent}, modules: ${courseContent?.modules?.length ?? 0}, durationMs: ${Date.now() - pdfGenStart}`);
+        console.log(`[PDF:DONE] generateCoursePdf — success: ${!!courseContent}, blocks: ${(courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent)?.blocks?.length ?? 0}, durationMs: ${Date.now() - pdfGenStart}`);
 
-        // SEEK 3.9-c — LW4: POST-GENERATION DOMAIN VALIDATOR (strengthened per IS)
-        // Two-layer check per IS recommendation:
-        // Layer A: titles — must not be purely generic
-        // Layer B: vocabulary — at least one module must have vocabulary that
-        //          references the topic (not just hola/gracias/por favor)
-        // IS note: "validator based only on titles can be gamed by good titles + weak body"
+        // SEEK 4.0 — LW4: POST-GENERATION VALIDATOR (adapted for DocumentBlock[])
+        // Validates that the document has meaningful content (not empty or trivial).
+        // No longer checks for "domain vocabulary" — the LLM now decides block types.
+        // Minimal check: at least 2 blocks, at least one heading or paragraph with content.
         if (courseContent) {
-          // Layer A: title check — detect generic patterns including "Módulo 1: Vocabulario básico"
-          const GENERIC_TITLE_WORDS = /\b(introduction|introducción|vocabulary|vocabulario básico|grammar|gramática|basics|básico|overview|resumen|module overview|getting started|empezando)\b/i;
-          const genericCount = courseContent.modules.filter(m => {
-            const t = m.title?.trim() ?? '';
-            // Pure generic (no other words) OR starts with generic + number
-            return GENERIC_TITLE_WORDS.test(t) && t.length < 45;
-          }).length;
-          const totalMods = courseContent.modules.length;
+          const docBlocks = (courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).blocks ?? [];
+          const hasContent = docBlocks.length >= 2 &&
+            docBlocks.some(b => (b.type === 'heading' || b.type === 'paragraph') && b.content);
 
-          // Layer B: vocabulary content check
-          // Count modules where ALL vocabulary pairs look like basic filler
-          const FILLER_TERMS = /^(hola|adiós|gracias|por favor|sí|no|bien|mal|buenas|buenos días|buenas tardes|me llamo|¿cómo estás?|hasta luego)$/i;
-          const vacuousVocabCount = courseContent.modules.filter(m => {
-            const vocab = m.vocabulary ?? [];
-            if (vocab.length === 0) return false;
-            const fillerCount = vocab.filter((pair: string[]) =>
-              FILLER_TERMS.test((pair[0] ?? '').trim())
-            ).length;
-            return fillerCount > Math.floor(vocab.length * 0.6); // >60% filler = vacuous
-          }).length;
-
-          const titlesFail = totalMods > 0 && genericCount > Math.floor(totalMods / 2);
-          const vocabFails  = totalMods > 0 && vacuousVocabCount > Math.floor(totalMods / 2);
-
-          if (titlesFail || vocabFails) {
-            console.error(`[PDF] LW4 FAILED — titles: ${genericCount}/${totalMods} generic, vocab: ${vacuousVocabCount}/${totalMods} vacuous — topic: "${topic}"`);
+          if (!hasContent) {
+            console.error(`[PDF] LW4 FAILED — document has ${docBlocks.length} blocks — topic: "${cleanTopic}"`);
             const lang2 = ctx.state.interfaceLanguage ?? 'en';
             const validationErrorMsgs: Record<string, string> = {
-              en: `The course for "${topic}" did not pass domain validation — content was too generic. Please try again, or specify the domain more precisely.`,
-              es: `El curso sobre "${topic}" no pasó la validación de dominio — el contenido resultó demasiado genérico. Inténtalo de nuevo con más precisión.`,
-              no: `Kurset om "${topic}" bestod ikke domenevalidering — innholdet var for generisk. Prøv igjen med mer presisjon.`,
-              it: `Il corso su "${topic}" non ha superato la validazione. Riprova specificando meglio il dominio.`,
-              fr: `Le cours sur "${topic}" n'a pas passé la validation. Réessaie avec plus de précision.`,
-              de: `Validierung für "${topic}" fehlgeschlagen — zu generisch. Bitte erneut versuchen.`,
+              en: `The document for "${cleanTopic}" did not generate sufficient content. Please try again.`,
+              es: `El documento sobre "${cleanTopic}" no generó contenido suficiente. Inténtalo de nuevo.`,
+              no: `Dokumentet om "${cleanTopic}" genererte ikke nok innhold. Prøv igjen.`,
+              it: `Il documento su "${cleanTopic}" non ha generato contenuto sufficiente. Riprova.`,
+              fr: `Le document sur "${cleanTopic}" n'a pas généré suffisamment de contenu. Réessaie.`,
+              de: `Das Dokument zu "${cleanTopic}" hat nicht genug Inhalt generiert. Bitte erneut versuchen.`,
             };
             return { text: validationErrorMsgs[lang2] ?? validationErrorMsgs['en'], isUserVisibleError: true };
           }
-          console.log(`[PDF] LW4 PASSED — ${totalMods - genericCount}/${totalMods} domain titles, ${totalMods - vacuousVocabCount}/${totalMods} domain vocab`);
+          const docType = (courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).documentType ?? 'unknown';
+          console.log(`[PDF] LW4 PASSED — ${docBlocks.length} blocks, documentType: ${docType}`);
         }
-
         // SEEK 3.9 — F1: if content generation failed, return honest error text.
         // This surfaces in compileResult() as the response message instead of
         // triggering the generic mentor fallback "No pude generar una respuesta".
@@ -637,8 +630,9 @@ Return ONLY this JSON structure:
           return { text: errorMsgs[lang2] ?? errorMsgs['en'], isUserVisibleError: true };
         }
 
-        const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
-        console.log(`[PDF] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
+        const docC = courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent;
+        const courseTitle = docC.title || `Documento — ${cleanTopic}`;
+        console.log(`[PDF] generateCoursePdf — courseTitle: ${courseTitle}, blocks: ${(courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).blocks?.length ?? 0}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
         console.log(`[PDF] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
         if (!result.success) {
@@ -652,7 +646,12 @@ Return ONLY this JSON structure:
           };
           return { text: pdfErrorMsgs[lang2] ?? pdfErrorMsgs['en'], isUserVisibleError: true };
         }
-        const artifact = { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) };
+        // SEEK 4.0: artifact uses block headings as navigation index
+          const docContent = courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent;
+          const headings = (docContent.blocks ?? [])
+            .filter(b => b.type === 'heading' && b.level === 1 && b.content)
+            .map(b => b.content as string);
+          const artifact = { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: headings };
         return { artifact };
       }
 
@@ -959,7 +958,7 @@ function buildArtifactSuccessMessage(artifactType: string, lang: string): string
 // SEEK 3.9 — buildFallbackMessage is only reached when ALL steps produced no text.
 // Course PDF errors are now returned as text from the step itself (F1), so this
 // generic fallback should rarely fire in practice.
-function buildFallbackMessage(plan: ExecutionPlan, lang: string): string {
+function buildFallbackMessage(_plan: ExecutionPlan, lang: string): string {
   const fallbacks: Record<string, string> = {
     en: "I wasn't able to generate a response right now — please try again in a moment.",
     es: "No pude generar una respuesta en este momento. Por favor, intentalo de nuevo en un instante.",
