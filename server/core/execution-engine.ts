@@ -429,12 +429,24 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
 
         // SEEK 3.9 — FIX-DENSITY: topic thematic isolation.
         // If topic is a non-Spanish domain (acupuncture, medicine, law, business, etc.)
-        // the course teaches SPANISH LANGUAGE SKILLS for that domain — NOT the domain itself.
+        // The model reads the prompt and decides what type of course to produce.
         // The course title and modules must reflect: "Spanish for [domain]", not "[domain] theory".
-        const isSpanishDomain = /gramatica|grammar|vocabulario|vocabulary|subjuntivo|tiempos|verbos|pronunciacion|conjugacion|dele|ccse|siele|presentacion|saludos|restaurante|viaje|travel|negocios|business|conversacion/i.test(topic);
-        const domainFrame = isSpanishDomain
-          ? `The course is about the Spanish language topic: "${topic}".`
-          : `The course teaches SPANISH LANGUAGE SKILLS needed to speak, read, and write about "${topic}" in Spanish. Each module covers vocabulary, grammar, and communicative functions related to "${topic}" — NOT theory about the domain itself. The course title should be "Spanish for [domain]" style.`;
+        // SEEK 3.9-c — DOMAINFRAME ELIMINATED.
+        // The old domainFrame explicitly told the LLM "do NOT teach the domain itself,
+        // teach Spanish language skills for the domain." That instruction was the source
+        // of every "Español para acupuntura" A1 module we observed.
+        //
+        // CEO question answered: we do NOT need routing logic to separate course types.
+        // GPT-5.4-mini can classify the request itself — exactly as DeepSeek did.
+        // DeepSeek produced acupuncture theory (16s) and A1 grammar (3s) from the same
+        // chat without any separation instructions. It read the prompt and understood.
+        //
+        // The fix: remove the domainFrame entirely. Trust the model to read the intent.
+        // "Enséñame acupuntura china" → model knows to teach acupuncture.
+        // "Curso gramatical A1" → model knows to teach Spanish grammar.
+        // "Español para acupunturistas" → model knows to teach Spanish for the domain.
+        // No regex. No classification. No instruction. Just the prompt itself.
+        const domainFrame = '';
 
         // SEEK 3.9-c — LIBEREN A WILLY: Free-reasoning course prompt.
         // CEO decision: the LLM already knows what acupuncture practitioners,
