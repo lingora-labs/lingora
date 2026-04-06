@@ -1,7 +1,13 @@
 // =============================================================================
 // server/tools/schema-generator.ts
-// LINGORA SEEK 3.9 -- Schema Content Generator
-// No functional changes from SEEK 3.8 — header bump only.
+// LINGORA SEEK 3.9-c — Schema Content Generator
+// =============================================================================
+// SEEK 3.9-c CHANGES:
+//   C2 — generateTableMatrixRich: explicit HTML prohibition in prompt.
+//        Previous "no markdown" rule did not cover HTML. GPT-5.x still emitted
+//        <span style="color:..."> inside text values by referencing session
+//        history. Fix: explicit "NEVER use HTML in text values — tone field
+//        controls color rendering via frontend MatrixTableBlock TONE_COLORS map."
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -79,11 +85,28 @@ export async function generateTableMatrixRich(params: {
   topic: string; level?: string; uiLanguage?: string;
 }): Promise<import('@/lib/contracts').TableMatrixArtifact | null> {
   const { topic, level = 'B1', uiLanguage = 'en' } = params;
+  // SEEK 3.9-c — C2: EXPLICIT HTML ban in table matrix prompt.
+  // Previous prompt said "no markdown" but allowed HTML implicitly.
+  // GPT-5.x would emit <span style="color:..."> inside text values because
+  // earlier turns in the same conversation had used that pattern.
+  // Fix: prohibit HTML and color instructions explicitly, delegate all
+  // color rendering to the tone field which the frontend MatrixTableBlock
+  // already handles via TONE_COLORS map. The LLM must NOT embed style.
   const prompt = `You are LINGORA's table generator. Generate a COLOR-CODED comparison table for: "${topic}"
 Student level: ${level}. Interface language: ${uiLanguage}.
-Return ONLY valid JSON:
-{"title":"string","columns":[{"key":"concepto","label":"CONCEPTO"},{"key":"uso_correcto","label":"USO CORRECTO"},{"key":"error_comun","label":"ERROR COMUN"},{"key":"nota","label":"NOTA"}],"rows":[[{"text":"","tone":"info","bold":true},{"text":"","tone":"ok","icon":"OK"},{"text":"","tone":"danger","icon":"ERR"},{"text":"","tone":"warn","icon":"TIP"}]]}
-RULES: tone = ok/danger/warn/info/neutral. min 6 rows max 10. no markdown in text values.`;
+
+CRITICAL FORMAT RULES — violations break the UI:
+- Return ONLY valid JSON. No markdown. No extra text before or after.
+- NEVER use HTML in text values: no <span>, no <u>, no <b>, no style attributes.
+- NEVER use markdown in text values: no **, no __, no #.
+- Text values must be PLAIN TEXT ONLY. The frontend renders colors via the "tone" field.
+- Tone values control color: ok=green, danger=red, warn=yellow, info=blue, neutral=gray.
+- Use "icon" for visual markers: "OK" renders ✅, "ERR" renders ❌, "TIP" renders ⚠️.
+
+Return ONLY this JSON structure (no markdown wrapper, no extra keys):
+{"title":"string","columns":[{"key":"concepto","label":"CONCEPTO"},{"key":"uso_correcto","label":"USO CORRECTO"},{"key":"error_comun","label":"ERROR COMUN"},{"key":"nota","label":"NOTA"}],"rows":[[{"text":"plain text only — NO HTML","tone":"info","bold":true},{"text":"plain text only — NO HTML","tone":"ok","icon":"OK"},{"text":"plain text only — NO HTML","tone":"danger","icon":"ERR"},{"text":"plain text only — NO HTML","tone":"warn","icon":"TIP"}]]}
+
+Rules: minimum 6 rows, maximum 10 rows. Each row covers one distinct concept. CEFR ${level} appropriate.`;
   const completion = await openai.chat.completions.create({
     ...buildModelParams(RUNTIME_MODEL, 2000, 0.1),
     messages: [{ role: 'system', content: prompt }],
