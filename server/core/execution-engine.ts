@@ -431,22 +431,6 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         // If topic is a non-Spanish domain (acupuncture, medicine, law, business, etc.)
         // The model reads the prompt and decides what type of course to produce.
         // The course title and modules must reflect: "Spanish for [domain]", not "[domain] theory".
-        // SEEK 3.9-c — DOMAINFRAME ELIMINATED.
-        // The old domainFrame explicitly told the LLM "do NOT teach the domain itself,
-        // teach Spanish language skills for the domain." That instruction was the source
-        // of every "Español para acupuntura" A1 module we observed.
-        //
-        // CEO question answered: we do NOT need routing logic to separate course types.
-        // GPT-5.4-mini can classify the request itself — exactly as DeepSeek did.
-        // DeepSeek produced acupuncture theory (16s) and A1 grammar (3s) from the same
-        // chat without any separation instructions. It read the prompt and understood.
-        //
-        // The fix: remove the domainFrame entirely. Trust the model to read the intent.
-        // "Enséñame acupuntura china" → model knows to teach acupuncture.
-        // "Curso gramatical A1" → model knows to teach Spanish grammar.
-        // "Español para acupunturistas" → model knows to teach Spanish for the domain.
-        // No regex. No classification. No instruction. Just the prompt itself.
-        const domainFrame = '';
 
         // SEEK 3.9-c — LIBEREN A WILLY: Free-reasoning course prompt.
         // CEO decision: the LLM already knows what acupuncture practitioners,
@@ -459,18 +443,32 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         // Doctrinal basis: Art. 3 Manifiesto 7.0 — identidad no reduccionista.
         // "Ninguna implementación podrá reducir su identidad a un sistema de
         //  respuestas mecánicas." Mechanical rules = mechanical responses.
-        const coursePrompt = `You are a world-class Spanish language course designer with deep expertise across all professional domains. Your task is to generate a complete, authentic Spanish course as valid JSON.
+        // SEEK 3.9-c — CLEAN TOPIC: strip user directives from the topic string.
+        // When topic = resolvedTopic from orchestrator, it often contains the full
+        // user message: "acupuntura china... No acepto resumenes. Quiero nivel
+        // universitario". Those user directives (no acepto, quiero, nivel) are not
+        // the subject — they're format requests that confuse the JSON contract.
+        // Clean: extract up to first sentence-ending directive marker.
+        const cleanTopic = topic
+          .replace(/\.\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera|no puede ser|nivel profesional|con indice|con guia|con desarrollo).*/i, '')
+          .replace(/,\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera).*/i, '')
+          .trim()
+          || topic; // fallback to original if nothing matched
 
-Topic: "${topic}"
-Level: ${level}
-Interface language: ${lang}
-Mentor: ${mentor}
+        // SEEK 3.9-c — SYSTEM/USER SPLIT for JSON generation.
+        // GPT-5.4-mini does NOT have a thinking phase like DeepSeek. DeepSeek
+        // reasoned for 16s before generating; GPT-5.4-mini responds directly.
+        // To replicate DeepSeek's behavior (plan then generate), we give GPT the
+        // structural contract via system message and the creative task via user.
+        // This produces more reliable JSON than a single mixed-role message.
+        const courseSystemPrompt = `You are a world-class course designer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Your JSON must match the exact structure provided.`;
 
-Design a course that genuinely serves a student who needs to use Spanish in the real context of "${topic}". The depth, terminology, structure and progression should reflect what a competent practitioner in that field would need in Spanish — not what a generic Spanish textbook would provide.
+        const courseUserPrompt = `Generate a complete, authentic course about "${cleanTopic}" at level ${level}.
+Interface language: ${lang}. Mentor: ${mentor}.
 
-${domainFrame}
+The course should reflect what someone who works in the field of "${cleanTopic}" actually needs. If it is a language course, teach language. If it is a professional domain, teach that domain. Decide the right number of modules, depth, and terminology based on the subject matter.
 
-Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
+Return ONLY this JSON structure:
 {
   "mentorName": "${mentor}",
   "level": "${level}",
@@ -483,7 +481,7 @@ Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
     {
       "index": 1,
       "title": "string",
-      "vocabulary": [["spanish term", "translation + usage in context"], ...],
+      "vocabulary": [["term", "translation + sentence"], ...],
       "grammar": "string",
       "exercise": "string",
       "development": "string",
@@ -508,10 +506,17 @@ Return ONLY valid JSON matching this exact structure (no markdown, no preamble):
         let courseGenError: string | null = null;
 
         try {
+          // SEEK 3.9-c: system+user split for reliable JSON generation.
+          // max_tokens raised from 4500 to 6000 for complex professional domains.
+          // temperature 0.7 gives the model freedom to reason about structure
+          // while response_format: json_object enforces the JSON contract.
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 4500, 0.3),
+            ...buildModelParams(RUNTIME_MODEL, 6000, 0.7),
             response_format: { type: 'json_object' },
-            messages: [{ role: 'user', content: coursePrompt }],
+            messages: [
+              { role: 'system', content: courseSystemPrompt },
+              { role: 'user',   content: courseUserPrompt   },
+            ],
           });
           const raw = completion.choices?.[0]?.message?.content ?? '';
           if (!raw.trim()) {
