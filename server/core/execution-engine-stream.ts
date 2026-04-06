@@ -1,26 +1,25 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 3.9-c — Streaming Execution Engine
-// =============================================================================
-// SEEK 3.9 base  : F1 (honest PDF errors), F2 (PDF render errors), F3 (header).
-// SEEK 3.9-b     : LW1 (elastic prompt), LW2 (topic sovereignty).
-// SEEK 3.9-c     : Operación Liberen a Willy — stream parity with engine.ts.
-//
-//   LW3 — Domain terminology enforcement (identical prompt to execution-engine.ts).
-//   LW4 — Post-generation validator (identical logic to execution-engine.ts).
-//   LW5 — Domain-specific module title mandate (via prompt example).
-//   C5  — Pre-generation timestamp log [PDF:START:stream] / [PDF:DONE:stream].
-//
-// Approved: IS + CSJ — 5 de abril de 2026
-// Sprint: SEEK 3.9-c · Operación Liberen a Willy
+// LINGORA SEEK 4.0 — Streaming Execution Engine (DocumentBlock[] contract)
 // =============================================================================
 //
-// SEEK 3.9 base: F1 (honest PDF errors), F2 (PDF render errors), F3 (header).
-// SEEK 3.9-b: LW1 (elastic prompt), LW2 (topic sovereignty).
-// SEEK 3.9-c CHANGES:
-//   C5 — Pre-generation timestamp log (parity with execution-engine.ts).
-//        [PDF:START] fires before OpenAI call; [PDF:DONE] fires after.
-//        Allows forensic reconstruction when Vercel truncates long-running logs.
+// SEEK 3.9 CHANGES (base):
+//   F1 — generateCoursePdf (stream): LLM/parse failure → honest error delta
+//        instead of silent {} return. Parity with execution-engine.ts F1.
+//   F2 — PDF render failure in stream path also surfaces as honest delta.
+//   F3 — Header bumped to SEEK-3.9.
+//
+// SEEK 3.9-b CHANGES (Operación Liberen a Willy — stream parity):
+//   LW1 — coursePrompt: elastic content contract, identical to execution-engine.ts.
+//         Modules 5-8, vocabulary with sentence examples, development 60-200 words,
+//         grammar adapts to domain complexity, exercise includes domain simulation.
+//   LW2 — TOPIC SOVEREIGNTY RULE: identical clause to execution-engine.ts.
+//         Prevents meta-course generation ("curso sobre cómo pedir un curso").
+//   LW3 — All other stream logic preserved from SEEK 3.9.
+//
+// Approved by: IS + CSJ — consensus 5 de abril de 2026
+// Sprint: SEEK 3.9-b · Operación Liberen a Willy
+// Files changed: execution-engine.ts, execution-engine-stream.ts ONLY
 //
 // ── SSE CONTRACT (verified against app/beta/page.tsx — updated SEEK 3.4) ─────
 //
@@ -53,7 +52,6 @@ import {
   SuggestedAction,
 } from '../../lib/contracts';
 
-// ExecutionResult imported from execution-engine — not used in stream path
 import { advanceTutorPhase, mergeStatePatch } from './state-manager';
 import { evaluateCommercial }                 from './commercial-engine-adapter';
 
@@ -380,67 +378,49 @@ async function dispatchSync(
         const mentor = state.mentorProfile ?? 'Sarah';
         const now    = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
-        // SEEK 3.9 — FIX-DENSITY (stream parity): identical prompt to execution-engine.ts
+        // SEEK 4.0 — DocumentBlock[] contract (stream parity with execution-engine.ts)
+        const courseSystemPrompt = `You are a world-class document composer. Respond with valid JSON only. No markdown, no preamble. Think about the nature of the request before deciding document structure.`;
 
-        // SEEK 3.9-c — LIBEREN A WILLY (stream parity): free-reasoning course prompt.
-        // Identical to execution-engine.ts — no rules, goal + structure only.
-        // SEEK 3.9-c — STREAM PARITY: cleanTopic + system/user split.
-        const cleanTopicS = topic
-          .replace(/\.\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera|no puede ser|nivel profesional|con indice|con guia|con desarrollo).*/i, '')
-          .replace(/,\s*(no acepto|quiero|debe|sin resumen|nivel universitario|carrera).*/i, '')
-          .trim()
-          || topic;
+        const coursePrompt = `Compose a complete document about "${topic}".
+Language: ${lang}. Mentor: ${mentor}. Level: ${level}.
 
-        const courseSystemPromptS = `You are a world-class course designer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Your JSON must match the exact structure provided.`;
+THINK first: What type of document? Curriculum, clinical guide, language course, dossier?
+Then COMPOSE using blocks that best serve the topic.
+Language course: linguistic blocks. Domain: domain-specific blocks.
+Do NOT force vocabulary/grammar/exercise on non-linguistic topics.
 
-        const courseUserPromptS = `Generate a complete, authentic course about "${cleanTopicS}" at level ${level}.
-Interface language: ${lang}. Mentor: ${mentor}.
-
-The course should reflect what someone who works in the field of "${cleanTopicS}" actually needs. If it is a language course, teach language. If it is a professional domain, teach that domain. Decide the right number of modules, depth, and terminology based on the subject matter.
-
-Return ONLY this JSON structure:
+Return ONLY this JSON:
 {
-  "mentorName": "${mentor}",
+  "title": "string",
+  "subtitle": "string or null",
+  "documentType": "string",
   "level": "${level}",
-  "studentName": "Estudiante",
-  "courseTitle": "string",
-  "objective": "string",
+  "mentorName": "${mentor}",
   "nativeLanguage": "${lang}",
-  "totalModules": <number>,
-  "modules": [
-    {
-      "index": 1,
-      "title": "string",
-      "vocabulary": [["term", "translation + sentence"], ...],
-      "grammar": "string",
-      "exercise": "string",
-      "development": "string",
-      "communicativeFunction": "string",
-      "tip": "string"
-    }
+  "studentName": "Estudiante",
+  "blocks": [
+    {"type":"heading","level":1,"content":"Section title"},
+    {"type":"paragraph","content":"Prose..."},
+    {"type":"key_value","label":"Terms","items":["term: definition"]},
+    {"type":"table","headers":["A","B"],"rows":[["a","b"]]},
+    {"type":"callout","label":"Nota","style":"tip","content":"Note..."},
+    {"type":"bullets","items":["item one"]},
+    {"type":"exercise","label":"Practica","content":"Exercise..."},
+    {"type":"divider"}
   ],
   "nextStep": "string",
   "generatedAt": "${now}"
-}`;
-
-        // SEEK 3.9-c — C5 (stream parity): pre-generation timestamp log.
-        // Vercel truncates logs when functions run >10s. [PDF:START] fires before
-        // the OpenAI call — if it appears but result does not, latency is confirmed.
-        const pdfGenStartS = Date.now();
-        console.log(`[PDF:START:stream] generateCoursePdf — topic: "${topic}", level: ${level}, model: ${RUNTIME_MODEL}, t=${pdfGenStartS}`);
-
-        // SEEK 3.9 — F1 (stream parity): capture errors explicitly.
-        let courseContent: import('../tools/pdf/generateCoursePdf').CourseContent | null = null;
+}`
+        let courseContent: import('../tools/pdf/generateCoursePdf').DocumentContent | null = null;
         let courseGenError: string | null = null;
 
         try {
-          // SEEK 3.9-c stream: system+user split, 6000 tokens, 0.7 temp.
           const completion = await openai.chat.completions.create({
             ...buildModelParams(RUNTIME_MODEL, 6000, 0.7),
             response_format: { type: 'json_object' },
             messages: [
-              { role: 'system', content: courseSystemPromptS },
-              { role: 'user',   content: courseUserPromptS   },
+              { role: 'system', content: courseSystemPrompt },
+              { role: 'user',   content: coursePrompt       },
             ],
           });
           const raw = completion.choices?.[0]?.message?.content ?? '';
@@ -450,43 +430,42 @@ Return ONLY this JSON structure:
             // SEEK 3.9 — TYPE-SAFE (stream parity): same raw-reconstruction pattern
             // as execution-engine.ts — no direct m.development access on typed CourseModule.
             const parsed = JSON.parse(raw) as Record<string, unknown>;
-            const rawModules = Array.isArray(parsed.modules)
-              ? parsed.modules as Array<Record<string, unknown>>
+            const rawBlocks = Array.isArray(parsed.blocks)
+              ? parsed.blocks as Array<Record<string, unknown>>
               : [];
-
-            if (rawModules.length > 0) {
-              const normalizedModules = rawModules.map((m) => {
-                const exercise     = typeof m.exercise     === 'string' ? m.exercise     : '';
-                const development  = typeof m.development  === 'string' ? m.development  : '';
-                return {
-                  index: typeof m.index === 'number' ? m.index : 0,
-                  title: typeof m.title === 'string' ? m.title : 'Module',
-                  vocabulary: Array.isArray(m.vocabulary)
-                    ? (m.vocabulary as Array<[string, string]>)
-                    : [],
-                  grammar: typeof m.grammar === 'string' ? m.grammar : '',
-                  exercise: development
-                    ? `${exercise}\n\nDesarrollo: ${development}`
-                    : exercise,
-                  communicativeFunction: typeof m.communicativeFunction === 'string'
-                    ? m.communicativeFunction : '',
-                  tip: typeof m.tip === 'string' ? m.tip : '',
-                };
-              });
+            const VALID_BT = new Set([
+              'heading','paragraph','bullets','numbered','table',
+              'callout','quote','divider','key_value','exercise','summary',
+            ]);
+            if (rawBlocks.length > 0) {
+              const normBlocks = rawBlocks.map((b) => ({
+                type:    typeof b.type === 'string' && VALID_BT.has(b.type)
+                           ? b.type as import('../tools/pdf/generateCoursePdf').DocumentBlockType
+                           : 'paragraph' as const,
+                level:   typeof b.level   === 'number' ? b.level as 1|2|3 : undefined,
+                content: typeof b.content === 'string' ? b.content        : undefined,
+                label:   typeof b.label   === 'string' ? b.label          : undefined,
+                style:   typeof b.style   === 'string'
+                           ? b.style as 'info'|'warning'|'exercise'|'quote'|'tip'
+                           : undefined,
+                items:   Array.isArray(b.items)   ? (b.items   as string[]).map(String) : undefined,
+                headers: Array.isArray(b.headers) ? (b.headers as string[]).map(String) : undefined,
+                rows:    Array.isArray(b.rows)    ? (b.rows    as string[][])            : undefined,
+              }));
               courseContent = {
-                mentorName:    typeof parsed.mentorName   === 'string' ? parsed.mentorName   : mentor,
-                level:         typeof parsed.level        === 'string' ? parsed.level        : level,
-                studentName:   typeof parsed.studentName  === 'string' ? parsed.studentName  : 'Estudiante',
-                courseTitle:   typeof parsed.courseTitle  === 'string' ? parsed.courseTitle  : `Curso — ${topic}`,
-                objective:     typeof parsed.objective    === 'string' ? parsed.objective    : '',
-                nativeLanguage:typeof parsed.nativeLanguage === 'string' ? parsed.nativeLanguage : lang,
-                totalModules:  typeof parsed.totalModules === 'number'  ? parsed.totalModules : normalizedModules.length,
-                modules:       normalizedModules,
-                nextStep:      typeof parsed.nextStep     === 'string' ? parsed.nextStep     : '',
-                generatedAt:   typeof parsed.generatedAt  === 'string' ? parsed.generatedAt  : now,
-              } as import('../tools/pdf/generateCoursePdf').CourseContent;
+                title:          typeof parsed.title          === 'string' ? parsed.title          : `Documento`,
+                subtitle:       typeof parsed.subtitle       === 'string' ? parsed.subtitle       : undefined,
+                documentType:   typeof parsed.documentType   === 'string' ? parsed.documentType   : 'documento',
+                level:          typeof parsed.level          === 'string' ? parsed.level          : level,
+                mentorName:     typeof parsed.mentorName     === 'string' ? parsed.mentorName     : mentor,
+                nativeLanguage: typeof parsed.nativeLanguage === 'string' ? parsed.nativeLanguage : lang,
+                studentName:    typeof parsed.studentName    === 'string' ? parsed.studentName    : 'Estudiante',
+                blocks:         normBlocks,
+                nextStep:       typeof parsed.nextStep       === 'string' ? parsed.nextStep       : '',
+                generatedAt:    typeof parsed.generatedAt    === 'string' ? parsed.generatedAt    : now,
+              } as import('../tools/pdf/generateCoursePdf').DocumentContent;
             } else {
-              courseGenError = 'Model returned JSON with no modules.';
+              courseGenError = 'Model returned JSON with no blocks.';
             }
           }
         } catch (e) {
@@ -494,46 +473,17 @@ Return ONLY this JSON structure:
           console.error('[stream] generateCoursePdf: LLM/parse failed:', courseGenError);
         }
 
-        // SEEK 3.9-c — C5: duration log for Vercel forensics
-        console.log(`[PDF:DONE:stream] generateCoursePdf — success: ${!!courseContent}, modules: ${courseContent?.modules?.length ?? 0}, durationMs: ${Date.now() - pdfGenStartS}`);
-
-        // SEEK 3.9-c — LW4: POST-GENERATION DOMAIN VALIDATOR (stream — parity with engine.ts)
-        // Two-layer check: titles (Layer A) + vocabulary content (Layer B).
-        // IS recommendation: title-only check can be gamed by good titles + weak body.
+        // SEEK 4.0 LW4 STREAM: validate DocumentBlock[] content
         if (courseContent) {
-          const GENERIC_TITLE_WORDS_S = /\b(introduction|introducción|vocabulary|vocabulario básico|grammar|gramática|basics|básico|overview|resumen|module overview|getting started|empezando)\b/i;
-          const genericCountS = courseContent.modules.filter(m => {
-            const t = m.title?.trim() ?? '';
-            return GENERIC_TITLE_WORDS_S.test(t) && t.length < 45;
-          }).length;
-          const totalModsS = courseContent.modules.length;
-
-          const FILLER_TERMS_S = /^(hola|adiós|gracias|por favor|sí|no|bien|mal|buenas|buenos días|buenas tardes|me llamo|¿cómo estás?|hasta luego)$/i;
-          const vacuousVocabCountS = courseContent.modules.filter(m => {
-            const vocab = m.vocabulary ?? [];
-            if (vocab.length === 0) return false;
-            const fillerCount = vocab.filter((pair: string[]) =>
-              FILLER_TERMS_S.test((pair[0] ?? '').trim())
-            ).length;
-            return fillerCount > Math.floor(vocab.length * 0.6);
-          }).length;
-
-          const titlesFail_S = totalModsS > 0 && genericCountS > Math.floor(totalModsS / 2);
-          const vocabFails_S  = totalModsS > 0 && vacuousVocabCountS > Math.floor(totalModsS / 2);
-
-          if (titlesFail_S || vocabFails_S) {
-            console.error(`[PDF:stream] LW4 FAILED — titles: ${genericCountS}/${totalModsS} generic, vocab: ${vacuousVocabCountS}/${totalModsS} vacuous — topic: "${topic}"`);
-            const validationErrorMsgsS: Record<string, string> = {
-              en: `The course for "${topic}" did not pass domain validation — content was too generic. Please try again.`,
-              es: `El curso sobre "${topic}" no pasó la validación de dominio. Inténtalo de nuevo con más precisión.`,
-              no: `Kurset om "${topic}" bestod ikke domenevalidering. Prøv igjen.`,
-              it: `Il corso su "${topic}" non ha superato la validazione. Riprova.`,
-              fr: `Le cours sur "${topic}" n'a pas passé la validation. Réessaie.`,
-              de: `Validierung für "${topic}" fehlgeschlagen. Bitte erneut versuchen.`,
-            };
-            return { text: validationErrorMsgsS[lang] ?? validationErrorMsgsS['en'], isUserVisibleError: true };
+          const sBlocks = (courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).blocks ?? [];
+          const sOK = sBlocks.length >= 2 && sBlocks.some(b => (b.type === 'heading' || b.type === 'paragraph') && b.content);
+          if (!sOK) {
+            console.error(`[PDF:stream] LW4 FAILED — ${sBlocks.length} blocks`);
+            courseContent = null;
+          } else {
+            const sDocType = (courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).documentType ?? 'unknown';
+            console.log(`[PDF:stream] LW4 PASSED — ${sBlocks.length} blocks, type: ${sDocType}`);
           }
-          console.log(`[PDF:stream] LW4 PASSED — ${totalModsS - genericCountS}/${totalModsS} domain titles, ${totalModsS - vacuousVocabCountS}/${totalModsS} domain vocab`);
         }
 
         // SEEK 3.9 — F1: honest error text, not silent {}.
@@ -548,8 +498,9 @@ Return ONLY this JSON structure:
           return { text: errorMsgs[lang] ?? errorMsgs['en'], isUserVisibleError: true };
         }
 
-        const courseTitle = courseContent.courseTitle || `Curso — ${topic}`;
-        console.log(`[PDF:stream] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${courseContent.modules.length}`);
+        const docS = courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent;
+        const courseTitle = docS.title || `Documento — ${topic}`;
+        console.log(`[PDF:stream] generateCoursePdf — courseTitle: ${courseTitle}, modules: ${(courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).blocks?.length ?? 0}`);
         const result = await generatePDF({ title: courseTitle, content: '', courseContent });
         console.log(`[PDF:stream] generateCoursePdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
 
@@ -565,7 +516,7 @@ Return ONLY this JSON structure:
         }
 
         return { artifact: result.success
-          ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: courseContent.modules.map(m => m.title) }
+          ? { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: (courseContent as import('../tools/pdf/generateCoursePdf').DocumentContent).blocks?.filter(b => b.type === 'heading' && b.level === 1).map(b => b.content ?? '') ?? [] }
           : undefined };
       }
 
