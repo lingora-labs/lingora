@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.9 — Beta Tutor Interface
+// LINGORA SEEK 3.9c — Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -1169,15 +1169,67 @@ export default function BetaPage() {
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
 
   useEffect(() => {
+    // SEEK 3.9-c — C3: Selective state restoration from localStorage.
+    // BUG: Previous code spread ALL persisted state (...p) including
+    // lastConcept, lastUserGoal, curriculumPlan, lastMistake, errorMemory,
+    // lastUserAudioTranscript, etc. from a previous session.
+    // This caused "ghost memory": Sarah would reference topics from an older
+    // session (e.g. "mi amigo el ratón") because lastConcept from that session
+    // was being injected into the new session's state payload.
+    //
+    // LINGORA is stateless by design (Vercel serverless destroys context
+    // between invocations). Persistence is intentional only for user
+    // PREFERENCES (lang, mentor, topic, activeMode) — not for pedagogical
+    // context (lastConcept, curriculumPlan, tokens, etc.).
+    //
+    // Fix: restore ONLY preference fields. Never restore pedagogical context
+    // from localStorage. Each session starts with a clean pedagogical slate.
     try {
       const sv = localStorage.getItem('lng1010')
       if (sv) {
         const p = JSON.parse(sv) as Partial<SS>
-        setSession(s => ({...s,...p,sessionId:'s'+Math.random().toString(36).slice(2)}))
+        // Restore preferences only — no pedagogical state crosses session boundary
         if (p.lang)       setLang(p.lang)
         if (p.mentor)     setMentor(p.mentor as MK)
         if (p.topic)      setTopic(p.topic as TK)
         if (p.activeMode) setActiveMode(p.activeMode as ActiveMode)
+        // Session state starts fresh — only carry forward UI preferences
+        // SEEK 3.9-c — C3 FIX (IS build-safe): reset only fields declared in SS.
+        // Backend fields (lastConcept, curriculumPlan, errorMemory, etc.) live in
+        // SessionState (lib/contracts.ts), not in the frontend SS type. Assigning
+        // them here caused TypeScript to reject the updater as incompatible with SS.
+        // The ghost-memory fix is achieved by NOT restoring them — they default to
+        // undefined/0 when the new session payload reaches the backend with tokens=0.
+        setSession(s => ({
+          ...s,
+          // Preferences — restored selectively (safe to persist across sessions)
+          lang:       p.lang       ?? s.lang,
+          mentor:     p.mentor     ?? s.mentor,
+          topic:      p.topic      ?? s.topic,
+          activeMode: (p.activeMode ?? s.activeMode) as ActiveMode | undefined,
+          // Pedagogical state — always reset to clean slate (SS-declared fields only)
+          tokens:         0,
+          level:          'A0',
+          samples:        [],
+          tutorPhase:     'guide',
+          tutorMode:      undefined,
+          lessonIndex:    undefined,
+          courseActive:   false,
+          lastAction:     null,
+          awaitingQuizAnswer: false,
+          learningStage:  undefined,
+          currentModule:  0,
+          score:          undefined,
+          pdfCourseActive: false,
+          currentLessonTopic: undefined,
+          currentExercise:    undefined,
+          expectedResponseMode: undefined,
+          _exerciseAttemptCount: undefined,
+          lastTask:       null,
+          lastArtifact:   null,
+          commercialOffers: [],
+          sessionId:      's'+Math.random().toString(36).slice(2),
+        }))
       }
     } catch {}
   }, [])
@@ -1748,4 +1800,3 @@ export default function BetaPage() {
     </>
   )
 }
-
