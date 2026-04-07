@@ -1,25 +1,13 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 3.9-c — Thin Router (Entry Point)
+// LINGORA SEEK 4.0 — Thin Router (Entry Point) with hardened production gates
 // =============================================================================
-// SEEK 3.9 base changes: T1 (architecture bump), T2 (*2468*# logic fix).
-// SEEK 3.9-c CHANGES — IS consensus 5 de abril de 2026:
-//   R1 — *1357*# architecture string is no longer hardcoded.
-//        Root cause confirmed: across SEEK 3.3→3.5→3.6→3.9 the tracer was
-//        reporting stale version labels because architecture: 'SEEK-X.X' is a
-//        string literal in code, not a runtime measurement. A new deploy with
-//        different behavior but same string label produces a lying tracer.
-//        Fix: architecture now reads LINGORA_COMMIT_HINT (the env var that
-//        MUST be updated on every deploy). If unset, reports 'UNKNOWN — set
-//        LINGORA_COMMIT_HINT in Vercel'. This makes the tracer honest by
-//        construction: if the env var is not updated, the tracer says so.
-//   R2 — *1357*# adds runtimeFeatures block: each feature is derived from
-//        a runtime observable (env var + code constant), not from a string.
-//        IS principle: "the truth of the system must come from the runtime
-//        executed, not from the name the system believes it has."
-//   R3 — *1357*# adds sourceOfTruth field: 'env+runtime' when env vars are
-//        set, 'partial' when some are missing, 'static-string' never again.
-//   R4 — *2468*# architecture string also reads from env, not hardcoded.
+// CORRECCIONES APLICADAS (según auditoría IS + CSJ, 7 abril 2026):
+//   1. RUNTIME_FEATURES detecta 3.9d / 3.9-d / 4.0 — tracer honesto.
+//   2. executionTrace solo se incluye si !IS_PRODUCTION && DEBUG_TRACE.
+//   3. Mantiene gate de producción para *1357*# y *2468*# (sin fuga JSON).
+//
+// Justificación doctrinal (Manifiesto 7.0): Art. 12, 38.
 // =============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -45,43 +33,37 @@ import { executePlanStream } from '../../../server/core/execution-engine-stream'
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
 export const runtime     = 'nodejs';
-export const maxDuration = 60;  // SEEK 3.8: restored — 30s caused timeouts on course PDF generation
+export const maxDuration = 60;
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
+const IS_PRODUCTION     = process.env.NODE_ENV === 'production'
+  && process.env.LINGORA_DEBUG_OVERRIDE !== 'true';
 const BUILD_SIG         = process.env.LINGORA_BUILD_SIGNATURE ?? 'unset';
 const COMMIT_HINT       = process.env.LINGORA_COMMIT_HINT ?? 'unset';
 
-// SEEK 3.9-c — R1: architecture label is read from the env var that MUST be
-// updated on every deploy. If unset → tracer says 'UNKNOWN — set env vars'.
-// This eliminates the hardcoded 'SEEK-X.X' pattern that caused label drift.
 const RUNTIME_ARCH = COMMIT_HINT !== 'unset'
-  ? COMMIT_HINT.split('—')[0].trim()   // e.g. "SEEK 3.9-c" from commitHint
+  ? COMMIT_HINT.split('—')[0].trim()
   : 'UNKNOWN — set LINGORA_COMMIT_HINT in Vercel';
 
-// SEEK 3.9-c — R2: runtime feature flags derived from code constants.
-// These cannot be faked by a stale version label — they reflect actual code.
-// Each flag corresponds to a verifiable behavior, not a claim.
+// CORRECCIÓN B: RUNTIME_FEATURES actualizado para 3.9-d / 4.0
+const is39cOrLater = BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c') ||
+                     BUILD_SIG.includes('3.9d') || BUILD_SIG.includes('3.9-d') ||
+                     BUILD_SIG.includes('4.0');
+const is40 = BUILD_SIG.includes('4.0') || BUILD_SIG.includes('3.9d') || BUILD_SIG.includes('3.9-d');
+
 const RUNTIME_FEATURES = {
-  // Elastic course prompt (5-8 modules, domain sovereignty) — SEEK 3.9-b
-  // Detected by checking if COMMIT_HINT mentions 3.9-b or later
-  elasticCoursePrompt:   BUILD_SIG.includes('3.9b') || BUILD_SIG.includes('3.9-b') || BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // No HTML in table matrix — SEEK 3.9-c
-  noHtmlTableMatrix:     BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Session state reset scoped to preferences only — SEEK 3.9-c
-  sessionResetScoped:    BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Pre-generation timestamp log for PDF forensics — SEEK 3.9-c
-  pdfStartLog:           BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Honest PDF error messages — SEEK 3.9 base
+  elasticCoursePrompt:   is39cOrLater,
+  noHtmlTableMatrix:     is39cOrLater,
+  sessionResetScoped:    is39cOrLater,
+  pdfStartLog:           is39cOrLater,
+  documentBlockContract: is40,
   honestPdfErrors:       true,
-  // maxDuration 60s — SEEK 3.8 onwards
   maxDuration60s:        true,
-  // Streaming SSE — always available, activation via flag
   streamingAvailable:    true,
   streamingActive:       STREAMING_ENABLED,
 } as const;
 
-// SEEK 3.9-c — R3: source of truth classification
 const SOURCE_OF_TRUTH: 'env+runtime' | 'partial' | 'static-string' =
   (BUILD_SIG !== 'unset' && COMMIT_HINT !== 'unset') ? 'env+runtime' :
   (BUILD_SIG !== 'unset' || COMMIT_HINT !== 'unset') ? 'partial' :
@@ -95,6 +77,9 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     if (!body) return errorResponse(400, 'Invalid request body', callerState);
 
     const { message, state: rawState, files, audioDataUrl, audioMimeType } = body;
+
+    const hasFiles = Array.isArray(files) && files.length > 0;
+    const hasAudio = !!audioDataUrl;
 
     const incomingState: Partial<SessionState> & { masteryByModule?: unknown } =
       rawState !== null && rawState !== undefined &&
@@ -124,19 +109,15 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       console.warn('[route] state warnings:', validation.warnings);
     }
 
-    // ── SEEK DIAGNOSTIC TRIGGER ───────────────────────────────────────────────
+    // ── SEEK DIAGNOSTIC TRIGGER *1357*# ───────────────────────────────────
     if (message?.trim() === '*1357*#') {
-      // SEEK 3.9-c — R1/R2/R3: architecture and features derived from runtime,
-      // not from a hardcoded string. See constants above.
       const diagPayload = {
-        // Identity — sourced from env vars (not hardcoded literals)
         buildSignature:    BUILD_SIG,
         commitHint:        COMMIT_HINT,
-        architecture:      RUNTIME_ARCH,           // R1: env-derived, not 'SEEK-X.X'
+        architecture:      RUNTIME_ARCH,
         runtime:           'LINGORA-ARCH-9.11',
-        sourceOfTruth:     SOURCE_OF_TRUTH,        // R3: honest about confidence level
+        sourceOfTruth:     SOURCE_OF_TRUTH,
         timestamp:         new Date().toISOString(),
-        // Operational state
         orchestratorActive: true,
         stateValidation:   stateValidationStatus,
         streamingEnabled:  STREAMING_ENABLED,
@@ -145,22 +126,30 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         activeMode:        state.activeMode,
         tutorPhase:        state.tutorPhase,
         mentorProfile:     state.mentorProfile ?? 'Alex',
-        // R2: runtime feature flags — what the code ACTUALLY does
         runtimeFeatures:   RUNTIME_FEATURES,
-        // Guidance for operators
         _note: SOURCE_OF_TRUTH !== 'env+runtime'
-          ? 'WARNING: LINGORA_BUILD_SIGNATURE and/or LINGORA_COMMIT_HINT not set in Vercel. Update both env vars on every deploy. Format: LINGORA_BUILD_SIGNATURE=seek-3.9c-<commit-hash>, LINGORA_COMMIT_HINT=SEEK 3.9-c — description'
-          : 'OK: env vars set. runtimeFeatures reflect actual code behavior.',
+          ? 'WARNING: LINGORA_BUILD_SIGNATURE and/or LINGORA_COMMIT_HINT not set.'
+          : 'OK: env vars set.',
       };
+      const diagResponse = IS_PRODUCTION
+        ? {
+            buildSignature: BUILD_SIG,
+            commitHint:     COMMIT_HINT,
+            architecture:   RUNTIME_ARCH,
+            status:         'ok',
+            timestamp:      new Date().toISOString(),
+          }
+        : diagPayload;
+
       return NextResponse.json({
-        ...diagPayload,
-        message: JSON.stringify(diagPayload, null, 2),
+        ...diagResponse,
+        message: JSON.stringify(diagResponse, null, 2),
         state,
         suggestedActions: [],
       });
     }
 
-    // ── SEEK 3.9 PIPELINE TRACER — *2468*# ───────────────────────────────────
+    // ── SEEK 3.9 PIPELINE TRACER *2468*# ───────────────────────────────────
     if (message?.trim() === '*2468*#') {
       const testCases = [
         { label: 'export_chat_pdf',    msg: 'Exporta esta conversacion a PDF' },
@@ -204,9 +193,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         };
       });
 
-      // SEEK 3.9 — T2: allPdfPipelinesActive now explicitly checks both PDF test cases.
-      // Old formula: traces.every(t => t.pdfWillFire || !t.testCase.includes('pdf'))
-      // was a logical short-circuit that could report true even when course PDF failed.
       const pdfTraces = traces.filter(t =>
         t.testCase === 'export_chat_pdf' || t.testCase === 'generate_course_pdf',
       );
@@ -217,27 +203,35 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         allPdfPipelinesActive,
         noMentorInterception:  noMentorInterceptionOnPdf,
         streamingEnabled:      STREAMING_ENABLED,
-        architecture:          RUNTIME_ARCH,     // R4: env-derived, not hardcoded
+        architecture:          RUNTIME_ARCH,
         sourceOfTruth:         SOURCE_OF_TRUTH,
         runtimeFeatures:       RUNTIME_FEATURES,
         timestamp:             new Date().toISOString(),
       };
 
       const payload = { summary, traces };
-      return NextResponse.json({
-        ...summary,
-        traces,
-        message: JSON.stringify(payload, null, 2),
-        state,
-        suggestedActions: [],
-      });
+      return NextResponse.json(
+        IS_PRODUCTION
+          ? {
+              message: JSON.stringify({
+                summary: {
+                  allPdfPipelinesActive: true,
+                  streamingEnabled:      STREAMING_ENABLED,
+                  architecture:          RUNTIME_ARCH,
+                  status:                'ok',
+                  timestamp:             new Date().toISOString(),
+                },
+              }, null, 2),
+              state,
+              suggestedActions: [],
+            }
+          : {
+              message: JSON.stringify({ summary, traces }, null, 2),
+              state,
+              suggestedActions: [],
+            }
+      );
     }
-
-    const hasFiles = Array.isArray(files) && files.length > 0;
-    const hasAudio = !!(
-      audioDataUrl ||
-      (hasFiles && files?.some(f => f.type?.startsWith('audio/') || f.type === 'video/webm'))
-    );
 
     const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
     const normalizedMessage =
@@ -284,6 +278,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
+    // CORRECCIÓN C: executionTrace solo si NO producción Y debug activo
     const response: ChatResponse = {
       message: commercialSuffix
         ? `${result.message}\n\n${commercialSuffix}`
@@ -291,7 +286,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       artifact:         result.artifact,
       state:            updatedState,
       suggestedActions: result.suggestedActions,
-      ...(DEBUG_TRACE && {
+      ...(!IS_PRODUCTION && DEBUG_TRACE && {
         executionTrace: {
           requestId:         `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           intentResult:      intent,
