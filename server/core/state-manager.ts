@@ -1,14 +1,22 @@
-// ============================================================================
+// =============================================================================
 // server/core/state-manager.ts
-// LINGORA SEEK 3.4 — State Manager
-// ============================================================================
+// LINGORA SEEK 4.1a — State Manager
+// =============================================================================
 // FIX LOG:
 //   SEEK 3.1 Fase 0-A — mergeStatePatch: normalize null-as-clear sentinel
 //   for requestedOperation before returning SessionState.
 //   StatePatch allows requestedOperation?: RequestedOperation | null
 //   SessionState allows requestedOperation?: RequestedOperation (no null)
 //   mergeStatePatch is the constitutional translation layer between the two.
-// ============================================================================
+//
+//   SEEK 4.1a — PERSISTENCE VERIFICATION (no code change):
+//   mergeStatePatch confirmed to use { ...current, ...patch } spread.
+//   artifactRegistry (introduced in 4.1a) is an undeclared field in StatePatch
+//   but IS preserved by spread merge — no pick(), no whitelist, no filter.
+//   Persistence chain: compileResult writes artifactRegistry to statePatch →
+//   mergeStatePatch spreads it into updatedState → route.ts returns updatedState
+//   to client → client sends state back in next request → registry survives.
+// =============================================================================
 
 import {
   SessionState,
@@ -139,6 +147,11 @@ export function repairState(state: SessionState, errors: string[]): SessionState
 //
 // mergeStatePatch is the only place where StatePatch becomes SessionState.
 // It must translate null -> undefined before returning.
+//
+// SEEK 4.1a — PERSISTENCE CONTRACT:
+// { ...current, ...patch } spread preserves ALL patch fields, including
+// artifactRegistry (undeclared in StatePatch type but valid at runtime).
+// No pick(), no whitelist, no filter beyond the requestedOperation sentinel.
 
 export function mergeStatePatch(current: SessionState, patch: StatePatch): SessionState {
   const merged = { ...current, ...patch } as SessionState & {
@@ -317,10 +330,9 @@ export function getNextUnlockedModule(state: SessionState): number | undefined {
   return undefined;
 }
 
-// ============================================================================
+// =============================================================================
 // COMMIT:
 // fix(state-manager): normalize requestedOperation null->undefined in
 // mergeStatePatch — constitutional translation layer between StatePatch
 // (allows null-as-clear) and SessionState (requires undefined or value)
-// ============================================================================
-
+// =============================================================================
