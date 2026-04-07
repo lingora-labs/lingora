@@ -148,4 +148,3 @@ async function generatePlainTextPdf(title: string, content: string): Promise<Uin
 
   return doc.save();
 }
-
