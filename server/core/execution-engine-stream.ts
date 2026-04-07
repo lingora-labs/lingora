@@ -1,6 +1,6 @@
-// =============================================================================
+   // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 4.0 — Streaming Execution Engine (DocumentBlock[] full transport)
+// LINGORA SEEK 4.1a — Streaming Execution Engine (artifact memory registry parity)
 // =============================================================================
 
 import {
@@ -19,6 +19,14 @@ import { evaluateCommercial } from './commercial-engine-adapter';
 import { buildModelParams } from '../mentors/mentor-engine';
 
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
+// SEEK 4.1a — Artifact Memory Registry (stream parity)
+interface ArtifactRegistryEntry {
+  type:        string;
+  title:       string;
+  generatedAt: number;
+  summary?:    string;
+}
 
 interface SSEDelta { delta: string; }
 interface SSEDone {
@@ -201,6 +209,20 @@ function buildStatePatch(
 
   patch.tokens = (state.tokens ?? 0) + 1;
 
+  // SEEK 4.1a — register artifact in session artifact memory (stream parity)
+  const streamArtifact = Array.from(priorResults.values())
+    .find(o => o.artifact && o.artifact.type !== 'pdf_chat')?.artifact;
+  if (streamArtifact) {
+    const existingS = ((state as unknown as { artifactRegistry?: ArtifactRegistryEntry[] }).artifactRegistry ?? []);
+    const entryS: ArtifactRegistryEntry = {
+      type:        streamArtifact.type,
+      title:       (streamArtifact as unknown as { title?: string }).title ?? streamArtifact.type,
+      generatedAt: Date.now(),
+    };
+    (patch as unknown as { artifactRegistry: ArtifactRegistryEntry[] }).artifactRegistry =
+      [...existingS, entryS].slice(-20);
+  }
+
   const resolvedTopic = plan.resolvedTopic?.trim();
   if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
     patch.lastConcept = resolvedTopic;
@@ -275,11 +297,64 @@ async function dispatchSync(
       const title = state.lastConcept ?? 'LINGORA Study Guide';
 
       if (step.action === 'exportChatPdf') {
-        const content = request.exportTranscript || request.message;
-        const result = await generatePDF({ title: 'Chat Export', content });
-        const messageCount =
-          (request.exportTranscript ? String(request.exportTranscript).split('\n').filter(Boolean).length : 0)
-          || (request.message ? 1 : 0);
+        // SEEK 4.1a — identical to sync path for behavioral equivalence (IS parity requirement)
+        const rawTranscript = request.exportTranscript || request.message || '';
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
+        const mentorName = (state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
+                           (state.mentorProfile ?? 'Alex').slice(1);
+        const levelStr  = state.confirmedLevel ?? state.userLevel ?? 'N/A';
+        const tokensStr = String(state.tokens ?? 0);
+
+        const lines = rawTranscript.split('\n').filter(Boolean);
+        const formattedLines = lines.map((line: string) => {
+          if (line.startsWith('[Student]:') || line.startsWith('[USER]:')) {
+            return line.replace(/^\[(?:Student|USER)\]:/, '▶ Estudiante:');
+          }
+          const mentorMatch = line.match(/^\[([A-Z]+)\]:/);
+          if (mentorMatch) return line.replace(/^\[[A-Z]+\]:/, `◆ ${mentorName}:`);
+          return line;
+        }).join('\n');
+
+        const header = [
+          '══════════════════════════════════════════',
+          '   LINGORA - HISTORIAL DE SESION',
+          '══════════════════════════════════════════',
+          `Mentor:   ${mentorName}`,
+          `Nivel:    ${levelStr}`,
+          `Turnos:   ${tokensStr}`,
+          `Fecha:    ${dateStr}`,
+          '──────────────────────────────────────────',
+          '',
+        ].join('\n');
+
+        const footer = [
+          '',
+          '──────────────────────────────────────────',
+          'LINGORA - AI Cultural Immersion Platform for Spanish',
+          'Learn -> Connect -> Experience',
+          `Exportado el ${dateStr}`,
+        ].join('\n');
+
+        const sessionArtifacts = (state as unknown as { artifactRegistry?: ArtifactRegistryEntry[] }).artifactRegistry ?? [];
+        const artifactSection = sessionArtifacts.length > 0
+          ? [
+              '',
+              '══════════════════════════════════════════',
+              '   MATERIALES GENERADOS EN SESION',
+              '══════════════════════════════════════════',
+              ...sessionArtifacts.map((a, i) =>
+                `${i + 1}. [${a.type.toUpperCase()}] ${a.title}`
+              ),
+              '',
+            ].join('\n')
+          : '';
+
+        const content = header + formattedLines + artifactSection + footer;
+        const result = await generatePDF({ title: `LINGORA - Sesion - ${dateStr}`, content });
+        if (!result.success) console.error(`[stream] exportChatPdf error: ${result.error}`);
+
+        const messageCount = rawTranscript ? rawTranscript.split('\n').filter(Boolean).length : 0;
 
         return {
           artifact: result.success ? { type: 'pdf_chat' as const, url: result.url, messageCount } : undefined,
@@ -632,4 +707,5 @@ const LABELS: Record<string, Record<string, string>> = {
 
 function loc(k: string, l: string): string {
   return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k;
-    }
+}
+ 
