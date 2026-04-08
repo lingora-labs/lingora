@@ -1,6 +1,6 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 4.1a — Thin Router (Entry Point) with hardened production gates
+// LINGORA SEEK 4.1b — Thin Router (maxDuration: 300, no artificial timeout)
 // =============================================================================
 // SEEK 3.9 base changes: T1 (architecture bump), T2 (*2468*# logic fix).
 // CORRECCIONES APLICADAS (según auditoría IS + CSJ, 7 abril 2026):
@@ -51,7 +51,7 @@ import { executePlanStream } from '../../../server/core/execution-engine-stream'
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
 export const runtime     = 'nodejs';
-export const maxDuration = 60;  // SEEK 3.8: restored — 30s caused timeouts on course PDF generation
+export const maxDuration = 300; // SEEK 4.1b — CEO directive: no artificial timeout  // SEEK 3.8: restored — 30s caused timeouts on course PDF generation
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
@@ -250,7 +250,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         timestamp:             new Date().toISOString(),
       };
 
-      const payload = { summary, traces };
       return NextResponse.json(
         IS_PRODUCTION
           ? {
