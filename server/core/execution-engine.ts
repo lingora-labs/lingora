@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 4.1a — Execution Engine (artifact memory registry + 18-type parity)
+// LINGORA SEEK 4.1b — Execution Engine (ArtifactRegistryEntry from contracts, package_session, no placebo)
 // =============================================================================
 // SEEK 3.9 base  : F1 (honest PDF errors), F2 (fallback messages), F3 (header).
 // SEEK 3.9-b     : LW1 (elastic prompt 5-8 modules), LW2 (topic sovereignty rule).
@@ -60,6 +60,7 @@ import {
   ChatRequest,
   SuggestedAction,
   SuggestedActionType,
+  ArtifactRegistryEntry,
 } from '../../lib/contracts';
 
 import { advanceTutorPhase } from './state-manager';
@@ -69,15 +70,7 @@ import { buildModelParams } from '../mentors/mentor-engine';
 // Supports: gpt-4o-mini, gpt-5.4-nano, gpt-5.4-mini (no code changes needed).
 const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
-// SEEK 4.1a — Artifact Memory Registry
-// Local type — will migrate to contracts.ts in SEEK 4.1 consolidation sprint.
-// Captures artifacts produced in session so exportChatPdf can include them.
-interface ArtifactRegistryEntry {
-  type:        string;
-  title:       string;
-  generatedAt: number;
-  summary?:    string;
-}
+// SEEK 4.1b — ArtifactRegistryEntry imported from contracts.ts (canonical location)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SEEK 3.1 Fase 0-A — TOPIC RESOLVER
@@ -362,6 +355,34 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       const title = ctx.state.lastConcept ?? 'LINGORA Study Guide';
       console.log(`[PDF] step.action: ${step.action}`);
       console.log(`[PDF] title: ${title}`);
+
+      // SEEK 4.1b — package_session: honest response (exportSessionStudyPdf arrives in SEEK 4.2)
+      if (step.action === 'packageSession') {
+        const lang = ctx.state.interfaceLanguage ?? 'en';
+        const artifactCount = ctx.state.artifactRegistry?.length ?? 0;
+        const msgs: Record<string, string> = {
+          en: artifactCount > 0
+            ? `Your session has ${artifactCount} saved material${artifactCount > 1 ? 's' : ''} (${ctx.state.artifactRegistry!.map(a => a.title).join(', ')}). Full session study PDF — including all tables, schemas and exercises — will be available in the next version.`
+            : 'No materials have been generated in this session yet. Generate a schema, table or exercise first, then you can package the session.',
+          es: artifactCount > 0
+            ? `Tu sesión tiene ${artifactCount} material${artifactCount > 1 ? 'es' : ''} guardado${artifactCount > 1 ? 's' : ''} (${ctx.state.artifactRegistry!.map(a => a.title).join(', ')}). El PDF de estudio completo de sesión — incluyendo tablas, esquemas y ejercicios — estará disponible en la próxima versión.`
+            : 'No se han generado materiales en esta sesión todavía. Genera un esquema, tabla o ejercicio primero.',
+          no: artifactCount > 0
+            ? `Økten din har ${artifactCount} lagret materiale. Fullstendig studié-PDF for økten kommer i neste versjon.`
+            : 'Ingen materialer er generert i denne økten ennå.',
+        };
+        return { text: msgs[lang] ?? msgs['en'] };
+      }
+
+      if (step.action === 'exportArtifact') {
+        const lang = ctx.state.interfaceLanguage ?? 'en';
+        const msgs: Record<string, string> = {
+          en: 'Individual artifact export buttons are coming in the next version. For now, you can export the full conversation PDF.',
+          es: 'Los botones de exportación individual por artifact llegarán en la próxima versión. Por ahora, puedes exportar el PDF completo de la conversación.',
+          no: 'Individuelle eksportknapper for artifacts kommer i neste versjon.',
+        };
+        return { text: msgs[lang] ?? msgs['en'] };
+      }
 
       if (step.action === 'exportChatPdf') {
         const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
@@ -654,9 +675,9 @@ Return ONLY this JSON:
             console.error(`[PDF] LW4 FAILED — document has ${docBlocks.length} blocks — topic: "${cleanTopic}"`);
             const lang2 = ctx.state.interfaceLanguage ?? 'en';
             const validationErrorMsgs: Record<string, string> = {
-              en: `The document for "${cleanTopic}" did not generate sufficient content. Please try again.`,
-              es: `El documento sobre "${cleanTopic}" no generó contenido suficiente. Inténtalo de nuevo.`,
-              no: `Dokumentet om "${cleanTopic}" genererte ikke nok innhold. Prøv igjen.`,
+              en: `The document for "${cleanTopic}" did not generate sufficient content.`,
+              es: `El documento sobre "${cleanTopic}" no generó contenido suficiente.`,
+              no: `Dokumentet om "${cleanTopic}" genererte ikke nok innhold. Prøv en annen formulering.`,
               it: `Il documento su "${cleanTopic}" non ha generato contenuto sufficiente. Riprova.`,
               fr: `Le document sur "${cleanTopic}" n'a pas généré suffisamment de contenu. Réessaie.`,
               de: `Das Dokument zu "${cleanTopic}" hat nicht genug Inhalt generiert. Bitte erneut versuchen.`,
@@ -672,9 +693,9 @@ Return ONLY this JSON:
         if (!courseContent) {
           const lang2 = ctx.state.interfaceLanguage ?? 'en';
           const errorMsgs: Record<string, string> = {
-            en: `Could not generate the course for "${topic}" right now. The content engine returned an error. Please try again in a moment.`,
-            es: `No se pudo generar el curso sobre "${topic}" en este momento. El motor de contenido devolvió un error. Inténtalo de nuevo en un instante.`,
-            no: `Kunne ikke generere kurset om "${topic}" akkurat nå. Innholdsmotoren returnerte en feil. Prøv igjen om et øyeblikk.`,
+            en: `Could not generate the course for "${topic}" right now. The content engine returned an error. Check the topic formulation or try a shorter request.`,
+            es: `No se pudo generar el curso sobre "${topic}" en este momento. El motor de contenido devolvió un error. Revisa la formulación del tema o intenta una solicitud más corta.`,
+            no: `Kunne ikke generere kurset om "${topic}" akkurat nå. Innholdsmotoren returnerte en feil. Prøv en annen formulering av emnet.`,
             it: `Non è stato possibile generare il corso su "${topic}" in questo momento. Riprova tra un istante.`,
             fr: `Impossible de générer le cours sur "${topic}" pour l'instant. Réessaie dans un moment.`,
             de: `Der Kurs zu "${topic}" konnte gerade nicht generiert werden. Bitte versuche es erneut.`,
@@ -693,9 +714,9 @@ Return ONLY this JSON:
           // SEEK 3.9 — F1: PDF render failure also surfaces honestly.
           const lang2 = ctx.state.interfaceLanguage ?? 'en';
           const pdfErrorMsgs: Record<string, string> = {
-            en: `The course content was generated but the PDF could not be rendered. Error: ${result.error ?? 'unknown'}. Please try again.`,
-            es: `El contenido del curso se generó pero el PDF no pudo renderizarse. Error: ${result.error ?? 'desconocido'}. Inténtalo de nuevo.`,
-            no: `Kursinnholdet ble generert, men PDF-en kunne ikke gjengis. Feil: ${result.error ?? 'ukjent'}. Prøv igjen.`,
+            en: `The course content was generated but the PDF could not be rendered. Error: ${result.error ?? 'unknown'}.`,
+            es: `El contenido del curso se generó pero el PDF no pudo renderizarse. Error: ${result.error ?? 'desconocido'}.`,
+            no: `Kursinnholdet ble generert, men PDF-en kunne ikke gjengis. Feil: ${result.error ?? 'ukjent'}. Prøv en annen formulering.`,
           };
           return { text: pdfErrorMsgs[lang2] ?? pdfErrorMsgs['en'], isUserVisibleError: true };
         }
@@ -888,10 +909,11 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
   if (artifact && artifact.type !== 'pdf_chat') {
     const existing = ((ctx.state as unknown as { artifactRegistry?: ArtifactRegistryEntry[] }).artifactRegistry ?? []);
     const entry: ArtifactRegistryEntry = {
+      id:          `${artifact.type}-${Date.now()}`,
       type:        artifact.type,
       title:       (artifact as unknown as { title?: string }).title ?? artifact.type,
       generatedAt: Date.now(),
-      summary:     (artifact as unknown as { url?: string }).url ? undefined : undefined,
+      payload:     artifact,
     };
     (statePatch as unknown as { artifactRegistry: ArtifactRegistryEntry[] }).artifactRegistry =
       [...existing, entry].slice(-20); // keep last 20 artifacts max
@@ -1029,14 +1051,8 @@ function buildArtifactSuccessMessage(artifactType: string, lang: string): string
 // SEEK 3.9 — buildFallbackMessage is only reached when ALL steps produced no text.
 // Course PDF errors are now returned as text from the step itself (F1), so this
 // generic fallback should rarely fire in practice.
-function buildFallbackMessage(_plan: ExecutionPlan, lang: string): string {
-  const fallbacks: Record<string, string> = {
-    en: "I wasn't able to generate a response right now — please try again in a moment.",
-    es: "No pude generar una respuesta en este momento. Por favor, intentalo de nuevo en un instante.",
-    no: "Jeg kunne ikke generere et svar akkurat na. Proev igjen om et oyeblikk.",
-    it: "Non ho potuto generare una risposta in questo momento. Riprova tra un attimo.",
-    fr: "Je n'ai pas pu generer une reponse pour l'instant. Reessaie dans un moment.",
-  };
-  return fallbacks[lang] ?? fallbacks['en'];
+function buildFallbackMessage(_plan: ExecutionPlan, _lang: string): string {
+  // SEEK 4.1b — no placebo. Return empty string; UI handles empty gracefully.
+  return '';
 }
 
