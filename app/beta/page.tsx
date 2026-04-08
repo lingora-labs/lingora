@@ -2,7 +2,7 @@
 
 // =============================================================================
 // app/beta/page.tsx
-// LINGORA SEEK 3.9 c — Beta Tutor Interface
+// LINGORA SEEK 4.1b — app/beta/page.tsx (no artificial timeout, honest error classification)— Beta Tutor Interface
 // =============================================================================
 // FIX LOG:
 //   FIX-1    sendComposer: audio payload aligned with SEEK 3.0 route.ts.
@@ -1242,8 +1242,7 @@ export default function BetaPage() {
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     setLoading(true)
     try {
-      const ctrl = new AbortController()
-      const to = setTimeout(() => ctrl.abort(), 30000)
+      // SEEK 4.1b — no artificial timeout: backend maxDuration=300s, frontend waits
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1268,9 +1267,7 @@ export default function BetaPage() {
             _exerciseAttemptCount: sessionRef.current._exerciseAttemptCount,
           }
         }),
-        signal: ctrl.signal,
       })
-      clearTimeout(to)
 
       // ── STREAMING path (SSE) ──────────────────────────────────────────────
       const contentType = res.headers.get('content-type') ?? ''
@@ -1336,8 +1333,14 @@ export default function BetaPage() {
           ? data.suggestedActions
           : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' }] })
     } catch (e) {
-      const m = e instanceof Error ? e.message : ''
-      addMsg({ sender:'ln', text: m.includes('abort') ? 'El tutor tardó más de lo esperado. Por favor, inténtalo de nuevo en un momento.' : m.includes('429') ? 'El servicio está temporalmente ocupado (cuota de API). Inténtalo de nuevo en unos segundos.' : 'Error de conexión. Verifica tu red e inténtalo de nuevo.' })
+      // SEEK 4.1b — no abort branch. Classify errors honestly.
+      const m = e instanceof Error ? e.message : String(e)
+      const msg = m.includes('429')
+        ? 'El servicio está temporalmente ocupado (cuota de API). Espera unos segundos.'
+        : m.includes('Failed to fetch') || m.includes('NetworkError')
+          ? 'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+          : `Error del sistema: ${m}`
+      addMsg({ sender:'ln', text: msg })
     } finally { setLoading(false) }
   }, [addMsg, setMsgs])
 
@@ -1800,3 +1803,4 @@ export default function BetaPage() {
     </>
   )
 }
+
