@@ -1110,9 +1110,23 @@ async function doExportPdfBackend(msgs: Msg[], ss: SS) {
       body: JSON.stringify({
         message: 'Exporta esta conversación a PDF',
         exportTranscript: transcript,
-        state: { ...ss, mentor: ss.mentor, lang: ss.lang, topic: ss.topic, interfaceLanguage: BACKEND_LANG(ss.lang) },
+        state: {
+          ...trimStateForPayload(ss as Record<string, unknown>),
+          mentor: ss.mentor,
+          lang: ss.lang,
+          topic: ss.topic,
+          interfaceLanguage: BACKEND_LANG(ss.lang),
+        },
       }),
     })
+    // SEEK 4.1b — guard before json() (PDF export path)
+    if (!res.ok) {
+      if (res.status === 413) {
+        doExportTxt(msgs) // fallback to text export if PDF payload too large
+        return
+      }
+      throw new Error(`PDF export failed: HTTP ${res.status}`)
+    }
     const data = await res.json()
     const artifactUrl = data.artifact?.url
     if (artifactUrl && ['pdf', 'pdf_chat'].includes(data.artifact?.type)) {
@@ -1121,6 +1135,29 @@ async function doExportPdfBackend(msgs: Msg[], ss: SS) {
     }
     doExportTxt(msgs)
   } catch { doExportTxt(msgs) }
+}
+
+
+// ─── SEEK 4.1b: trimStateForPayload ─────────────────────────────────────────
+// Removes heavy memory fields before sending state to backend.
+// Prevents HTTP 413 from Vercel when sessions grow large (artifacts, curriculum).
+// Rule: send operational state only — never memory/payload blobs.
+function trimStateForPayload(state: Record<string, unknown>): Record<string, unknown> {
+  const trimmed = { ...state };
+  // Remove heaviest fields — not needed by backend per-request
+  delete trimmed['artifactRegistry'];  // full ArtifactPayload blobs — heaviest field
+  // Trim curriculumPlan.modules to last 3 (current + next) to cap plan size
+  if (trimmed['curriculumPlan'] && typeof trimmed['curriculumPlan'] === 'object') {
+    const cp = trimmed['curriculumPlan'] as Record<string, unknown>;
+    if (Array.isArray(cp['modules'])) {
+      trimmed['curriculumPlan'] = { ...cp, modules: (cp['modules'] as unknown[]).slice(-3) };
+    }
+  }
+  // Omit masteryByModule in non-structured modes (not needed for conversation)
+  if (trimmed['activeMode'] !== 'structured' && trimmed['activeMode'] !== 'pdf_course') {
+    delete trimmed['masteryByModule'];
+  }
+  return trimmed;
 }
 
 // ─── Main ─────────────────────────────────────────
@@ -1249,7 +1286,7 @@ export default function BetaPage() {
         body: JSON.stringify({
           ...payload,
           state: {
-            ...sessionRef.current,
+            ...trimStateForPayload(sessionRef.current as Record<string, unknown>),
             mentor:            mentorRef.current,
             lang:              langRef.current,
             topic:             topicRef.current,
@@ -1316,6 +1353,28 @@ export default function BetaPage() {
       }
 
       // ── Non-streaming path (JSON) ─────────────────────────────────────────
+      // SEEK 4.1b — FIX A: guard before json() prevents SyntaxError on non-JSON responses
+      if (!res.ok) {
+        if (res.status === 413) {
+          // FIX B: human message — session stays alive, no reload required
+          const lang = langRef.current ?? 'en'
+          const msg413 = lang === 'es' || lang === 'no'
+            ? 'La sesión acumuló demasiados materiales para esta operación. Continúa con normalidad — el tutor sigue aquí.'
+            : 'The session accumulated too much material for this operation. Continue normally — the tutor is still here.'
+          addMsg({ sender: mentorRef.current ?? 'ln', text: msg413 })
+          // FIX C: trim heavy state locally to break the latch on next request
+          setSession(prev => {
+            const trimmed = { ...prev }
+            delete (trimmed as Record<string, unknown>)['artifactRegistry']
+            const patched = { ...trimmed } as typeof prev
+            sessionRef.current = patched
+            return patched
+          })
+          return
+        }
+        // Other non-ok responses
+        throw new Error(`HTTP_ERROR_${res.status}`)
+      }
       const data = await res.json()
       if (data.state) {
         setSession(s => {
@@ -1333,14 +1392,24 @@ export default function BetaPage() {
           ? data.suggestedActions
           : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: '📄 Exportar PDF', tone: 'secondary' }] })
     } catch (e) {
-      // SEEK 4.1b — no abort branch. Classify errors honestly.
+      // SEEK 4.1b — honest error classification. No abort branch. No raw stack traces.
       const m = e instanceof Error ? e.message : String(e)
-      const msg = m.includes('429')
-        ? 'El servicio está temporalmente ocupado (cuota de API). Espera unos segundos.'
-        : m.includes('Failed to fetch') || m.includes('NetworkError')
-          ? 'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
-          : `Error del sistema: ${m}`
-      addMsg({ sender:'ln', text: msg })
+      const lang = langRef.current ?? 'en'
+      let msg: string
+      if (m.includes('429')) {
+        msg = 'El servicio está temporalmente ocupado (cuota de API). Espera unos segundos.'
+      } else if (m.startsWith('HTTP_ERROR_413')) {
+        // Should not reach here (handled above), but belt-and-suspenders
+        msg = lang === 'es' || lang === 'no'
+          ? 'La sesión es demasiado larga para esta operación. Continúa con normalidad.'
+          : 'Session too large for this operation. Continue normally.'
+      } else if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')) {
+        msg = 'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+      } else {
+        // Unknown error — show category, not raw exception
+        msg = lang === 'es' ? 'Ocurrió un error inesperado. El tutor sigue activo.' : 'An unexpected error occurred. The tutor is still active.'
+      }
+      addMsg({ sender: mentorRef.current ?? 'ln', text: msg })
     } finally { setLoading(false) }
   }, [addMsg, setMsgs])
 
