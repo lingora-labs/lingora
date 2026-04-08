@@ -1,36 +1,14 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 3.8 — Sole Decision Authority
+// LINGORA SEEK 4.1b — Sole Decision Authority
 // =============================================================================
-// Purpose  : The single authority that decides WHO responds, in WHAT ORDER,
-//            with WHAT DEPENDENCIES, under WHAT BLOCKING CONDITIONS.
-//
-//            THIS MODULE:
-//            ✅ Reads OrchestrationContext (intent + state)
-//            ✅ Evaluates 6 branches in constitutional order
-//            ✅ Produces one complete, auditable ExecutionPlan
-//            ❌ Does NOT call OpenAI or any external service
-//            ❌ Does NOT execute anything
-//            ❌ Does NOT modify state
-//            ❌ Does NOT produce artifacts
-//            ❌ Does NOT decide on mentor responses
-//
-// Constitutional evaluation order (MUST NOT be scattered):
-//   1. Hard overrides
-//   2. First interaction (tokens === 0)
-//   3. Strong curriculum request
-//   4. Fast-path artifact request
-//   5. Active pedagogical phase (structured mode)
-//   6. Default conversation fallback
-//
-// Riesgo principal : Evaluation order drift — adding bypass logic outside
-//                    this file reintroduces multi-cerebro. Any new branch
-//                    MUST be added here and only here.
-//
-// Dependencia      : lib/contracts.ts, server/core/intent-router.ts
-//
-// Commit   : feat(orchestrator): SEEK 3.0 — sole decision authority,
-//            6-step constitutional evaluation, auditable ExecutionPlan
+// SEEK 4.1b CHANGES:
+//   + resolveSemanticOperation(): distinguishes create_course / package_session /
+//     export_chat / export_artifact before curriculum branch fires
+//   + STEP 2.5: semantic operation detection inserted before STEP 3 (curriculum)
+//   + buildPackageSessionPlan(): honest response for session packaging (4.2 delivers)
+//   + package_session + export_artifact added to hard override map
+//   Previous: SEEK 3.8
 // =============================================================================
 
 import {
@@ -41,7 +19,6 @@ import {
   PedagogicalAction,
   MentorDirective,
   ArtifactType,
-  ActiveMode,
   TutorPhase,
   MentorProfile,
   IntentSubtype,
@@ -59,8 +36,9 @@ import {
 
 const PRIORITY = {
   HARD_OVERRIDE:    100,
-  EXERCISE_LOCK:     95,  // SEEK 3.1 Fase 0-A — between hard override and first turn
+  EXERCISE_LOCK:     95,
   FIRST_TURN:        90,
+  SEMANTIC_OP:       85,  // SEEK 4.1b — semantic operation before curriculum
   CURRICULUM:        80,
   FAST_PATH:         70,
   PEDAGOGICAL:       60,
@@ -68,38 +46,71 @@ const PRIORITY = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEEK 3.1 Fase 0-A — TOPIC RESOLVER (orchestrator)
-// Single source of truth for "what topic is this session about".
-// Execution-engine receives the pre-resolved topic via ExecutionPlan.resolvedTopic.
+// SEEK 4.1b — SEMANTIC OPERATION RESOLVER
+// Distinguishes four operations that share surface similarity:
+//   create_course   — user wants new content generated from scratch
+//   package_session — user wants to pack what was already done in this session
+//   export_chat     — user wants the conversation transcript
+//   export_artifact — user wants one specific artifact from the session
+//
+// Detection order: artifact-specific > session-pack > transcript > default
+// Returns null if no semantic operation is detected (falls through to STEP 3).
+// ─────────────────────────────────────────────────────────────────────────────
+
+type SemanticOperation = 'package_session' | 'export_artifact' | null;
+
+const SESSION_REF_PATTERNS = [
+  /lo que (hemos?|acabamos de|vimos?|trabajamos?|hicimos?)/i,
+  /esta sesi[oó]n/i,
+  /los materiales? de (hoy|esta clase|esta sesi[oó]n)/i,
+  /todo lo (visto|trabajado|generado|que hemos?)/i,
+  /empaquetar? (la sesi[oó]n|los materiales?|todo)/i,
+  /pack(age)? (this )?session/i,
+  /everything (we('ve)? (done|covered|worked on))/i,
+  /what we (did|covered|learned) today/i,
+  /materials? from (today|this session)/i,
+];
+
+const ARTIFACT_SPECIFIC_PATTERNS = [
+  /exporta? (esta|este|la|el) (tabla|esquema|matriz|quiz|gr[aá]fica)/i,
+  /export (this|the) (table|schema|matrix|quiz|chart|artifact)/i,
+  /descargar? (esta|este)/i,
+  /download (this|the) (table|schema|matrix)/i,
+];
+
+function resolveSemanticOperation(ctx: OrchestrationContext): SemanticOperation {
+  const msg = ctx.message?.trim() ?? '';
+  const hasArtifacts = (ctx.state.artifactRegistry?.length ?? 0) > 0;
+
+  // Check artifact-specific export first (more specific wins)
+  if (ARTIFACT_SPECIFIC_PATTERNS.some(p => p.test(msg))) {
+    return 'export_artifact';
+  }
+
+  // Check session reference patterns
+  if (hasArtifacts && SESSION_REF_PATTERNS.some(p => p.test(msg))) {
+    return 'package_session';
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOPIC AND MODE RESOLVERS (unchanged from SEEK 3.8)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ORCH_NOISE = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PEDAGOGICAL MODE RESOLVER — SEEK 3.4
-// ARCH decision: 4 modes only (conversation|explanation|schema|table)
-// No cognitiveLoad. No submodes. Thin single-pass decision.
-// ─────────────────────────────────────────────────────────────────────────────
 
 function resolvePedagogicalMode(
   message: string,
   state: import('../../lib/contracts').SessionState,
 ): import('../../lib/contracts').PedagogicalMode {
   const t = message.toLowerCase().trim();
-
-  // Trigger 1: explicit schema intent
   if (/\besquema\b|\bschema\b|\bresumen\s+visual|\bstructured\s+summary\b|\bstructure\s+this\b|\borganize\s+this\b/i.test(t)) return 'schema';
-
-  // Trigger 2: explicit table intent — checked AFTER intent-router confirms table_matrix
-  // (intent-router handles routing; this governs mentor directive)
   if (/\btabla\b|\bmatriz\b|\btable\b|\bmatrix\b|\bcompar[ae]/i.test(t) &&
       !/\btabla.*de\s+contenido/i.test(t)) return 'table';
-
-  // Trigger 3: persist current mode if user didn't change it
   if (state.pedagogicalMode === 'schema') return 'schema';
   if (state.pedagogicalMode === 'table') return 'table';
-
-  // Default: mode-appropriate explanation
   if (state.activeMode === 'free') return 'conversation';
   return 'explanation';
 }
@@ -107,29 +118,8 @@ function resolvePedagogicalMode(
 function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, message: string): string {
   if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
 
-  // SEEK 3.7 — Topic sovereignty: state context always wins over message text
-  // when the message is referential — even if long.
-  // A message is referential when it points to existing context rather than naming a new topic.
-  //
-  // TWO-LEVEL referential detection:
-  // Level 1 — Exact short phrases: "este tema", "lo mismo", etc.
-  // Level 2 — Semantic referential: long messages that CONTAIN a referential anchor
-  //           before a verb (hazme, dame, genera, muéstrame + {este/eso/esto/el tema}).
-  //           "Hazme un esquema completo de este tema" = referential despite length.
-  //
-  // Order of authority (constitutional — cannot be changed without IS/CSJ approval):
-  //   1. currentLessonTopic  (set by structured course engine)
-  //   2. lastConcept         (persisted from previous turns)
-  //   3. lastUserGoal        (user's stated objective)
-  //   4. curriculumPlan.topic (active course topic)
-  //   5. message             (only if it introduces a genuinely new topic)
-
   const clean = message?.trim();
-
   const EXACT_REFERENTIAL = /^(este tema|this topic|lo mismo|the same|eso|that|esto|this|el mismo|same|continuar|continue|lo anterior|el tema|the topic|más sobre|more on)$/i;
-
-  // Semantic referential: the message requests an action ON an implied topic, not a new one.
-  // Pattern: verb-of-action + ... + (este/eso/esto/el tema/mismo)
   const SEMANTIC_REFERENTIAL = /\b(hazme|dame|genera|crea|muéstrame|show me|give me|make|create|generate|convierte|convert|exporta|export)\b.{0,60}\b(este|esto|eso|ese|el mismo|el tema|this|that|it|the same)\b/i;
 
   const isReferential =
@@ -138,123 +128,76 @@ function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, 
     EXACT_REFERENTIAL.test(clean) ||
     SEMANTIC_REFERENTIAL.test(clean);
 
-  // If NOT referential AND not noise: message is a genuine new topic
   if (!isReferential && clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
-
-  // State context is authoritative for referential messages
   if (state.lastConcept?.trim())   return state.lastConcept;
   if (state.lastUserGoal?.trim())  return state.lastUserGoal;
   if (state.curriculumPlan?.topic) return state.curriculumPlan.topic;
-
-  // Final fallback: use message only if no state context exists at all
   if (clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
   return 'Spanish grammar';
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API — THE ONLY ENTRY POINT
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * orchestrate
- * ──────────────────────────────────────────────────────────────────────────
- * The sole runtime decision function. All execution authority flows through
- * this function. Every request MUST pass through here.
- *
- * Returns a complete ExecutionPlan:
- * - executor type (or 'hybrid')
- * - priority
- * - blocking flag
- * - pedagogical action
- * - expected artifact types
- * - mentor directive (if applicable)
- * - explicit execution order with step dependencies
- * - human-readable reason (mandatory, non-empty)
- *
- * DETERMINISM GUARANTEE:
- * Same ctx.message + ctx.state + ctx.intent → same ExecutionPlan, always.
- * No randomness. No external calls. No side effects.
- */
 export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
-
-  // SEEK 3.4: resolve pedagogical output format (schema|table|explanation|conversation)
-  // This is a thin single-pass decision — not a new architecture layer.
   const pedagogicalMode = resolvePedagogicalMode(ctx.message, ctx.state);
   if (pedagogicalMode !== ctx.state.pedagogicalMode) {
     ctx = { ...ctx, state: { ...ctx.state, pedagogicalMode } };
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
   // STEP 1 — HARD OVERRIDES
-  // Explicit system commands. Bypass all pedagogy. Always blocking.
-  // ══════════════════════════════════════════════════════════════════════════
   if (isHardOverride(ctx.intent)) {
     return buildHardOverridePlan(ctx);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // STEP 1.5 — EXERCISE LOCK (SEEK 3.1 Fase 0-A)
-  // User is answering an active exercise. Evaluate the response — do not launch new theory.
-  // ══════════════════════════════════════════════════════════════════════════
-  if (
-    ctx.state.expectedResponseMode === 'exercise_answer' &&
-    ctx.state.currentExercise
-  ) {
+  // STEP 1.5 — EXERCISE LOCK
+  if (ctx.state.expectedResponseMode === 'exercise_answer' && ctx.state.currentExercise) {
     return buildExerciseLockPlan(ctx);
   }
 
   // STEP 2 — FIRST INTERACTION
-  // Zero tokens = first turn of the session. Situated greeting, not generic.
-  // ══════════════════════════════════════════════════════════════════════════
   if (ctx.isFirstTurn) {
     return buildFirstTurnPlan(ctx);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
+  // STEP 2.5 — SEMANTIC OPERATION (SEEK 4.1b)
+  // Resolves package_session / export_artifact BEFORE curriculum detection fires.
+  // Prevents 'exporta los materiales de esta sesión' from being treated as create_course.
+  const semanticOp = resolveSemanticOperation(ctx);
+  if (semanticOp === 'package_session') {
+    return buildPackageSessionPlan(ctx);
+  }
+  if (semanticOp === 'export_artifact') {
+    return buildExportArtifactPlan(ctx);
+  }
+
   // STEP 3 — STRONG CURRICULUM REQUEST
-  // User wants a complete structured course. Generate full curriculum.
-  // ══════════════════════════════════════════════════════════════════════════
   if (isStrongCurriculumRequest(ctx.intent)) {
     return buildCurriculumPlan(ctx);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
   // STEP 4 — FAST-PATH ARTIFACT REQUEST
-  // User explicitly requested a schema, table, matrix, or illustration.
-  // Returns artifact without going through pedagogical phases.
-  // Priority: table_matrix > schema_pro > table > schema > quiz > illustration
-  // ══════════════════════════════════════════════════════════════════════════
   if (isFastPathArtifact(ctx.intent)) {
     return buildFastPathPlan(ctx);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
   // STEP 5 — ACTIVE PEDAGOGICAL PHASE
-  // Structured or pdf_course mode with an active phase sequence.
-  // ══════════════════════════════════════════════════════════════════════════
   if (ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course') {
     return buildPedagogicalPlan(ctx);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
   // STEP 6 — DEFAULT CONVERSATION FALLBACK
-  // Free conversation, interact mode, or any unclassified intent.
-  // This branch NEVER throws. It is the guaranteed fallsafe.
-  // ══════════════════════════════════════════════════════════════════════════
   return buildConversationPlan(ctx);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BRANCH BUILDERS — private, each produces one complete ExecutionPlan
+// BRANCH BUILDERS
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ── STEP 1: Hard Override ─────────────────────────────────────────────────
 
 function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
   const subtype = ctx.intent.subtype as IntentSubtype;
 
-  // Map subtype to executor + action + artifact
   const overrideMap: Record<string, {
     executor: ExecutorType | 'hybrid';
     action: string;
@@ -277,7 +220,7 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       executor: 'tool_audio',
       action: 'transcribeAudio',
       pedagogicalAction: 'transcription_only',
-      artifacts: ['audio'],  // FIX-9B: TTS step produces audio artifact
+      artifacts: ['audio'],
     },
     export_chat_pdf: {
       executor: 'tool_pdf',
@@ -291,9 +234,19 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
       pedagogicalAction: 'generate_course_pdf',
       artifacts: ['course_pdf'],
     },
+    package_session: {
+      executor: 'tool_pdf',
+      action: 'packageSession',
+      pedagogicalAction: 'package_session',
+      artifacts: ['pdf_chat'],
+    },
+    export_artifact: {
+      executor: 'tool_pdf',
+      action: 'exportArtifact',
+      pedagogicalAction: 'export_artifact',
+      artifacts: ['pdf'],
+    },
     pronunciation_eval: {
-      // 2.8-A: 3-step plan — transcribe → mentor evaluates → TTS
-      // executor is hybrid because it combines tool_audio + mentor + TTS
       executor: 'hybrid',
       action: 'evaluatePronunciation',
       pedagogicalAction: 'pronunciation_eval',
@@ -321,32 +274,25 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     blocking: true,
     pedagogicalAction: config.pedagogicalAction,
     artifacts: config.artifacts,
-    // F-B4: directive per hard override subtype
-    // Also set for hybrid executor (pronunciation_eval) — mentor step needs it
     mentor: (config.executor === 'mentor' || config.executor === 'hybrid')
       ? buildMentorDirective(
           ctx.state.mentorProfile,
-          subtype === 'translate'          ? 'TRANSLATION_ONLY_DIRECTIVE'
-          : subtype === 'correct'          ? 'CORRECTION_ONLY_DIRECTIVE'
+          subtype === 'translate'           ? 'TRANSLATION_ONLY_DIRECTIVE'
+          : subtype === 'correct'           ? 'CORRECTION_ONLY_DIRECTIVE'
           : subtype === 'pronunciation_eval' ? 'PRONUNCIATION_EVAL_DIRECTIVE'
           : 'RICH_CONTENT_DIRECTIVE',
           ctx,
         )
       : undefined,
-    commercial: undefined, // hard overrides never trigger commercial
+    commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `hard_override:${subtype} — user explicitly requested ${subtype}. Bypasses all pedagogy. Matched pattern: ${ctx.intent.matchedPattern ?? 'unknown'}`,
+    reason: `hard_override:${subtype} — user explicitly requested ${subtype}. Bypasses all pedagogy.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: buildHardOverrideSteps(subtype, step),
   };
 }
 
-// FIX-9B: build multi-step execution for transcribe (transcribe → mentor → TTS)
-// Other hard overrides remain single-step
-function buildHardOverrideSteps(
-  subtype: string,
-  step1: ExecutionStep,
-): ExecutionStep[] {
+function buildHardOverrideSteps(subtype: string, step1: ExecutionStep): ExecutionStep[] {
   if (subtype === 'transcribe') {
     return [
       step1,
@@ -354,355 +300,202 @@ function buildHardOverrideSteps(
       { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 10000 },
     ];
   }
-  // 2.8-A: pronunciation_eval — transcribe audio → mentor evaluates → TTS feedback
   if (subtype === 'pronunciation_eval') {
     return [
-      // Step 1: transcribe what the user said
       { order: 1, executor: 'tool_audio' as ExecutorType, action: 'transcribeAudio', timeout: 10000 },
-      // Step 2: mentor evaluates pronunciation against last mentor phrase
       { order: 2, executor: 'mentor' as ExecutorType, action: 'evaluatePronunciation', dependsOn: 1, timeout: 12000 },
-      // Step 3: speak the corrected pronunciation so user can hear it
       { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 8000 },
     ];
   }
   return [step1];
 }
 
-// ── STEP 2: First Turn ────────────────────────────────────────────────────
-
-// ── STEP 1.5: Exercise Lock (SEEK 3.1 Fase 0-A) ─────────────────────────────
-// The user is responding to an active exercise. The mentor evaluates that
-// specific response — it does NOT launch new theory or change the topic.
-// expectedResponseMode stays 'exercise_answer' until the mentor clears it
-// by writing 'free' to state after delivering feedback.
-
-function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
-  const steps: ExecutionStep[] = [
-    {
-      order: 1,
-      executor: 'mentor',
-      action: 'evaluateExerciseResponse',  // mentor receives exercise context + user answer
-      timeout: 15000,
-    },
-    {
-      order: 2,
-      executor: 'tool_audio',
-      action: 'generateTTS',
-      dependsOn: 1,
-      timeout: 10000,
-    },
-  ];
+// SEEK 4.1b — Package Session Plan
+// Honest response: acknowledges the request, explains current state,
+// does NOT invent a PDF. Session study PDF arrives in SEEK 4.2.
+function buildPackageSessionPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const artifactCount = ctx.state.artifactRegistry?.length ?? 0;
 
   return {
-    executor:          'hybrid',
-    priority:          PRIORITY.EXERCISE_LOCK,
-    blocking:          false,
-    pedagogicalAction: 'feedback',
-    artifacts:         ['audio'],
-    mentor:            buildMentorDirective(
-      ctx.state.mentorProfile,
-      'EXERCISE_FEEDBACK_DIRECTIVE',
-      ctx,
-    ),
-    commercial:        undefined,
-    skipPhaseAdvance:  false,
-    reason: `exercise_lock:priority_95 — user answering active exercise "${
-      ctx.state.currentExercise?.substring(0, 60) ?? 'unknown'
-    }". System evaluates response before any other branch. Topic: "${
-      ctx.state.currentLessonTopic ?? 'unknown'
-    }". Attempt #${(ctx.state._exerciseAttemptCount ?? 0) + 1}.`,
+    executor: 'mentor',
+    priority: PRIORITY.SEMANTIC_OP,
+    blocking: true,
+    pedagogicalAction: 'package_session',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `semantic_op:package_session — user wants session materials packaged. artifactRegistry has ${artifactCount} entries. exportSessionStudyPdf available in SEEK 4.2. Honest mentor response.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: steps,
+    executionOrder: [
+      {
+        order: 1,
+        executor: 'mentor',
+        action: 'packageSessionHonestResponse',
+        timeout: 12000,
+        params: { artifactCount, availableIn: 'SEEK 4.2' },
+      },
+    ],
+  };
+}
+
+// SEEK 4.1b — Export Artifact Plan
+// Routes to honest response for individual artifact export.
+// Individual artifact export UI (buttons per artifact) arrives in SEEK 4.2.
+function buildExportArtifactPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return {
+    executor: 'mentor',
+    priority: PRIORITY.SEMANTIC_OP,
+    blocking: true,
+    pedagogicalAction: 'export_artifact',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `semantic_op:export_artifact — user wants individual artifact exported. Per-artifact export buttons available in SEEK 4.2.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      {
+        order: 1,
+        executor: 'mentor',
+        action: 'exportArtifactHonestResponse',
+        timeout: 12000,
+        params: { availableIn: 'SEEK 4.2' },
+      },
+    ],
+  };
+}
+
+function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return {
+    executor: 'hybrid',
+    priority: PRIORITY.EXERCISE_LOCK,
+    blocking: false,
+    pedagogicalAction: 'feedback',
+    artifacts: ['audio'],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'EXERCISE_FEEDBACK_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: false,
+    reason: `exercise_lock:priority_95 — user answering active exercise "${ctx.state.currentExercise?.substring(0, 60) ?? 'unknown'}".`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'evaluateExerciseResponse', timeout: 15000 },
+      { order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 10000 },
+    ],
   };
 }
 
 function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   const isStructured = ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course';
-
-  // SEEK 3.7 — FIX: First turn is ALWAYS a greeting. Never a diagnostic.
-  // Rationale: at tokens=0, the user has not yet produced any language sample.
-  // Requesting "write two simple sentences" before the user has typed anything
-  // is pedagogically inverted. The diagnostic should evaluate WHAT THE USER WROTE,
-  // not request output before any output exists.
-  // Diagnostic is deferred to token=1+ where real evidence exists (Fase B).
-  // The firstMessageShowsAdvancedEvidence guard is retained for future use but
-  // shouldRequestDiagnostic is always false at first turn.
-
-  // P2: in structured/pdf_course mode, first turn includes TTS so user
-  // hears the mentor's introduction while reading — mandatory for the product experience
   const steps: ExecutionStep[] = [
-    {
-      order: 1,
-      executor: 'mentor',
-      action: 'firstTurnGreeting',
-      timeout: 12000,
-    },
+    { order: 1, executor: 'mentor', action: 'firstTurnGreeting', timeout: 12000 },
   ];
   if (isStructured) {
     steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
   }
-
   return {
     executor: isStructured ? 'hybrid' : 'mentor',
     priority: PRIORITY.FIRST_TURN,
     blocking: true,
     pedagogicalAction: 'first_turn_greeting',
     artifacts: isStructured ? ['audio'] : [],
-    mentor: buildMentorDirective(
-      ctx.state.mentorProfile,
-      'FIRST_TURN_DIRECTIVE',
-      ctx,
-    ),
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'FIRST_TURN_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `first_turn — tokens=0, session start. Mentor delivers situated greeting${isStructured ? ' + TTS audio' : ''}. language=${ctx.interfaceLanguage}, mentor=${ctx.state.mentorProfile ?? 'Alex'}`,
+    reason: `first_turn — tokens=0, session start.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: steps,
   };
 }
 
-// ── STEP 3: Curriculum ────────────────────────────────────────────────────
-
 function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
-  // Hybrid: mentor presents curriculum narrative + tool generates roadmap artifact
-  const steps: ExecutionStep[] = [
-    {
-      order: 1,
-      executor: 'knowledge',
-      action: 'retrieveTopicContext',
-      timeout: 5000,
-    },
-    {
-      order: 2,
-      executor: 'mentor',
-      action: 'generateCurriculum',
-      dependsOn: 1,  // needs RAG context before generating
-      timeout: 20000,
-    },
-    {
-      order: 3,
-      executor: 'tool_schema',
-      action: 'buildRoadmapArtifact',
-      dependsOn: 2,  // needs curriculum content before building roadmap
-      timeout: 10000,
-    },
-  ];
-
   return {
     executor: 'hybrid',
     priority: PRIORITY.CURRICULUM,
     blocking: true,
     pedagogicalAction: 'curriculum_generation',
     artifacts: ['roadmap'],
-    mentor: buildMentorDirective(
-      ctx.state.mentorProfile,
-      'CURRICULUM_PRESENTER_DIRECTIVE',
-      ctx,
-    ),
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `curriculum_generation — strong course request detected. intent.subtype=curriculum_request, confidence=${ctx.intent.confidence}. Generates full curriculum with roadmap artifact.`,
+    reason: `curriculum_generation — strong course request detected. intent.subtype=curriculum_request.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: steps,
+    executionOrder: [
+      { order: 1, executor: 'knowledge', action: 'retrieveTopicContext', timeout: 5000 },
+      { order: 2, executor: 'mentor', action: 'generateCurriculum', dependsOn: 1, timeout: 20000 },
+      { order: 3, executor: 'tool_schema', action: 'buildRoadmapArtifact', dependsOn: 2, timeout: 10000 },
+    ],
   };
 }
 
-// ── STEP 4: Fast-Path Artifact ────────────────────────────────────────────
-
 function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
   const subtype = ctx.intent.subtype;
-
-  // Artifact priority resolution: matrix > schema_pro > table > schema > quiz > illustration
-  type ArtifactConfig = {
-    executor: ExecutorType;
-    action: string;
-    artifact: ArtifactType;
-  };
-
+  type ArtifactConfig = { executor: ExecutorType; action: string; artifact: ArtifactType };
   const artifactMap: Record<string, ArtifactConfig> = {
-    table_matrix:   { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
-    schema_pro:     { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro' },  // FIX-B2: routes to generateSchemaPro → artifact schema_pro
-    table:          { executor: 'tool_schema', action: 'generateTable',        artifact: 'table' },
-    schema:         { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema' },
-    quiz:           { executor: 'tool_schema', action: 'generateQuiz',         artifact: 'quiz' },
-    illustration:   { executor: 'tool_image',  action: 'generateIllustration', artifact: 'illustration' },
-    roadmap:        { executor: 'tool_schema', action: 'buildRoadmapArtifact', artifact: 'roadmap' },
+    table_matrix: { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
+    schema_pro:   { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro' },
+    table:        { executor: 'tool_schema', action: 'generateTable',        artifact: 'table' },
+    schema:       { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema' },
+    quiz:         { executor: 'tool_schema', action: 'generateQuiz',         artifact: 'quiz' },
+    illustration: { executor: 'tool_image',  action: 'generateIllustration', artifact: 'illustration' },
+    roadmap:      { executor: 'tool_schema', action: 'buildRoadmapArtifact', artifact: 'roadmap' },
   };
-
-  const config: ArtifactConfig = artifactMap[subtype ?? ''] ?? {
-    executor: 'tool_schema',
-    action: 'generateSchema',
-    artifact: 'schema',
-  };
-
-  // Hybrid: mentor gives brief contextual text + tool generates artifact
-  const steps: ExecutionStep[] = [
-    {
-      order: 1,
-      executor: config.executor,
-      action: config.action,
-      timeout: 12000,
-    },
-    {
-      order: 2,
-      executor: 'mentor',
-      action: 'briefArtifactIntro',
-      dependsOn: 1, // mentor introduces artifact after it is generated
-      timeout: 8000,
-    },
-  ];
-
+  const config: ArtifactConfig = artifactMap[subtype ?? ''] ?? { executor: 'tool_schema', action: 'generateSchema', artifact: 'schema' };
   return {
     executor: 'hybrid',
     priority: PRIORITY.FAST_PATH,
     blocking: false,
     pedagogicalAction: 'lesson',
     artifacts: [config.artifact],
-    mentor: buildMentorDirective(
-      ctx.state.mentorProfile,
-      'RICH_CONTENT_DIRECTIVE',
-      ctx,
-    ),
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `fast_path:${subtype ?? 'schema'} — explicit artifact request. Tool generates artifact (step 1) before mentor intro (step 2). Order guaranteed by executionOrder.`,
+    reason: `fast_path:${subtype ?? 'schema'} — explicit artifact request.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: steps,
+    executionOrder: [
+      { order: 1, executor: config.executor, action: config.action, timeout: 12000 },
+      { order: 2, executor: 'mentor', action: 'briefArtifactIntro', dependsOn: 1, timeout: 8000 },
+    ],
   };
 }
 
-// ── STEP 5: Pedagogical Phase ─────────────────────────────────────────────
-
 function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
   const { tutorPhase, activeMode } = ctx.state;
-
-  // Phase → action + artifact + directive mapping
-  type PhaseConfig = {
-    pedagogicalAction: PedagogicalAction;
-    artifact?: ArtifactType;
-    directive: MentorDirective['directive'];
-    producesArtifact: boolean;
-  };
-
+  type PhaseConfig = { pedagogicalAction: PedagogicalAction; artifact?: ArtifactType; directive: MentorDirective['directive']; producesArtifact: boolean };
   const phaseMap: Record<TutorPhase, PhaseConfig> = {
-    guide: {
-      pedagogicalAction: 'guide',
-      directive: 'STRUCTURED_COURSE_DIRECTIVE',
-      producesArtifact: false,
-    },
-    lesson: {
-      pedagogicalAction: 'lesson',
-      directive: 'STRUCTURED_COURSE_DIRECTIVE',
-      producesArtifact: false,
-    },
-    schema: {
-      pedagogicalAction: 'schema',
-      artifact: 'schema',
-      directive: 'STRUCTURED_COURSE_DIRECTIVE',
-      producesArtifact: true,
-    },
-    quiz: {
-      pedagogicalAction: 'quiz',
-      artifact: 'quiz',
-      directive: 'STRUCTURED_COURSE_DIRECTIVE',
-      producesArtifact: true,
-    },
-    feedback: {
-      pedagogicalAction: 'feedback',
-      directive: 'STRUCTURED_COURSE_DIRECTIVE',
-      producesArtifact: false,
-    },
-    conversation: {
-      pedagogicalAction: 'conversation',
-      directive: 'FREE_CONVERSATION_DIRECTIVE',
-      producesArtifact: false,
-    },
+    guide:        { pedagogicalAction: 'guide',        directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    lesson:       { pedagogicalAction: 'lesson',       directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    schema:       { pedagogicalAction: 'schema',       artifact: 'schema', directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: true },
+    quiz:         { pedagogicalAction: 'quiz',         artifact: 'quiz',   directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: true },
+    feedback:     { pedagogicalAction: 'feedback',     directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    conversation: { pedagogicalAction: 'conversation', directive: 'FREE_CONVERSATION_DIRECTIVE',  producesArtifact: false },
   };
-
   const config = phaseMap[tutorPhase] ?? phaseMap['guide'];
-
   const steps: ExecutionStep[] = [];
-
   if (config.producesArtifact && config.artifact) {
-    // Schema and quiz phases: tool generates artifact, mentor delivers it
-    steps.push({
-      order: 1,
-      executor: 'tool_schema',
-      action: config.artifact === 'schema' ? 'generateSchema' : 'generateQuiz',
-      timeout: 12000,
-    });
-    steps.push({
-      order: 2,
-      executor: 'mentor',
-      action: 'deliverArtifactWithLesson',
-      dependsOn: 1,
-      timeout: 10000,
-    });
+    steps.push({ order: 1, executor: 'tool_schema', action: config.artifact === 'schema' ? 'generateSchema' : 'generateQuiz', timeout: 12000 });
+    steps.push({ order: 2, executor: 'mentor', action: 'deliverArtifactWithLesson', dependsOn: 1, timeout: 10000 });
   } else {
-    // Non-artifact phases: mentor responds, then TTS speaks it (G3 — SEEK 3.3)
-    steps.push({
-      order: 1,
-      executor: 'mentor',
-      action: `phase_${tutorPhase}`,
-      timeout: 15000,
-    });
-    // G3: TTS step after every mentor response in structured mode
-    // This restores parity with SEEK 2.6 where every tutor response had audio
-    steps.push({
-      order: 2,
-      executor: 'tool_audio' as ExecutorType,
-      action: 'generateTTS',
-      dependsOn: 1,
-      timeout: 8000,
-    });
+    steps.push({ order: 1, executor: 'mentor', action: `phase_${tutorPhase}`, timeout: 15000 });
+    steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
   }
-
   return {
-    executor: config.producesArtifact ? 'hybrid' : 'hybrid',  // G3: always hybrid now
+    executor: 'hybrid',
     priority: PRIORITY.PEDAGOGICAL,
     blocking: false,
     pedagogicalAction: config.pedagogicalAction,
     artifacts: config.artifact ? [config.artifact] : [],
-    mentor: buildMentorDirective(
-      ctx.state.mentorProfile,
-      config.directive,
-      ctx,
-    ),
-    commercial: undefined, // evaluated separately post-execution by commercial-engine
+    mentor: buildMentorDirective(ctx.state.mentorProfile, config.directive, ctx),
+    commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `pedagogical_phase:${tutorPhase} — mode=${activeMode}, continuing structured sequence. Phase produces ${config.producesArtifact ? config.artifact : 'no artifact'}.`,
+    reason: `pedagogical_phase:${tutorPhase} — mode=${activeMode}.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: steps,
   };
 }
 
-// ── STEP 6: Default Conversation ─────────────────────────────────────────
-
 function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
-  const directive =
-    ctx.state.activeMode === 'free'
-      ? 'FREE_CONVERSATION_DIRECTIVE'
-      : 'RICH_CONTENT_DIRECTIVE';
-
-  // SEEK 3.7 — Add TTS step to ALL conversation responses.
-  // Previously only structured mode had TTS. Audio must be universal.
-  // The mentor speaks; the user can listen or read. Both are always available.
-  const steps: ExecutionStep[] = [
-    {
-      order: 1,
-      executor: 'mentor',
-      action: 'conversation',
-      timeout: 15000,
-    },
-    {
-      order: 2,
-      executor: 'tool_audio',
-      action: 'generateTTS',
-      dependsOn: 1,
-      timeout: 8000,
-    },
-  ];
-
+  const directive = ctx.state.activeMode === 'free' ? 'FREE_CONVERSATION_DIRECTIVE' : 'RICH_CONTENT_DIRECTIVE';
   return {
     executor: 'hybrid',
     priority: PRIORITY.DEFAULT,
@@ -712,9 +505,12 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, directive, ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}, intent=${ctx.intent.type}(${ctx.intent.confidence.toFixed(2)}). Safe fallsafe branch.`,
+    reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: steps,
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'conversation', timeout: 15000 },
+      { order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 },
+    ],
   };
 }
 
@@ -728,20 +524,12 @@ function buildMentorDirective(
   ctx: OrchestrationContext,
 ): MentorDirective {
   const resolvedProfile: MentorProfile = profile ?? 'Alex';
-
   return {
     profile: resolvedProfile,
     directive,
     injectContinuity: !!(ctx.state.lastConcept || ctx.state.lastUserGoal),
-    injectErrorMemory: !!(
-      ctx.state.errorMemory &&
-      (ctx.state.errorMemory.grammar.length > 0 ||
-       ctx.state.errorMemory.vocabulary.length > 0)
-    ),
-    cognitiveStructure:
-      directive === 'STRUCTURED_COURSE_DIRECTIVE' ||
-      directive === 'FREE_CONVERSATION_DIRECTIVE',
-    // SEEK 3.1 Fase 0-A — inject exercise context so mentor knows what to evaluate
+    injectErrorMemory: !!(ctx.state.errorMemory && (ctx.state.errorMemory.grammar.length > 0 || ctx.state.errorMemory.vocabulary.length > 0)),
+    cognitiveStructure: directive === 'STRUCTURED_COURSE_DIRECTIVE' || directive === 'FREE_CONVERSATION_DIRECTIVE',
     ...(directive === 'EXERCISE_FEEDBACK_DIRECTIVE' && {
       activeExercise: ctx.state.currentExercise,
       activeTopic:    ctx.state.currentLessonTopic ?? ctx.state.lastConcept,
