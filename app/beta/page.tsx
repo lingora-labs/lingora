@@ -1111,7 +1111,7 @@ async function doExportPdfBackend(msgs: Msg[], ss: SS) {
         message: 'Exporta esta conversación a PDF',
         exportTranscript: transcript,
         state: {
-          ...trimStateForPayload(ss as Record<string, unknown>),
+          ...trimStateForPayload(ss as unknown as Record<string, unknown>),
           mentor: ss.mentor,
           lang: ss.lang,
           topic: ss.topic,
@@ -1286,7 +1286,7 @@ export default function BetaPage() {
         body: JSON.stringify({
           ...payload,
           state: {
-            ...trimStateForPayload(sessionRef.current as Record<string, unknown>),
+            ...trimStateForPayload(sessionRef.current as unknown as Record<string, unknown>),
             mentor:            mentorRef.current,
             lang:              langRef.current,
             topic:             topicRef.current,
@@ -1872,4 +1872,3 @@ export default function BetaPage() {
     </>
   )
 }
-
