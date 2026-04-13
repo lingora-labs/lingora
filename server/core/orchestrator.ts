@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 4.1b — Sole Decision Authority
+// LINGORA SEEK 4.1c — Sole Decision Authority + Experience Gate (PDF topic resolution)
 // =============================================================================
 // SEEK 4.1b CHANGES:
 //   + resolveSemanticOperation(): distinguishes create_course / package_session /
@@ -9,6 +9,16 @@
 //   + buildPackageSessionPlan(): honest response for session packaging (4.2 delivers)
 //   + package_session + export_artifact added to hard override map
 //   Previous: SEEK 3.8
+// SEEK 4.1c CHANGES:
+//   + Experience Gate intercepts generate_course_pdf in buildHardOverridePlan()
+//     (the real path for "hazme un curso en PDF" — hard override, not curriculum)
+//   + Experience Gate also in buildCurriculumPlan() for curriculum_request path
+//   + resolvedTopic injected into plan.params for execution-engine
+//     before generating — prevents metacourses about "creating PDFs"
+//   + extractCourseTopic(): explicit topic extractor with autoref guard
+//   + isSelfReferential(): detects "pdf/curso/maquetación" as invalid topics
+//   + buildClarificationPlan(): asks user for topic when none is resolvable
+//   + buildClarificationMessage(): multilingual clarification (8 langs)
 // =============================================================================
 
 import {
@@ -261,6 +271,43 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: [] as ArtifactType[],
   };
 
+  // ── SEEK 4.1c: Experience Gate for generate_course_pdf ─────────────────────
+  // "hazme un curso completo en PDF" enters via hard override (subtype=generate_course_pdf).
+  // Before dispatching to tool_pdf, resolve the effective topic.
+  // If no topic is resolvable, ask the user instead of generating a metacourse.
+  if (subtype === 'generate_course_pdf') {
+    const explicit = extractCourseTopic(ctx.message);
+    const resolvedTopic: string | undefined =
+      explicit                              ? explicit
+      : ctx.state.lastConcept?.trim()       ? ctx.state.lastConcept.trim()
+      : ctx.state.lastUserGoal?.trim()      ? ctx.state.lastUserGoal.trim()
+      : (ctx.state as Record<string, unknown>)['topic']
+          ? String((ctx.state as Record<string, unknown>)['topic'])
+          : undefined;
+    if (!resolvedTopic || isSelfReferential(resolvedTopic)) {
+      return buildClarificationPlan(ctx);
+    }
+    // Inject resolved topic into params so execution-engine can use it
+    config.action = 'generateCoursePdf';
+    return {
+      executor: 'tool_pdf',
+      priority: PRIORITY.HARD_OVERRIDE,
+      blocking: true,
+      pedagogicalAction: 'generate_course_pdf',
+      artifacts: ['course_pdf'],
+      mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
+      commercial: undefined,
+      skipPhaseAdvance: true,
+      reason: `hard_override:generate_course_pdf — topic="${resolvedTopic}" resolved via experience_gate. Source: ${explicit ? 'explicit' : ctx.state.lastConcept ? 'lastConcept' : 'context'}.`,
+      resolvedTopic,
+      executionOrder: [{
+        order: 1, executor: 'tool_pdf', action: 'generateCoursePdf', timeout: 120000,
+        params: { topic: resolvedTopic },
+      }],
+    };
+  }
+  // ── End Experience Gate ────────────────────────────────────────────────────
+
   const step: ExecutionStep = {
     order: 1,
     executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
@@ -409,6 +456,27 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
 }
 
 function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
+  // ── SEEK 4.1c: Experience Gate ─────────────────────────────────────────────
+  // Resolve effective topic before generating any PDF course.
+  // Priority: explicit in message → lastConcept → lastUserGoal → state.topic → ask
+  // Prevents metacourses about "creating PDFs" when topic is self-referential.
+
+  const explicit = extractCourseTopic(ctx.message);
+
+  const resolvedTopic: string | undefined =
+    explicit                              ? explicit
+    : ctx.state.lastConcept?.trim()       ? ctx.state.lastConcept.trim()
+    : ctx.state.lastUserGoal?.trim()      ? ctx.state.lastUserGoal.trim()
+    : (ctx.state as Record<string, unknown>)['topic']
+        ? String((ctx.state as Record<string, unknown>)['topic'])
+        : undefined;
+
+  // If topic is empty or self-referential → ask before generating
+  if (!resolvedTopic || isSelfReferential(resolvedTopic)) {
+    return buildClarificationPlan(ctx);
+  }
+  // ── End Experience Gate ────────────────────────────────────────────────────
+
   return {
     executor: 'hybrid',
     priority: PRIORITY.CURRICULUM,
@@ -418,8 +486,8 @@ function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `curriculum_generation — strong course request detected. intent.subtype=curriculum_request.`,
-    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    reason: `curriculum_generation — topic="${resolvedTopic}" resolved. intent.subtype=curriculum_request.`,
+    resolvedTopic,
     executionOrder: [
       { order: 1, executor: 'knowledge', action: 'retrieveTopicContext', timeout: 5000 },
       { order: 2, executor: 'mentor', action: 'generateCurriculum', dependsOn: 1, timeout: 20000 },
@@ -514,6 +582,108 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
   };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEEK 4.1c — EXPERIENCE GATE: Topic Resolution for generateCoursePdf
+// Problem: "hazme un curso completo en PDF" → system generated a metacourse
+//   about "how to create a professional PDF" instead of inferring the active
+//   pedagogical topic (presente/imperfecto) or asking the user.
+// Fix: Before generating any PDF course, resolve the effective topic using
+//   a 5-step priority chain. If topic cannot be resolved, ask the user.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SELF_REFERENTIAL_TERMS = [
+  'pdf', 'crear un pdf', 'hacer un pdf', 'curso completo', 'un curso',
+  'el curso', 'cómo crear', 'cómo hacer', 'diseñar', 'maquetación',
+  'maquetacion', 'exportar', 'exportación', 'formato', 'documento',
+  'presentación profesional', 'presentacion profesional', 'redaccion',
+  'redacción', 'portada', 'índice', 'indice',
+] as const;
+
+/**
+ * Returns true if the extracted topic refers to the artifact format itself
+ * rather than to a learning domain. Prevents metacourses about "creating PDFs".
+ */
+function isSelfReferential(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return SELF_REFERENTIAL_TERMS.some(ref => norm.includes(ref));
+}
+
+/**
+ * Extracts an explicit topic from the user message if one is present.
+ * Returns undefined if no domain-specific topic is found or if the
+ * apparent topic is self-referential.
+ *
+ * Patterns detected:
+ *   "curso sobre X", "PDF de X", "curso A1 sobre X",
+ *   "curso de X en español", "guía de X", "material de X"
+ */
+function extractCourseTopic(message: string): string | undefined {
+  const norm = message.toLowerCase();
+
+  // Pattern: "sobre X" / "acerca de X"
+  const sobreM = norm.match(/\b(?:sobre|acerca\s+de)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (sobreM) {
+    const candidate = sobreM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+
+  // Pattern: "de X" after course/pdf keywords (with level optional)
+  const deM = norm.match(
+    /\b(?:curso|pdf|material|guía|guia)\s+(?:[abc][012]\s+)?(?:de\s+)?(?:[a-záéíóúñü]+\s+){0,2}de\s+([a-záéíóúñü][^,.;?!\n]{2,60})/
+  );
+  if (deM) {
+    const candidate = deM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+
+  // Pattern: CEFR level + "de/sobre X"  e.g. "A1 sobre restaurantes"
+  const levelM = norm.match(/\b[abc][012]\s+(?:de|sobre|en)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (levelM) {
+    const candidate = levelM[1].trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+
+  return undefined;
+}
+
+/**
+ * Returns the clarification message in the user's interface language.
+ * Used when no topic can be resolved from message or session context.
+ */
+function buildClarificationMessage(lang?: string): string {
+  const msgs: Record<string, string> = {
+    es: `Claro, preparo el curso en PDF. ¿Sobre qué tema lo quieres? Por ejemplo: gramática española, verbos irregulares, vocabulario de viajes, comunicación profesional... Dime el tema y lo genero.`,
+    en: `Sure, I can prepare the PDF course. What topic would you like? For example: Spanish grammar, irregular verbs, travel vocabulary, professional communication... Tell me the topic and I'll generate it.`,
+    no: `Jeg kan lage PDF-kurset. Hva vil du lære om? For eksempel: spansk grammatikk, uregelmessige verb, reisevokabular, profesjonell kommunikasjon... Fortell meg emnet, så lager jeg det.`,
+    de: `Klar, ich bereite den PDF-Kurs vor. Über welches Thema? Z.B.: spanische Grammatik, unregelmäßige Verben, Reisewortschatz... Sag mir das Thema.`,
+    fr: `Bien sûr, je prépare le cours en PDF. Sur quel sujet? Par exemple: grammaire espagnole, verbes irréguliers, vocabulaire de voyage... Dis-moi le sujet.`,
+    it: `Certo, preparo il corso in PDF. Su quale argomento? Ad esempio: grammatica spagnola, verbi irregolari, vocabolario di viaggio... Dimmi il tema.`,
+    pt: `Claro, preparo o curso em PDF. Sobre qual tema? Por exemplo: gramática espanhola, verbos irregulares, vocabulário de viagens... Diga-me o tema.`,
+    nl: `Uiteraard, ik maak de PDF-cursus. Over welk onderwerp? Bijvoorbeeld: Spaanse grammatica, onregelmatige werkwoorden, reiswoordenschat... Vertel me het onderwerp.`,
+  };
+  return msgs[lang] ?? msgs['en'];
+}
+
+/** Clarification plan — mentor asks for topic, no artifact generated */
+function buildClarificationPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return {
+    executor: 'mentor',
+    priority: PRIORITY.CURRICULUM,
+    blocking: true,
+    pedagogicalAction: 'conversation',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: 'experience_gate:clarification — PDF course requested without resolvable topic. Asking user before generating.',
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [{
+      order: 1, executor: 'mentor', action: 'clarifyCourseTopic', timeout: 8000,
+      params: { clarificationMessage: buildClarificationMessage(ctx.interfaceLanguage) },
+    }],
+  };
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — Mentor Directive Builder
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,4 +706,3 @@ function buildMentorDirective(
     }),
   };
 }
-
