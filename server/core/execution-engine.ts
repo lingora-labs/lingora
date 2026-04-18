@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 4.1b — Execution Engine (ArtifactRegistryEntry from contracts, package_session, no placebo)
+// LINGORA SEEK 4.1c2 — Execution Engine (ArtifactRegistryEntry from contracts, package_session, no placebo)
 // =============================================================================
 // SEEK 3.9 base  : F1 (honest PDF errors), F2 (fallback messages), F3 (header).
 // SEEK 3.9-b     : LW1 (elastic prompt 5-8 modules), LW2 (topic sovereignty rule).
@@ -197,6 +197,28 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
 
     // ── Mentor ───────────────────────────────────────────────────────────────
     case 'mentor': {
+      // SEEK 4.1c2 — contract clarification bypass
+      // openDocumentContract and collectDocumentParameter return clarificationMessage
+      // directly as text — no LLM call needed — and persist pendingDocumentRequest.
+      // Must be BEFORE getMentorResponse() so the mentor LLM is never invoked.
+      if (
+        (step.action === 'openDocumentContract' || step.action === 'collectDocumentParameter') &&
+        typeof step.params?.clarificationMessage === 'string'
+      ) {
+        console.log(`[EXEC] Contract clarification bypass: action=${step.action}`);
+        const cMsg = step.params.clarificationMessage as string;
+        const contractPatch: StatePatch = step.params?.pendingDocumentRequest
+          ? {
+              pendingDocumentRequest:
+                step.params.pendingDocumentRequest as import('../../lib/contracts').PendingDocumentRequest,
+            }
+          : {};
+        return {
+          text: cMsg,
+          patch: Object.keys(contractPatch).length ? contractPatch : undefined,
+        };
+      }
+
       const { getMentorResponse } = await import('../mentors/mentor-engine');
       const text = await getMentorResponse({
         request: ctx.request,
@@ -221,19 +243,6 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
             return { text: artifact.feedback, artifact };
           }
         } catch { /* fall through to plain text */ }
-      }
-
-      // SEEK 4.1c2 — Document Contract persistence
-      // openDocumentContract and collectDocumentParameter write pendingDocumentRequest
-      // to the state patch so STEP 1.75 can secures subsequent turns.
-      if (
-        (step.action === 'openDocumentContract' || step.action === 'collectDocumentParameter') &&
-        step.params?.pendingDocumentRequest
-      ) {
-        const contractPatch: StatePatch = {
-          pendingDocumentRequest: step.params.pendingDocumentRequest as import('../../lib/contracts').PendingDocumentRequest,
-        };
-        return { text, patch: contractPatch };
       }
 
       return { text };
@@ -1072,4 +1081,3 @@ function buildFallbackMessage(_plan: ExecutionPlan, _lang: string): string {
   // SEEK 4.1b — no placebo. Return empty string; UI handles empty gracefully.
   return '';
 }
-
