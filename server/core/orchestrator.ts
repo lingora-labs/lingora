@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 4.1c — Sole Decision Authority + Experience Gate (type-safe, non-domain block)
+// LINGORA SEEK 4.1c2 — Sole Decision Authority + Document Contract Gate
 // =============================================================================
 // SEEK 4.1b CHANGES:
 //   + resolveSemanticOperation(): distinguishes create_course / package_session /
@@ -9,16 +9,15 @@
 //   + buildPackageSessionPlan(): honest response for session packaging (4.2 delivers)
 //   + package_session + export_artifact added to hard override map
 //   Previous: SEEK 3.8
-// SEEK 4.1c CHANGES:
-//   + Experience Gate intercepts generate_course_pdf in buildHardOverridePlan()
-//     (the real path for "hazme un curso en PDF" — hard override, not curriculum)
-//   + Experience Gate also in buildCurriculumPlan() for curriculum_request path
-//   + resolvedTopic injected into plan.params for execution-engine
-//     before generating — prevents metacourses about "creating PDFs"
-//   + extractCourseTopic(): explicit topic extractor with autoref guard
-//   + isSelfReferential(): detects "pdf/curso/maquetación" as invalid topics
-//   + buildClarificationPlan(): asks user for topic when none is resolvable
-//   + buildClarificationMessage(): multilingual clarification (8 langs)
+// SEEK 4.1c2 CHANGES:
+//   + Experience Gate filters (isSelfReferential/isNonDomainTopic/isMetaGoal)
+//   + PendingDocumentRequest contract gate — sovereign source for PDF
+//   + STEP 1.75 — pending contract secures all subsequent turns
+//   + classifyDocumentTurn() — structural signal only (4 outputs)
+//   + extractDocumentLevel() — inline, no external dependencies
+//   + buildDocumentContractGate() + sub-plans
+//   + PATH_A and PATH_B delegate to buildDocumentContractGate
+//   + resolveEffectiveCourseTopic/getOnboardingTopic NOT added (dead)
 // =============================================================================
 
 import {
@@ -32,6 +31,7 @@ import {
   TutorPhase,
   MentorProfile,
   IntentSubtype,
+  PendingDocumentRequest,
 } from '../../lib/contracts';
 
 import {
@@ -109,6 +109,232 @@ function resolveSemanticOperation(ctx: OrchestrationContext): SemanticOperation 
 // TOPIC AND MODE RESOLVERS (unchanged from SEEK 3.8)
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEEK 4.1c — EXPERIENCE GATE FILTER FAMILIES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SELF_REFERENTIAL_TERMS = [
+  'pdf', 'crear un pdf', 'hacer un pdf', 'curso completo', 'un curso',
+  'el curso', 'cómo crear', 'cómo hacer', 'diseñar', 'maquetación',
+  'maquetacion', 'exportar', 'exportación', 'exportacion', 'formato',
+  'documento', 'presentación profesional', 'presentacion profesional',
+  'redaccion', 'redacción', 'portada', 'índice', 'indice',
+] as const;
+
+function isSelfReferential(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return SELF_REFERENTIAL_TERMS.some(ref => norm.includes(ref));
+}
+
+const NON_DOMAIN_TERMS = [
+  'structured', 'structure', 'interacción inteligente', 'interact', 'interactive',
+  'free', 'free conversation', 'pdf_course', 'pdf course',
+  'schema', 'table', 'matrix', 'quiz', 'roadmap', 'lesson', 'guide',
+  'conversation', 'mode', 'general', 'standard', 'default', 'basic', 'onboarding',
+] as const;
+
+function isNonDomainTopic(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return NON_DOMAIN_TERMS.some(
+    t => norm === t || norm.startsWith(t + ' ') || norm.endsWith(' ' + t),
+  );
+}
+
+const META_GOAL_TERMS = [
+  'aprender rápido', 'aprender rapido', 'learn fast', 'learn quickly',
+  'improve quickly', 'improve fast', 'mejorar rápido', 'mejorar rapido',
+  'quiero aprender', 'quiero mejorar', 'want to learn', 'want to improve',
+  'empezar', 'comenzar', 'start learning', 'beginner help',
+  'practice more', 'más práctica', 'mas practica', 'quick learning',
+] as const;
+
+function isMetaGoal(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return META_GOAL_TERMS.some(
+    t => norm === t || norm.startsWith(t + ' ') || norm.endsWith(' ' + t),
+  );
+}
+
+function isInvalidCourseTopic(topic: string): boolean {
+  return isSelfReferential(topic) || isNonDomainTopic(topic) || isMetaGoal(topic);
+}
+
+function extractCourseTopic(message: string): string | undefined {
+  const norm = message.toLowerCase();
+  const sobreM = norm.match(/\b(?:sobre|acerca\s+de)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (sobreM) {
+    const candidate = sobreM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  const deM = norm.match(
+    /\b(?:curso|pdf|material|guía|guia)\s+(?:[abc][012]\s+)?(?:de\s+)?(?:[a-záéíóúñü]+\s+){0,2}de\s+([a-záéíóúñü][^,.;?!\n]{2,60})/,
+  );
+  if (deM) {
+    const candidate = deM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  const levelM = norm.match(/\b[abc][012]\s+(?:de|sobre|en)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (levelM) {
+    const candidate = levelM[1].trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEEK 4.1c2 — DOCUMENT CONTRACT GATE
+// Sovereign source: pendingDocumentRequest ONLY. lastConcept never consulted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CONTRACT_EXPIRY_TURNS = 15;
+
+type DocumentTurnClass = 'level_input' | 'topic_input' | 'confirmation' | 'other';
+
+function classifyDocumentTurn(message: string): DocumentTurnClass {
+  const norm = message.toLowerCase().trim();
+  // Confirmation: explicit yes/proceed
+  if (/^(sí|si|yes|ok|vale|listo|genera|generate|proceed|adelante|go ahead|hazlo|claro)$/i.test(norm)) {
+    return 'confirmation';
+  }
+  // Level input: structured CEFR or descriptive signal
+  if (/\b(a0|a1|a2|b1|b2|c1|c2|principiante|beginner|intermedio|intermediate|avanzado|advanced|básico|basic|elemental|universitario|experto)\b/i.test(norm)) {
+    return 'level_input';
+  }
+  // Topic input: extractCourseTopic returns a valid domain
+  const t = extractCourseTopic(message);
+  if (t && !isInvalidCourseTopic(t)) {
+    return 'topic_input';
+  }
+  // Everything else: absence of structured contract signal
+  return 'other';
+}
+
+function extractDocumentLevel(message: string): string | null {
+  // Inline — no external resolveLevel dependency
+  const norm = message.toUpperCase();
+  const cefrM = norm.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/);
+  if (cefrM) return cefrM[1];
+  if (/\bUNIVERSITARIO\b/i.test(norm)) return 'Universitario';
+  if (/\bEXPERTO\b/i.test(norm)) return 'C2';
+  if (/\bAVANZADO\b|ADVANCED/i.test(norm)) return 'C1-C2';
+  if (/\bINTERMEDIO\b|INTERMEDIATE/i.test(norm)) return 'B1-B2';
+  if (/\bPRINCIPIANTE\b|BEGINNER|ELEMENTAL|BÁSICO|BASIC\b/i.test(norm)) return 'A1-A2';
+  return null;
+}
+
+function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
+  const tokens = ctx.state.tokens ?? 0;
+  const existing = ctx.state.pendingDocumentRequest as PendingDocumentRequest | undefined;
+  const turnClass = classifyDocumentTurn(ctx.message);
+
+  // Expiry: stale contract → clear and restart
+  if (existing && (tokens - existing.openedAtToken) > CONTRACT_EXPIRY_TURNS) {
+    return buildOpenContractPlan(ctx, null, null);
+  }
+
+  // No contract: open one, extract whatever the opening message provides
+  if (!existing) {
+    const levelFromMsg = extractDocumentLevel(ctx.message);
+    const topicRaw = extractCourseTopic(ctx.message);
+    const validTopic = (topicRaw && !isInvalidCourseTopic(topicRaw)) ? topicRaw : null;
+    return buildOpenContractPlan(ctx, levelFromMsg, validTopic);
+  }
+
+  // Contract exists: update only on structured inputs
+  let { level, topic } = existing;
+  if (turnClass === 'level_input') {
+    level = extractDocumentLevel(ctx.message) ?? level;
+  } else if (turnClass === 'topic_input') {
+    const t = extractCourseTopic(ctx.message);
+    if (t && !isInvalidCourseTopic(t)) topic = t;
+  }
+  // confirmation + other: contract fields NOT mutated
+
+  // Ready when level is known (topic defaults to general if absent)
+  const hasLevel = !!(level && level !== 'General');
+  if (hasLevel && (turnClass === 'confirmation' || turnClass === 'level_input' || turnClass === 'topic_input')) {
+    return buildGeneratePdfPlan(ctx, topic ?? `español general nivel ${level}`, level!);
+  }
+
+  // Still collecting
+  return buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
+}
+
+function buildOpenContractPlan(
+  ctx: OrchestrationContext,
+  level: string | null,
+  topic: string | null,
+): ExecutionPlan {
+  const contract: PendingDocumentRequest = { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: ctx.state.tokens ?? 0 };
+  if (level && level !== 'General') {
+    return buildGeneratePdfPlan(ctx, topic ?? `español general nivel ${level}`, level);
+  }
+  const lang = ctx.interfaceLanguage;
+  const askMsgs: Record<string, string> = {
+    es: '¿Para qué nivel quieres el curso? (A1, A2, B1, B2, C1 o C2)',
+    en: 'What level do you need the course for? (A1, A2, B1, B2, C1 or C2)',
+    no: 'Hvilket nivå vil du ha kurset for? (A1, A2, B1, B2, C1 eller C2)',
+    de: 'Für welches Niveau möchten Sie den Kurs? (A1, A2, B1, B2, C1 oder C2)',
+    fr: 'Pour quel niveau voulez-vous le cours? (A1, A2, B1, B2, C1 ou C2)',
+    it: 'Per quale livello vuoi il corso? (A1, A2, B1, B2, C1 o C2)',
+    pt: 'Para qual nível quer o curso? (A1, A2, B1, B2, C1 ou C2)',
+    nl: 'Voor welk niveau wil je de cursus? (A1, A2, B1, B2, C1 of C2)',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:opened — awaiting level. lastConcept not consulted.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'openDocumentContract', timeout: 8000,
+      params: { clarificationMessage: lang ? (askMsgs[lang] ?? askMsgs['en']) : askMsgs['en'], pendingDocumentRequest: contract } }],
+  };
+}
+
+function buildCollectingPlan(ctx: OrchestrationContext, contract: PendingDocumentRequest): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: contract.level ? '¿Sobre qué tema quieres el curso? O confirma el nivel para un curso general de español.' : '¿Para qué nivel? (A1, A2, B1, B2, C1 o C2)',
+    en: contract.level ? 'What topic? Or confirm the level for a general Spanish course.' : 'What level? (A1, A2, B1, B2, C1 or C2)',
+    no: contract.level ? 'Hvilket tema? Eller bekreft nivå for et generelt spansk kurs.' : 'Hvilket nivå? (A1, A2, B1, B2, C1 eller C2)',
+    de: contract.level ? 'Welches Thema? Oder bestätigen Sie das Niveau.' : 'Welches Niveau? (A1, A2, B1, B2, C1 oder C2)',
+    fr: contract.level ? 'Quel sujet? Ou confirmez le niveau.' : 'Quel niveau? (A1, A2, B1, B2, C1 ou C2)',
+    it: contract.level ? 'Che argomento? O conferma il livello.' : 'Che livello? (A1, A2, B1, B2, C1 o C2)',
+    pt: contract.level ? 'Qual tema? Ou confirme o nível.' : 'Qual nível? (A1, A2, B1, B2, C1 ou C2)',
+    nl: contract.level ? 'Welk onderwerp? Of bevestig het niveau.' : 'Welk niveau? (A1, A2, B1, B2, C1 of C2)',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: `document_contract:collecting — level=${contract.level ?? 'null'}, topic=${contract.topic ?? 'null'}`,
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], pendingDocumentRequest: contract } }],
+  };
+}
+
+function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: string): ExecutionPlan {
+  return {
+    executor: 'tool_pdf', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'generate_course_pdf', artifacts: ['course_pdf'],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: `document_contract:ready — topic="${topic}", level="${level}". Sovereign: pendingDocumentRequest. lastConcept not read.`,
+    resolvedTopic: topic,
+    executionOrder: [{ order: 1, executor: 'tool_pdf', action: 'generateCoursePdf', timeout: 120000,
+      params: { topic, level, clearDocumentContract: true } }],
+  };
+}
+
+
 const ORCH_NOISE = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
 
 function resolvePedagogicalMode(
@@ -164,6 +390,13 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
   // STEP 1.5 — EXERCISE LOCK
   if (ctx.state.expectedResponseMode === 'exercise_answer' && ctx.state.currentExercise) {
     return buildExerciseLockPlan(ctx);
+  }
+
+  // STEP 1.75 — PENDING DOCUMENT CONTRACT (SEEK 4.1c2)
+  // A collecting contract secures all turns until closed or expired.
+  // Intent does not matter: "A1", "sí", complaint → all enter the gate.
+  if (ctx.state.pendingDocumentRequest?.status === 'collecting') {
+    return buildDocumentContractGate(ctx);
   }
 
   // STEP 2 — FIRST INTERACTION
@@ -271,36 +504,10 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     artifacts: [] as ArtifactType[],
   };
 
-  // ── SEEK 4.1c: Experience Gate for generate_course_pdf ─────────────────────
-  // "hazme un curso completo en PDF" enters via hard override (subtype=generate_course_pdf).
-  // Before dispatching to tool_pdf, resolve the effective topic.
-  // If no topic is resolvable, ask the user instead of generating a metacourse.
+  // SEEK 4.1c2: intercept generate_course_pdf before dispatch → document contract gate
   if (subtype === 'generate_course_pdf') {
-    const explicit = extractCourseTopic(ctx.message);
-    const resolvedTopic = resolveEffectiveCourseTopic(ctx, explicit);
-    if (!resolvedTopic || isInvalidCourseTopic(resolvedTopic)) {
-      return buildClarificationPlan(ctx);
-    }
-    // Inject resolved topic into params so execution-engine can use it
-    config.action = 'generateCoursePdf';
-    return {
-      executor: 'tool_pdf',
-      priority: PRIORITY.HARD_OVERRIDE,
-      blocking: true,
-      pedagogicalAction: 'generate_course_pdf',
-      artifacts: ['course_pdf'],
-      mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
-      commercial: undefined,
-      skipPhaseAdvance: true,
-      reason: `hard_override:generate_course_pdf — topic="${resolvedTopic}" resolved via experience_gate. Source: ${explicit ? 'explicit' : ctx.state.lastConcept ? 'lastConcept' : 'context'}.`,
-      resolvedTopic,
-      executionOrder: [{
-        order: 1, executor: 'tool_pdf', action: 'generateCoursePdf', timeout: 120000,
-        params: { topic: resolvedTopic },
-      }],
-    };
+    return buildDocumentContractGate(ctx);
   }
-  // ── End Experience Gate ────────────────────────────────────────────────────
 
   const step: ExecutionStep = {
     order: 1,
@@ -450,37 +657,8 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
 }
 
 function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
-  // ── SEEK 4.1c: Experience Gate ─────────────────────────────────────────────
-  // Resolve effective topic before generating any PDF course.
-  // Priority: explicit in message → lastConcept → lastUserGoal → state.topic → ask
-  // Prevents metacourses about "creating PDFs" when topic is self-referential.
-
-  const explicit = extractCourseTopic(ctx.message);
-  const resolvedTopic = resolveEffectiveCourseTopic(ctx, explicit);
-
-  // If topic is empty or invalid (autoreferential / system label) → ask before generating
-  if (!resolvedTopic || isInvalidCourseTopic(resolvedTopic)) {
-    return buildClarificationPlan(ctx);
-  }
-  // ── End Experience Gate ────────────────────────────────────────────────────
-
-  return {
-    executor: 'hybrid',
-    priority: PRIORITY.CURRICULUM,
-    blocking: true,
-    pedagogicalAction: 'curriculum_generation',
-    artifacts: ['roadmap'],
-    mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
-    commercial: undefined,
-    skipPhaseAdvance: false,
-    reason: `curriculum_generation — topic="${resolvedTopic}" resolved. intent.subtype=curriculum_request.`,
-    resolvedTopic,
-    executionOrder: [
-      { order: 1, executor: 'knowledge', action: 'retrieveTopicContext', timeout: 5000 },
-      { order: 2, executor: 'mentor', action: 'generateCurriculum', dependsOn: 1, timeout: 20000 },
-      { order: 3, executor: 'tool_schema', action: 'buildRoadmapArtifact', dependsOn: 2, timeout: 10000 },
-    ],
-  };
+  // SEEK 4.1c2: curriculum_request uses Document Contract Gate (sovereign source)
+  return buildDocumentContractGate(ctx);
 }
 
 function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
@@ -569,201 +747,6 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
   };
 }
 
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SEEK 4.1c — TYPE-SAFE TOPIC ACCESS (IS pre-deploy fix)
-// Replaces unsafe cast (ctx.state as Record<string, unknown>)['topic']
-// Reason: SessionState has no index signature — direct cast breaks strict TS.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Safely reads state.topic (onboarding topic) without index signature cast.
- */
-function getOnboardingTopic(state: OrchestrationContext['state']): string | undefined {
-  const maybe = state as unknown as { topic?: unknown };
-  return typeof maybe.topic === 'string' && maybe.topic.trim()
-    ? maybe.topic.trim()
-    : undefined;
-}
-
-/**
- * Resolves the effective course topic from available context.
- * Priority: explicit → lastConcept → lastUserGoal → onboarding topic
- */
-function resolveEffectiveCourseTopic(
-  ctx: OrchestrationContext,
-  explicit?: string,
-): string | undefined {
-  return explicit?.trim()
-    ? explicit.trim()
-    : ctx.state.lastConcept?.trim()
-      ? ctx.state.lastConcept.trim()
-      : ctx.state.lastUserGoal?.trim()
-        ? ctx.state.lastUserGoal.trim()
-        : getOnboardingTopic(ctx.state);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SEEK 4.1c — EXPERIENCE GATE: Topic Resolution for generateCoursePdf
-// Problem: "hazme un curso completo en PDF" → system generated a metacourse
-//   about "how to create a professional PDF" instead of inferring the active
-//   pedagogical topic (presente/imperfecto) or asking the user.
-// Fix: Before generating any PDF course, resolve the effective topic using
-//   a 5-step priority chain. If topic cannot be resolved, ask the user.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SELF_REFERENTIAL_TERMS = [
-  'pdf', 'crear un pdf', 'hacer un pdf', 'curso completo', 'un curso',
-  'el curso', 'cómo crear', 'cómo hacer', 'diseñar', 'maquetación',
-  'maquetacion', 'exportar', 'exportación', 'formato', 'documento',
-  'presentación profesional', 'presentacion profesional', 'redaccion',
-  'redacción', 'portada', 'índice', 'indice',
-] as const;
-
-/**
- * System/UI/mode labels that are NOT pedagogical domains.
- * "hazme un curso en PDF" with state.topic="structured" (mode label) → invalid.
- * These are blocked so the Experience Gate requests clarification.
- */
-const NON_DOMAIN_TERMS = [
-  'structured', 'structure', 'interacción inteligente', 'interact', 'interactive',
-  'free', 'free conversation', 'pdf_course', 'pdf course',
-  'schema', 'table', 'matrix', 'quiz', 'roadmap', 'lesson', 'guide',
-  'conversation', 'mode', 'general', 'standard', 'default', 'basic', 'onboarding',
-] as const;
-
-/**
- * Returns true if the extracted topic refers to the artifact format itself
- * rather than to a learning domain. Prevents metacourses about "creating PDFs".
- */
-function isSelfReferential(topic: string): boolean {
-  const norm = topic.toLowerCase().trim();
-  return SELF_REFERENTIAL_TERMS.some(ref => norm.includes(ref));
-}
-
-/**
- * Returns true if the topic is a system/UI label, not a learning domain.
- * Blocks "Structured", "interactive", "schema", "mode" etc. from being used as course topics.
- */
-function isNonDomainTopic(topic: string): boolean {
-  const norm = topic.toLowerCase().trim();
-  return NON_DOMAIN_TERMS.some(term => norm === term || norm.startsWith(term + ' ') || norm.endsWith(' ' + term));
-}
-
-/**
- * Unified guard: blocks both format-autoreferential topics and system/UI labels.
- * Use this in both Experience Gate paths.
- */
-/**
- * Meta-goal terms: user intentions/motivations that are NOT course domains.
- * "quiero aprender rápido" / "learn fast" → intent, not a topic.
- * These must trigger clarification, not course generation.
- */
-const META_GOAL_TERMS = [
-  'aprender rápido', 'aprender rapido', 'learn fast', 'learn quickly',
-  'improve quickly', 'improve fast', 'mejorar rápido', 'mejorar rapido',
-  'quiero aprender', 'quiero mejorar', 'want to learn', 'want to improve',
-  'empezar', 'comenzar', 'start learning', 'beginner help',
-  'practice more', 'más práctica', 'mas practica', 'quick learning',
-] as const;
-
-/**
- * Returns true if the topic is a meta-goal/intention, not a learning domain.
- */
-function isMetaGoal(topic: string): boolean {
-  const norm = topic.toLowerCase().trim();
-  return META_GOAL_TERMS.some(
-    t => norm === t || norm.startsWith(t + ' ') || norm.endsWith(' ' + t),
-  );
-}
-
-/**
- * Unified guard — topic is invalid if it is:
- *   (a) autoreferential to the artifact format
- *   (b) a system/UI/mode label
- *   (c) a meta-goal intention rather than a learning domain
- * In all three cases: ask the user rather than generating a residual course.
- */
-function isInvalidCourseTopic(topic: string): boolean {
-  return isSelfReferential(topic) || isNonDomainTopic(topic) || isMetaGoal(topic);
-}
-
-/**
- * Extracts an explicit topic from the user message if one is present.
- * Returns undefined if no domain-specific topic is found or if the
- * apparent topic is self-referential.
- *
- * Patterns detected:
- *   "curso sobre X", "PDF de X", "curso A1 sobre X",
- *   "curso de X en español", "guía de X", "material de X"
- */
-function extractCourseTopic(message: string): string | undefined {
-  const norm = message.toLowerCase();
-
-  // Pattern: "sobre X" / "acerca de X"
-  const sobreM = norm.match(/\b(?:sobre|acerca\s+de)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
-  if (sobreM) {
-    const candidate = sobreM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
-    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
-  }
-
-  // Pattern: "de X" after course/pdf keywords (with level optional)
-  const deM = norm.match(
-    /\b(?:curso|pdf|material|guía|guia)\s+(?:[abc][012]\s+)?(?:de\s+)?(?:[a-záéíóúñü]+\s+){0,2}de\s+([a-záéíóúñü][^,.;?!\n]{2,60})/
-  );
-  if (deM) {
-    const candidate = deM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
-    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
-  }
-
-  // Pattern: CEFR level + "de/sobre X"  e.g. "A1 sobre restaurantes"
-  const levelM = norm.match(/\b[abc][012]\s+(?:de|sobre|en)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
-  if (levelM) {
-    const candidate = levelM[1].trim();
-    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
-  }
-
-  return undefined;
-}
-
-/**
- * Returns the clarification message in the user's interface language.
- * Used when no topic can be resolved from message or session context.
- */
-function buildClarificationMessage(lang?: string): string {
-  const msgs: Record<string, string> = {
-    es: `Claro, preparo el curso en PDF. ¿Sobre qué tema lo quieres? Por ejemplo: gramática española, verbos irregulares, vocabulario de viajes, comunicación profesional... Dime el tema y lo genero.`,
-    en: `Sure, I can prepare the PDF course. What topic would you like? For example: Spanish grammar, irregular verbs, travel vocabulary, professional communication... Tell me the topic and I'll generate it.`,
-    no: `Jeg kan lage PDF-kurset. Hva vil du lære om? For eksempel: spansk grammatikk, uregelmessige verb, reisevokabular, profesjonell kommunikasjon... Fortell meg emnet, så lager jeg det.`,
-    de: `Klar, ich bereite den PDF-Kurs vor. Über welches Thema? Z.B.: spanische Grammatik, unregelmäßige Verben, Reisewortschatz... Sag mir das Thema.`,
-    fr: `Bien sûr, je prépare le cours en PDF. Sur quel sujet? Par exemple: grammaire espagnole, verbes irréguliers, vocabulaire de voyage... Dis-moi le sujet.`,
-    it: `Certo, preparo il corso in PDF. Su quale argomento? Ad esempio: grammatica spagnola, verbi irregolari, vocabolario di viaggio... Dimmi il tema.`,
-    pt: `Claro, preparo o curso em PDF. Sobre qual tema? Por exemplo: gramática espanhola, verbos irregulares, vocabulário de viagens... Diga-me o tema.`,
-    nl: `Uiteraard, ik maak de PDF-cursus. Over welk onderwerp? Bijvoorbeeld: Spaanse grammatica, onregelmatige werkwoorden, reiswoordenschat... Vertel me het onderwerp.`,
-  };
-  return lang ? (msgs[lang] ?? msgs['en']) : msgs['en'];
-}
-
-/** Clarification plan — mentor asks for topic, no artifact generated */
-function buildClarificationPlan(ctx: OrchestrationContext): ExecutionPlan {
-  return {
-    executor: 'mentor',
-    priority: PRIORITY.CURRICULUM,
-    blocking: true,
-    pedagogicalAction: 'conversation',
-    artifacts: [],
-    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
-    commercial: undefined,
-    skipPhaseAdvance: true,
-    reason: 'experience_gate:clarification — PDF course requested without resolvable topic. Asking user before generating.',
-    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
-    executionOrder: [{
-      order: 1, executor: 'mentor', action: 'clarifyCourseTopic', timeout: 8000,
-      params: { clarificationMessage: buildClarificationMessage(ctx.interfaceLanguage) },
-    }],
-  };
-}
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — Mentor Directive Builder
 // ─────────────────────────────────────────────────────────────────────────────
