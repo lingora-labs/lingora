@@ -1,6 +1,6 @@
 // =============================================================================
 // app/api/chat/route.ts
-// LINGORA SEEK 4.1b — Thin Router (maxDuration: 300, no artificial timeout)
+// LINGORA SEEK 4.1b/4.1c2 — Thin Router | FIX_ID: TRACER_SOVEREIGN | patchSet: 4.1c2
 // =============================================================================
 // SEEK 3.9 base changes: T1 (architecture bump), T2 (*2468*# logic fix).
 // CORRECCIONES APLICADAS (según auditoría IS + CSJ, 7 abril 2026):
@@ -15,17 +15,10 @@
 //        reporting stale version labels because architecture: 'SEEK-X.X' is a
 //        string literal in code, not a runtime measurement. A new deploy with
 //        different behavior but same string label produces a lying tracer.
-//        Fix: architecture now reads LINGORA_COMMIT_HINT (the env var that
-//        MUST be updated on every deploy). If unset, reports 'UNKNOWN — set
-//        LINGORA_COMMIT_HINT in Vercel'. This makes the tracer honest by
-//        construction: if the env var is not updated, the tracer says so.
-//   R2 — *1357*# adds runtimeFeatures block: each feature is derived from
-//        a runtime observable (env var + code constant), not from a string.
-//        IS principle: "the truth of the system must come from the runtime
-//        executed, not from the name the system believes it has."
-//   R3 — *1357*# adds sourceOfTruth field: 'env+runtime' when env vars are
-//        set, 'partial' when some are missing, 'static-string' never again.
-//   R4 — *2468*# architecture string also reads from env, not hardcoded.
+//   SEEK 4.1c2 — TRACER_SOVEREIGN: SEEK_BASE/PATCH_SET/ACTIVE_FIXES are code
+//        constants updated with each sprint. VERCEL_DEPLOYMENT_ID and
+//        VERCEL_GIT_COMMIT_SHA are auto-set by Vercel on every deploy.
+//        No manual env var update required.
 // =============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -61,15 +54,33 @@ const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
 // Full traces are only available in dev or when LINGORA_DEBUG_OVERRIDE=true.
 const IS_PRODUCTION     = process.env.NODE_ENV === 'production'
   && process.env.LINGORA_DEBUG_OVERRIDE !== 'true';
-const BUILD_SIG         = process.env.LINGORA_BUILD_SIGNATURE ?? 'unset';
-const COMMIT_HINT       = process.env.LINGORA_COMMIT_HINT ?? 'unset';
+// ─────────────────────────────────────────────────────────────────────────────
+// SEEK 4.1c2 — SOVEREIGN TRACER (no manual env vars required)
+// SEEK_BASE + PATCH_SET + ACTIVE_FIXES are updated IN CODE at each sprint.
+// VERCEL_DEPLOYMENT_ID and VERCEL_GIT_COMMIT_SHA are set automatically by
+// Vercel on every deploy — never need manual action.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// SEEK 3.9-c — R1: architecture label is read from the env var that MUST be
-// updated on every deploy. If unset → tracer says 'UNKNOWN — set env vars'.
-// This eliminates the hardcoded 'SEEK-X.X' pattern that caused label drift.
-const RUNTIME_ARCH = COMMIT_HINT !== 'unset'
-  ? COMMIT_HINT.split('—')[0].trim()   // e.g. "SEEK 3.9-c" from commitHint
-  : 'UNKNOWN — set LINGORA_COMMIT_HINT in Vercel';
+/** Updated in code — never needs manual env var update */
+const SEEK_BASE    = '4.1b';
+const PATCH_SET    = '4.1c2';
+const ACTIVE_FIXES = [
+  'DOC_CONTRACT_GATE',        // orchestrator: PendingDocumentRequest + STEP 1.75
+  'ENGINE_CONTRACT_PERSIST',  // engine: pendingDocumentRequest → StatePatch
+  'ENGINE_CLARIFY_BYPASS',    // engine: openDocumentContract bypasses LLM
+  'ENGINE_CLEARCONTRACT',     // engine: clearDocumentContract after PDF
+  'WILLY_FREE_ENGINE',        // engine: max_tokens 12000 + density benchmark in courseUserPrompt
+] as const;
+
+/** Vercel auto-sets these on every deploy — no manual action needed */
+const VERCEL_DEPLOY_ID  = process.env.VERCEL_DEPLOYMENT_ID  ?? 'local';
+const VERCEL_COMMIT_SHA = process.env.VERCEL_GIT_COMMIT_SHA ?? 'local';
+const VERCEL_COMMIT_MSG = process.env.VERCEL_GIT_COMMIT_MESSAGE ?? '';
+
+/** Kept for backward compat with runtimeFeatures checks below */
+const BUILD_SIG  = `seek-${PATCH_SET}-${VERCEL_COMMIT_SHA.slice(0, 8)}`;
+const COMMIT_HINT = `SEEK ${PATCH_SET} — patchSet active`;
+const RUNTIME_ARCH = `SEEK ${PATCH_SET}`;
 
 // SEEK 3.9-c — R2: runtime feature flags derived from code constants.
 // These cannot be faked by a stale version label — they reflect actual code.
@@ -146,11 +157,17 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       // not from a hardcoded string. See constants above.
       const diagPayload = {
         // Identity — sourced from env vars (not hardcoded literals)
-        buildSignature:    BUILD_SIG,
-        commitHint:        COMMIT_HINT,
-        architecture:      RUNTIME_ARCH,           // R1: env-derived, not 'SEEK-X.X'
+        seekBase:          SEEK_BASE,
+        patchSet:          PATCH_SET,
+        activeFixes:       [...ACTIVE_FIXES],
+        deploymentId:      VERCEL_DEPLOY_ID,
+        gitCommit:         VERCEL_COMMIT_SHA,
+        gitMessage:        VERCEL_COMMIT_MSG || undefined,
+        architecture:      RUNTIME_ARCH,
         runtime:           'LINGORA-ARCH-9.11',
-        sourceOfTruth:     SOURCE_OF_TRUTH,        // R3: honest about confidence level
+        buildSignature:    BUILD_SIG,              // backward compat
+        commitHint:        COMMIT_HINT,            // backward compat
+        sourceOfTruth:     'code+vercel-auto',
         timestamp:         new Date().toISOString(),
         // Operational state
         orchestratorActive: true,
@@ -164,15 +181,17 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         // R2: runtime feature flags — what the code ACTUALLY does
         runtimeFeatures:   RUNTIME_FEATURES,
         // Guidance for operators
-        _note: SOURCE_OF_TRUTH !== 'env+runtime'
-          ? 'WARNING: LINGORA_BUILD_SIGNATURE and/or LINGORA_COMMIT_HINT not set in Vercel. Update both env vars on every deploy. Format: LINGORA_BUILD_SIGNATURE=seek-3.9c-<commit-hash>, LINGORA_COMMIT_HINT=SEEK 3.9-c — description'
-          : 'OK: env vars set. runtimeFeatures reflect actual code behavior.',
+        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto. No manual env vars required.`,
       };
       // SEEK 3.9-d — C1: Production gate — no internal JSON leak to user channel
       const diagResponse = IS_PRODUCTION
         ? {
             buildSignature: BUILD_SIG,
             commitHint:     COMMIT_HINT,
+            seekBase:       SEEK_BASE,
+            patchSet:       PATCH_SET,
+            activeFixes:    [...ACTIVE_FIXES],
+            deploymentId:   VERCEL_DEPLOY_ID,
             architecture:   RUNTIME_ARCH,
             status:         'ok',
             timestamp:      new Date().toISOString(),
@@ -379,3 +398,4 @@ const NO_CACHE = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   'Content-Type':  'application/json',
 } as const;
+
