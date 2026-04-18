@@ -1,6 +1,6 @@
 // =============================================================================
 // lib/contracts.ts
-// LINGORA SEEK 4.1b — Single Source of Truth for all TypeScript types
+// LINGORA SEEK 4.1c2 — Single Source of Truth for all TypeScript types
 // =============================================================================
 // Purpose  : Canonical runtime contracts. Every interface, type and default
 //            used across the LINGORA runtime is defined here and only here.
@@ -373,6 +373,19 @@ export interface ArtifactRegistryEntry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SECTION 3c — PENDING DOCUMENT REQUEST (SEEK 4.1c2)
+// Sovereign source for PDF course generation. Never fed by lastConcept.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PendingDocumentRequest {
+  type:          'course_pdf';
+  level:         string | null;   // set only by level_input turns
+  topic:         string | null;   // set only by topic_input turns
+  status:        'collecting' | 'ready';
+  openedAtToken: number;          // for expiry after CONTRACT_EXPIRY_TURNS
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SECTION 4 — SESSION STATE (unchanged from 2.6 — invariants preserved)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -454,6 +467,9 @@ export interface SessionState {
   // Persists full artifact payloads across turns for session export (SEEK 4.2).
   // Survives mergeStatePatch via { ...current, ...patch } spread (verified SEEK 4.1a).
   artifactRegistry?: ArtifactRegistryEntry[];
+
+  // SEEK 4.1c2 — sovereign document contract
+  pendingDocumentRequest?: PendingDocumentRequest;
 }
 
 export const DEFAULT_SESSION_STATE: SessionState = {
@@ -699,6 +715,7 @@ export const CONTINUITY_FIELDS: ReadonlyArray<keyof SessionState> = [
   'lastStructuredOutput',
   // SEEK 4.1b: artifact memory must survive every merge
   'artifactRegistry',
+  'pendingDocumentRequest',
 ] as const;
 
 export const INVARIANT_FIELDS: ReadonlyArray<keyof SessionState> = [
@@ -769,4 +786,3 @@ export const MENTOR_PROFILES: Record<MentorProfile, {
     defaultDirective: 'STRUCTURED_COURSE_DIRECTIVE',
   },
 };
-
