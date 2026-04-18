@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine.ts
-// LINGORA SEEK 4.1c2 — Execution Engine (ArtifactRegistryEntry from contracts, package_session, no placebo)
+// LINGORA SEEK 4.1b/4.1c2 — Execution Engine | FIX_ID: WILLY_FREE_ENGINE | patchSet: 4.1c2
 // =============================================================================
 // SEEK 3.9 base  : F1 (honest PDF errors), F2 (fallback messages), F3 (header).
 // SEEK 3.9-b     : LW1 (elastic prompt 5-8 modules), LW2 (topic sovereignty rule).
@@ -571,6 +571,10 @@ If it is a professional or academic domain: teach that domain with appropriate c
 Do NOT force vocabulary/grammar/exercise onto non-linguistic content.
 Do NOT force clinical/academic structure onto simple language exercises.
 
+Your output must be sufficient for a student to study this topic independently.
+Do not summarize what you will cover — deliver the actual material.
+If the document is long, that is correct. Completeness is the goal.
+
 Return ONLY this JSON:
 {
   "title": "string",
@@ -608,11 +612,11 @@ Return ONLY this JSON:
 
         try {
           // SEEK 3.9-c: system+user split for reliable JSON generation.
-          // max_tokens raised from 4500 to 6000 for complex professional domains.
+          // max_tokens: 12000 — allows full paradigm tables, exercises, and complete answer keys.
           // temperature 0.7 gives the model freedom to reason about structure
           // while response_format: json_object enforces the JSON contract.
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 6000, 0.7),
+            ...buildModelParams(RUNTIME_MODEL, 12000, 0.7),
             response_format: { type: 'json_object' },
             messages: [
               { role: 'system', content: courseSystemPrompt },
