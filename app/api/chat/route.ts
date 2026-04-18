@@ -105,10 +105,8 @@ const RUNTIME_FEATURES = {
 } as const;
 
 // SEEK 3.9-c — R3: source of truth classification
-const SOURCE_OF_TRUTH: 'env+runtime' | 'partial' | 'static-string' =
-  (BUILD_SIG !== 'unset' && COMMIT_HINT !== 'unset') ? 'env+runtime' :
-  (BUILD_SIG !== 'unset' || COMMIT_HINT !== 'unset') ? 'partial' :
-  'static-string';
+// SEEK 4.1c2 — sovereign source of truth (no 'unset' comparisons)
+const SOURCE_OF_TRUTH: 'code+vercel-auto' = 'code+vercel-auto';
 
 export async function POST(req: NextRequest): Promise<NextResponse | Response> {
   let callerState: SessionState | undefined;
