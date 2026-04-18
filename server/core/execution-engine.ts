@@ -223,6 +223,19 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         } catch { /* fall through to plain text */ }
       }
 
+      // SEEK 4.1c2 — Document Contract persistence
+      // openDocumentContract and collectDocumentParameter write pendingDocumentRequest
+      // to the state patch so STEP 1.75 can secures subsequent turns.
+      if (
+        (step.action === 'openDocumentContract' || step.action === 'collectDocumentParameter') &&
+        step.params?.pendingDocumentRequest
+      ) {
+        const contractPatch: StatePatch = {
+          pendingDocumentRequest: step.params.pendingDocumentRequest as import('../../lib/contracts').PendingDocumentRequest,
+        };
+        return { text, patch: contractPatch };
+      }
+
       return { text };
     }
 
@@ -726,7 +739,11 @@ Return ONLY this JSON:
             .filter(b => b.type === 'heading' && b.level === 1 && b.content)
             .map(b => b.content as string);
           const artifact = { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: headings };
-        return { artifact };
+          // SEEK 4.1c2 — clear document contract after successful PDF generation
+          const clearPatch: StatePatch | undefined = step.params?.clearDocumentContract === true
+            ? { pendingDocumentRequest: undefined }
+            : undefined;
+        return { artifact, patch: clearPatch };
       }
 
       const result = await generatePDF({ title, content: ctx.request.message });
