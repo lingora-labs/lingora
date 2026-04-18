@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/execution-engine-stream.ts
-// LINGORA SEEK 4.1b — Streaming Execution Engine (ArtifactRegistryEntry from contracts, package_session, no placebo)
+// LINGORA SEEK 4.1b/4.1c2 — Execution Engine Stream | FIX_ID: WILLY_FREE_ENGINE | patchSet: 4.1c2
 // =============================================================================
 
 import {
@@ -392,10 +392,26 @@ async function dispatchSync(
         const mentor = state.mentorProfile ?? 'Sarah';
         const now = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
 
-        const courseSystemPrompt = `You are a world-class document composer. Respond with valid JSON only. No markdown, no preamble. Think about the nature of the request before deciding document structure.`;
+        const courseSystemPrompt = `You are a world-class document composer. You always respond with valid JSON only — no markdown, no preamble, no explanation. Think carefully about the nature of the request before deciding the document structure.`;
 
-        const coursePrompt = `Compose a complete document about "${topic}".
-Language: ${lang}. Mentor: ${mentor}. Level: ${level}.
+        const coursePrompt = `Compose a complete, high-quality document about "${topic}".
+Audience language: ${lang}. Mentor voice: ${mentor}. Reference level: ${level}.
+
+STEP 1 — THINK (internally, before writing):
+What type of intellectual object does this request require?
+(curriculum, clinical guide, language course, dossier, academic overview, grammar reference, etc.)
+What is the appropriate depth? Who is the likely reader?
+What sections are NECESSARY for this topic to be useful?
+
+STEP 2 — COMPOSE:
+Build the document using the block types that best serve the topic.
+If it is a language course: teach the language with appropriate linguistic blocks.
+If it is a professional or academic domain: teach that domain with appropriate conceptual blocks.
+Do NOT force vocabulary/grammar/exercise onto non-linguistic content.
+
+Your output must be sufficient for a student to study this topic independently.
+Do not summarize what you will cover — deliver the actual material.
+If the document is long, that is correct. Completeness is the goal.
 
 Return ONLY this JSON:
 {
@@ -424,7 +440,7 @@ Return ONLY this JSON:
 
         try {
           const completion = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, 6000, 0.7),
+            ...buildModelParams(RUNTIME_MODEL, 12000, 0.7),
             response_format: { type: 'json_object' },
             messages: [
               { role: 'system', content: courseSystemPrompt },
@@ -704,4 +720,3 @@ const LABELS: Record<string, Record<string, string>> = {
 function loc(k: string, l: string): string {
   return LABELS[k]?.[l] ?? LABELS[k]?.['en'] ?? k;
 }
-
