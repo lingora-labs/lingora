@@ -37,30 +37,58 @@ function jsonRpcError(
   });
 }
 
-function authorized(req: NextRequest): boolean {
-  const expected = process.env.LINGORA_MCP_TOKEN;
-
-  if (!expected) {
-    return false;
-  }
-
-  const authorization = req.headers.get('authorization') || '';
-  const prefix = 'Bearer ';
-
-  if (!authorization.startsWith(prefix)) {
-    return false;
-  }
-
-  const supplied = authorization.slice(prefix.length);
-
-  const a = Buffer.from(supplied);
-  const b = Buffer.from(expected);
+function secureEqual(aValue: string, bValue: string): boolean {
+  const a = Buffer.from(aValue);
+  const b = Buffer.from(bValue);
 
   if (a.length !== b.length) {
     return false;
   }
 
   return timingSafeEqual(a, b);
+}
+
+/**
+ * Two independent authentication channels:
+ *
+ * 1. Administrative / generic MCP clients:
+ *    Authorization: Bearer <LINGORA_MCP_TOKEN>
+ *
+ * 2. Grok Custom Connector:
+ *    /api/mcp?key=<LINGORA_GROK_KEY>
+ *
+ * The Grok key is intentionally separate from the master MCP token so it
+ * can be rotated/revoked independently.
+ */
+function authorized(req: NextRequest): boolean {
+  const masterToken = process.env.LINGORA_MCP_TOKEN;
+  const grokKey = process.env.LINGORA_GROK_KEY;
+
+  const authorization = req.headers.get('authorization') || '';
+  const bearerPrefix = 'Bearer ';
+
+  if (
+    masterToken &&
+    authorization.startsWith(bearerPrefix)
+  ) {
+    const supplied = authorization.slice(bearerPrefix.length);
+
+    if (secureEqual(supplied, masterToken)) {
+      return true;
+    }
+  }
+
+  const suppliedGrokKey = req.nextUrl.searchParams.get('key') || '';
+
+  if (
+    grokKey &&
+    suppliedGrokKey &&
+    secureEqual(suppliedGrokKey, grokKey)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function inputSchemaFor(name: string) {
@@ -248,22 +276,23 @@ function mcpTools() {
   }));
 }
 
-/*
+/**
  * Public transport probe.
  *
- * Grok's Custom Connector performs an unauthenticated HTTP request while
- * validating the MCP URL. This GET exposes no repository data and performs
- * no GitHub operation.
- *
- * All actual MCP JSON-RPC operations remain behind POST authentication.
+ * No repository content, credentials, or GitHub operations are exposed here.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   return NextResponse.json({
     service: 'LINGORA Engineering Gateway',
     protocol: 'MCP',
     transport: 'Streamable HTTP',
+    version: '5.0.2',
     ready: true,
-    authentication: 'required-for-tools',
+    authenticated: authorized(req),
+    authentication: {
+      handshake: 'public',
+      tools: 'protected',
+    },
   });
 }
 
@@ -288,17 +317,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  /*
-   * Allow only the MCP handshake without credentials.
-   *
-   * No repository information is exposed here and no engineering tool can
-   * execute without LINGORA_MCP_TOKEN.
+  /**
+   * Grok must be allowed to establish the MCP transport before tool discovery.
+   * No repository operation occurs in these methods.
    */
   const publicHandshake =
     rpc.method === 'initialize' ||
     rpc.method === 'notifications/initialized' ||
     rpc.method === 'ping';
 
+  /**
+   * Everything beyond the handshake requires either:
+   * - LINGORA_MCP_TOKEN via Bearer
+   * - LINGORA_GROK_KEY via ?key=
+   */
   if (!publicHandshake && !authorized(req)) {
     return NextResponse.json(
       {
@@ -323,7 +355,7 @@ export async function POST(req: NextRequest) {
           },
           serverInfo: {
             name: 'lingora-engineering-gateway',
-            version: '5.0.1',
+            version: '5.0.2',
           },
         });
 
