@@ -248,37 +248,26 @@ function mcpTools() {
   }));
 }
 
-export async function GET(req: NextRequest) {
-  if (!authorized(req)) {
-    return NextResponse.json(
-      { error: 'Unauthorized' },
-      { status: 401 },
-    );
-  }
-
+/*
+ * Public transport probe.
+ *
+ * Grok's Custom Connector performs an unauthenticated HTTP request while
+ * validating the MCP URL. This GET exposes no repository data and performs
+ * no GitHub operation.
+ *
+ * All actual MCP JSON-RPC operations remain behind POST authentication.
+ */
+export async function GET() {
   return NextResponse.json({
     service: 'LINGORA Engineering Gateway',
     protocol: 'MCP',
     transport: 'Streamable HTTP',
     ready: true,
+    authentication: 'required-for-tools',
   });
 }
 
 export async function POST(req: NextRequest) {
-  if (!authorized(req)) {
-    return NextResponse.json(
-      {
-        jsonrpc: '2.0',
-        id: null,
-        error: {
-          code: -32001,
-          message: 'Unauthorized',
-        },
-      },
-      { status: 401 },
-    );
-  }
-
   let rpc: JsonRpcRequest;
 
   try {
@@ -299,6 +288,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  /*
+   * Allow only the MCP handshake without credentials.
+   *
+   * No repository information is exposed here and no engineering tool can
+   * execute without LINGORA_MCP_TOKEN.
+   */
+  const publicHandshake =
+    rpc.method === 'initialize' ||
+    rpc.method === 'notifications/initialized' ||
+    rpc.method === 'ping';
+
+  if (!publicHandshake && !authorized(req)) {
+    return NextResponse.json(
+      {
+        jsonrpc: '2.0',
+        id: rpc.id ?? null,
+        error: {
+          code: -32001,
+          message: 'Unauthorized',
+        },
+      },
+      { status: 401 },
+    );
+  }
+
   try {
     switch (rpc.method) {
       case 'initialize':
@@ -309,7 +323,7 @@ export async function POST(req: NextRequest) {
           },
           serverInfo: {
             name: 'lingora-engineering-gateway',
-            version: '5.0.0',
+            version: '5.0.1',
           },
         });
 
@@ -329,6 +343,7 @@ export async function POST(req: NextRequest) {
       case 'tools/call': {
         const params = rpc.params || {};
         const name = String(params.name || '');
+
         const args =
           params.arguments &&
           typeof params.arguments === 'object'
