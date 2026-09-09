@@ -4,9 +4,21 @@
 // can be rendered by the existing rich pipeline (renderCoursePdf). Does NOT
 // generate new pedagogical content, does NOT decide domain complexity — the
 // mentor already decided that when it taught. This is organization only.
-// P9-diag: returns a discriminated result with a failure reason instead of
-// an opaque null, so the caller can surface WHY the rich path was skipped
-// without needing server log access.
+//
+// SEEK 5.0 P9b — SUBJECT CONTENT ISOLATION.
+// Root gap: the caller used to pass a blind text.slice(start, start+6000)
+// excerpt per subject. For a compound act with 2 subjects, that window
+// sometimes captured cross-turn meta text (opening "voy a hacerlo en...")
+// instead of the actual subject content, and sometimes bled into the
+// neighboring subject's material.
+// Fix: pass the FULL taught text (not a slice) plus the list of the OTHER
+// subjects taught in the same turn. The composer is instructed to select and
+// structure ONLY the portion belonging to ITS subject, and explicitly to
+// exclude turn-level meta text and any content belonging to the other named
+// subjects. This is a materialization-layer decision (which slice of
+// already-taught text belongs to this artifact) — not a pedagogical one
+// (what to teach). No domain names are hardcoded; subjects and otherSubjects
+// are always caller-supplied strings.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 
@@ -16,9 +28,15 @@ const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
   'comparison', 'framework', 'glossary', 'index', 'summary',
 ])
 
+// Full taught text can legitimately run long for a rich compound act.
+// This is a safety ceiling against runaway input, not a content-selection
+// mechanism — the composer itself decides what belongs to its subject.
+const MAX_FULL_CONTENT_CHARS = 24000
+
 export interface ComposeParams {
   subject: string
-  body: string
+  fullContent: string
+  otherSubjects: string[]
   mentorName: string
   level?: string
   nativeLanguage?: string
@@ -29,7 +47,7 @@ export type ComposeResult =
   | { ok: false; reason: string }
 
 export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
-  if (!params.body?.trim()) return { ok: false, reason: 'empty_body' }
+  if (!params.fullContent?.trim()) return { ok: false, reason: 'empty_body' }
 
   try {
     const OpenAI = (await import('openai')).default
@@ -37,18 +55,38 @@ export async function composeDocumentFromTaught(params: ComposeParams): Promise<
     const { buildModelParams } = await import('../../mentors/mentor-engine')
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
 
-    const systemPrompt = `You structure already-taught pedagogical content into a JSON document for PDF rendering. You do not invent new content. You do not change its complexity, register, or level — that was already decided correctly by the tutor when it taught. You do not simplify or infantilize. You organize what was already written into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, and one exercise block if practice material is present in the source text. Respond with valid JSON only — no markdown, no preamble.`
+    const boundedContent = params.fullContent.slice(0, MAX_FULL_CONTENT_CHARS)
+    const otherSubjectsLine = params.otherSubjects.length > 0
+      ? params.otherSubjects.map((s) => `"${s}"`).join(', ')
+      : '(none — this was the only subject taught in this turn)'
 
-    const userPrompt = `Subject: "${params.subject}"
+    const systemPrompt = `You structure already-taught pedagogical content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is STRUCTURING: organize that portion into clear blocks.
 
-Already-taught content to structure (organize it, do not rewrite its substance or simplify it):
+Isolation rules:
+- Exclude turn-level framing text (e.g. "I will do this in the order you asked", opening/closing summaries that talk ABOUT the plan rather than teaching content).
+- Exclude any content that belongs to the other subjects listed below — do not summarize them, do not reference them, do not include their exercises or examples.
+- Exclude a closing activity/exercise unless it is specifically about YOUR subject, not a different one.
+- If the source text has a clear section (e.g. under a heading) dedicated to your subject, treat that as your primary source.
+
+Structuring rules:
+- Do not invent new content. Do not change complexity, register, or level — that was already decided correctly by the tutor when it taught. Do not simplify or infantilize.
+- Organize into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, and one exercise block if practice material specific to YOUR subject is present.
+- If almost nothing in the text belongs to your subject, it is correct to produce a shorter document rather than padding it with unrelated content.
+
+Respond with valid JSON only — no markdown, no preamble.`
+
+    const userPrompt = `Your assigned subject: "${params.subject}"
+
+Other subjects taught in the SAME turn (their content does not belong to you — exclude it): ${otherSubjectsLine}
+
+Full taught text for this turn:
 """
-${params.body}
+${boundedContent}
 """
 
 Return ONLY this JSON:
 {
-  "title": "string - specific to this subject, not generic",
+  "title": "string - specific to \"${params.subject}\", not generic",
   "subtitle": "string or null",
   "documentType": "string (e.g. leccion, guia, resumen tematico)",
   "blocks": [
@@ -62,7 +100,7 @@ Return ONLY this JSON:
 }`
 
     const completion = await openai.chat.completions.create({
-      ...buildModelParams(RUNTIME_MODEL, 4000, 0.3),
+      ...buildModelParams(RUNTIME_MODEL, 4500, 0.3),
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
