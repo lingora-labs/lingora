@@ -2,25 +2,6 @@
 // app/api/chat/route.ts
 // LINGORA SEEK 4.1b/4.1c2 — Thin Router | FIX_ID: TRACER_SOVEREIGN | patchSet: 4.1c2
 // =============================================================================
-// SEEK 3.9 base changes: T1 (architecture bump), T2 (*2468*# logic fix).
-// CORRECCIONES APLICADAS (según auditoría IS + CSJ, 7 abril 2026):
-//   1. RUNTIME_FEATURES detecta 3.9d / 3.9-d / 4.0 — tracer honesto.
-//   2. executionTrace solo se incluye si !IS_PRODUCTION && DEBUG_TRACE.
-//   3. Mantiene gate de producción para *1357*# y *2468*# (sin fuga JSON).
-//
-// Justificación doctrinal (Manifiesto 7.0): Art. 12, 38.
-// SEEK 3.9-c CHANGES — IS consensus 5 de abril de 2026:
-//   R1 — *1357*# architecture string is no longer hardcoded.
-//        Root cause confirmed: across SEEK 3.3→3.5→3.6→3.9 the tracer was
-//        reporting stale version labels because architecture: 'SEEK-X.X' is a
-//        string literal in code, not a runtime measurement. A new deploy with
-//        different behavior but same string label produces a lying tracer.
-//   SEEK 4.1c2 — TRACER_SOVEREIGN: SEEK_BASE/PATCH_SET/ACTIVE_FIXES are code
-//        constants updated with each sprint. VERCEL_DEPLOYMENT_ID and
-//        VERCEL_GIT_COMMIT_SHA are auto-set by Vercel on every deploy.
-//        No manual env var update required.
-// =============================================================================
-
 import { NextRequest, NextResponse } from 'next/server';
 
 import {
@@ -44,68 +25,46 @@ import { executePlanStream } from '../../../server/core/execution-engine-stream'
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 
 export const runtime     = 'nodejs';
-export const maxDuration = 300; // SEEK 4.1b — CEO directive: no artificial timeout  // SEEK 3.8: restored — 30s caused timeouts on course PDF generation
+export const maxDuration = 300;
 
 const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
-// SEEK 3.9-d — C1: Production gate for diagnostic tracers.
-// debugTrace:true was leaking full internal JSON to the user-visible channel.
-// In production, *1357*# and *2468*# return minimal status payloads only.
-// Full traces are only available in dev or when LINGORA_DEBUG_OVERRIDE=true.
 const IS_PRODUCTION     = process.env.NODE_ENV === 'production'
   && process.env.LINGORA_DEBUG_OVERRIDE !== 'true';
-// ─────────────────────────────────────────────────────────────────────────────
-// SEEK 4.1c2 — SOVEREIGN TRACER (no manual env vars required)
-// SEEK_BASE + PATCH_SET + ACTIVE_FIXES are updated IN CODE at each sprint.
-// VERCEL_DEPLOYMENT_ID and VERCEL_GIT_COMMIT_SHA are set automatically by
-// Vercel on every deploy — never need manual action.
-// ─────────────────────────────────────────────────────────────────────────────
 
-/** Updated in code — never needs manual env var update */
 const SEEK_BASE    = '4.1b';
 const PATCH_SET    = '4.1c2';
 const ACTIVE_FIXES = [
-  'DOC_CONTRACT_GATE',        // orchestrator: PendingDocumentRequest + STEP 1.75
-  'ENGINE_CONTRACT_PERSIST',  // engine: pendingDocumentRequest → StatePatch
-  'ENGINE_CLARIFY_BYPASS',    // engine: openDocumentContract bypasses LLM
-  'ENGINE_CLEARCONTRACT',     // engine: clearDocumentContract after PDF
-  'WILLY_FREE_ENGINE',        // engine: max_tokens 12000 + density benchmark in courseUserPrompt
+  'DOC_CONTRACT_GATE',
+  'ENGINE_CONTRACT_PERSIST',
+  'ENGINE_CLARIFY_BYPASS',
+  'ENGINE_CLEARCONTRACT',
+  'WILLY_FREE_ENGINE',
 ] as const;
 
-/** Vercel auto-sets these on every deploy — no manual action needed */
 const VERCEL_DEPLOY_ID  = process.env.VERCEL_DEPLOYMENT_ID  ?? 'local';
 const VERCEL_COMMIT_SHA = process.env.VERCEL_GIT_COMMIT_SHA ?? 'local';
 const VERCEL_COMMIT_MSG = process.env.VERCEL_GIT_COMMIT_MESSAGE ?? '';
 
-/** Kept for backward compat with runtimeFeatures checks below */
 const BUILD_SIG  = `seek-${PATCH_SET}-${VERCEL_COMMIT_SHA.slice(0, 8)}`;
 const COMMIT_HINT = `SEEK ${PATCH_SET} — patchSet active`;
 const RUNTIME_ARCH = `SEEK ${PATCH_SET}`;
 
-// SEEK 3.9-c — R2: runtime feature flags derived from code constants.
-// These cannot be faked by a stale version label — they reflect actual code.
-// Each flag corresponds to a verifiable behavior, not a claim.
+const RUNTIME_BASELINE = '4.1c2';
+const RUNTIME_EXPERIMENT = 'none';
+
 const RUNTIME_FEATURES = {
-  // Elastic course prompt (5-8 modules, domain sovereignty) — SEEK 3.9-b
-  // Detected by checking if COMMIT_HINT mentions 3.9-b or later
-  elasticCoursePrompt:   BUILD_SIG.includes('3.9b') || BUILD_SIG.includes('3.9-b') || BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // No HTML in table matrix — SEEK 3.9-c
-  noHtmlTableMatrix:     BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Session state reset scoped to preferences only — SEEK 3.9-c
-  sessionResetScoped:    BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Pre-generation timestamp log for PDF forensics — SEEK 3.9-c
-  pdfStartLog:           BUILD_SIG.includes('3.9c') || BUILD_SIG.includes('3.9-c'),
-  // Honest PDF error messages — SEEK 3.9 base
+  elasticCoursePrompt:   ACTIVE_FIXES.includes('WILLY_FREE_ENGINE'),
+  noHtmlTableMatrix:     true,
+  sessionResetScoped:    false,
+  pdfStartLog:           false,
   honestPdfErrors:       true,
-  // maxDuration 60s — SEEK 3.8 onwards
-  maxDuration60s:        true,
-  // Streaming SSE — always available, activation via flag
+  maxDuration60s:        false,
+  maxDuration300s:       true,
   streamingAvailable:    true,
   streamingActive:       STREAMING_ENABLED,
 } as const;
 
-// SEEK 3.9-c — R3: source of truth classification
-// SEEK 4.1c2 — sovereign source of truth (no 'unset' comparisons)
 const SOURCE_OF_TRUTH: 'code+vercel-auto' = 'code+vercel-auto';
 
 export async function POST(req: NextRequest): Promise<NextResponse | Response> {
@@ -117,7 +76,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const { message, state: rawState, files, audioDataUrl, audioMimeType } = body;
 
-    // SEEK 3.9-d: derive boolean flags used throughout the handler
     const hasFiles = Array.isArray(files) && files.length > 0;
     const hasAudio = !!audioDataUrl;
 
@@ -149,25 +107,22 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       console.warn('[route] state warnings:', validation.warnings);
     }
 
-    // ── SEEK DIAGNOSTIC TRIGGER ───────────────────────────────────────────────
     if (message?.trim() === '*1357*#') {
-      // SEEK 3.9-c — R1/R2/R3: architecture and features derived from runtime,
-      // not from a hardcoded string. See constants above.
       const diagPayload = {
-        // Identity — sourced from env vars (not hardcoded literals)
         seekBase:          SEEK_BASE,
         patchSet:          PATCH_SET,
+        runtimeBaseline:   RUNTIME_BASELINE,
+        experiment:        RUNTIME_EXPERIMENT,
         activeFixes:       [...ACTIVE_FIXES],
         deploymentId:      VERCEL_DEPLOY_ID,
         gitCommit:         VERCEL_COMMIT_SHA,
         gitMessage:        VERCEL_COMMIT_MSG || undefined,
         architecture:      RUNTIME_ARCH,
         runtime:           'LINGORA-ARCH-9.11',
-        buildSignature:    BUILD_SIG,              // backward compat
-        commitHint:        COMMIT_HINT,            // backward compat
+        buildSignature:    BUILD_SIG,
+        commitHint:        COMMIT_HINT,
         sourceOfTruth:     'code+vercel-auto',
         timestamp:         new Date().toISOString(),
-        // Operational state
         orchestratorActive: true,
         stateValidation:   stateValidationStatus,
         streamingEnabled:  STREAMING_ENABLED,
@@ -176,18 +131,17 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         activeMode:        state.activeMode,
         tutorPhase:        state.tutorPhase,
         mentorProfile:     state.mentorProfile ?? 'Alex',
-        // R2: runtime feature flags — what the code ACTUALLY does
         runtimeFeatures:   RUNTIME_FEATURES,
-        // Guidance for operators
-        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto. No manual env vars required.`,
+        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto.`,
       };
-      // SEEK 3.9-d — C1: Production gate — no internal JSON leak to user channel
       const diagResponse = IS_PRODUCTION
         ? {
             buildSignature: BUILD_SIG,
             commitHint:     COMMIT_HINT,
             seekBase:       SEEK_BASE,
             patchSet:       PATCH_SET,
+            runtimeBaseline: RUNTIME_BASELINE,
+            experiment:     RUNTIME_EXPERIMENT,
             activeFixes:    [...ACTIVE_FIXES],
             deploymentId:   VERCEL_DEPLOY_ID,
             architecture:   RUNTIME_ARCH,
@@ -204,7 +158,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       });
     }
 
-    // ── SEEK 3.9 PIPELINE TRACER — *2468*# ───────────────────────────────────
     if (message?.trim() === '*2468*#') {
       const testCases = [
         { label: 'export_chat_pdf',    msg: 'Exporta esta conversacion a PDF' },
@@ -248,9 +201,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         };
       });
 
-      // SEEK 3.9 — T2: allPdfPipelinesActive now explicitly checks both PDF test cases.
-      // Old formula: traces.every(t => t.pdfWillFire || !t.testCase.includes('pdf'))
-      // was a logical short-circuit that could report true even when course PDF failed.
       const pdfTraces = traces.filter(t =>
         t.testCase === 'export_chat_pdf' || t.testCase === 'generate_course_pdf',
       );
@@ -261,9 +211,11 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         allPdfPipelinesActive,
         noMentorInterception:  noMentorInterceptionOnPdf,
         streamingEnabled:      STREAMING_ENABLED,
-        architecture:          RUNTIME_ARCH,     // R4: env-derived, not hardcoded
+        architecture:          RUNTIME_ARCH,
         sourceOfTruth:         SOURCE_OF_TRUTH,
         runtimeFeatures:       RUNTIME_FEATURES,
+        runtimeBaseline:       RUNTIME_BASELINE,
+        experiment:            RUNTIME_EXPERIMENT,
         timestamp:             new Date().toISOString(),
       };
 
@@ -272,9 +224,11 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
           ? {
               message: JSON.stringify({
                 summary: {
-                  allPdfPipelinesActive: true,
+                  allPdfPipelinesActive,
                   streamingEnabled:      STREAMING_ENABLED,
                   architecture:          RUNTIME_ARCH,
+                  runtimeBaseline:       RUNTIME_BASELINE,
+                  experiment:            RUNTIME_EXPERIMENT,
                   status:                'ok',
                   timestamp:             new Date().toISOString(),
                 },
@@ -396,4 +350,3 @@ const NO_CACHE = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   'Content-Type':  'application/json',
 } as const;
-
