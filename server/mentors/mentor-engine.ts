@@ -1,6 +1,7 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
 // SEEK 5.0 P4 budget + E-06 structured artifact channel (post-content)
+// SEEK 5.0 P8b — multi-signal decision: tokens 400→700 + explicit multi-call reminder
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -283,12 +284,18 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       }
       if (taught.trim().length < 200) return
       try {
+        // P8b: 700 tokens (was 400) to accommodate multiple tool calls.
+        // Explicit multi-call reminder: if distinct subjects were taught,
+        // the model may call signal_artifact once per subject.
+        const decisionSystemAddition =
+          '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.' +
+          '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.'
         const decision = await openai.chat.completions.create({
-          ...buildModelParams(RUNTIME_MODEL, 400, 0),
+          ...buildModelParams(RUNTIME_MODEL, 700, 0),
           tools: [SIGNAL_ARTIFACT_TOOL],
           tool_choice: 'auto',
           messages: [
-            { role: 'system', content: system + '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.' },
+            { role: 'system', content: system + decisionSystemAddition },
             { role: 'user', content: user },
             { role: 'assistant', content: taught.slice(0, 8000) },
           ],
