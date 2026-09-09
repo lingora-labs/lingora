@@ -1,14 +1,8 @@
 // =============================================================================
 // lib/context-pack.ts
 // SEEK 5.0 S1 E-11 — ContextPack informs the tutor. It does not reason.
+// SEEK 5.0 P2 — compoundPedagogicalAct is information, not a state machine.
 // =============================================================================
-// languageProficiency ≠ domainProficiency.
-// A1 Spanish does not flatten acupuncture / chakras / Mate to "español A1 general".
-//
-// levelConfirmed is NOT a ContextPack field.
-// It lives on SessionState (E-07 chrome). Documented here so it is not smuggled
-// into the pack as if DAE had approved it inside this contract.
-
 import type { CEFRLevel } from './contracts';
 
 export type DomainProficiency = 'novice' | 'practitioner' | 'expert' | 'unknown';
@@ -20,21 +14,17 @@ export interface ContextPack {
   interfaceLanguage: string;
   targetLanguage: string;
   languageProficiency: CEFRLevel;
-
   domain: string | null;
   domainProficiency: DomainProficiency;
-
   pedagogicalGoal: PedagogicalGoal;
   artifactGoal: ArtifactGoal;
-
   lastConcept: string | null;
   lastUserGoal: string | null;
   activeFlowType: ActiveFlowType;
-
   turnCount: number;
+  compoundPedagogicalAct: boolean;
 }
 
-/** Session-level chrome gate. Not part of ContextPack. */
 export type LevelConfirmed = boolean;
 
 const CEFR: CEFRLevel[] = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
@@ -42,6 +32,15 @@ const CEFR: CEFRLevel[] = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 function asCefr(value: string | undefined): CEFRLevel {
   const raw = (value ?? '').toUpperCase();
   return (CEFR as string[]).includes(raw) ? (raw as CEFRLevel) : 'A1';
+}
+
+export function isCompoundPedagogicalAct(message: string): boolean {
+  const t = (message || '').toLowerCase();
+  if (!t.trim()) return false;
+  const sequenced = /\b(primero|despu[eé]s|luego|finalmente|then|after that|finally)\b/.test(t);
+  const domainShift = /cambia de dominio|acupuntur|otro dominio|sin tratarme como principiante|domain/.test(t);
+  const askedParts = (t.match(/ens[eé]ñame|expl[ií]came|teach me|genera(?:r)? dos|curso de|introducci[oó]n seria/g) || []).length;
+  return sequenced && (domainShift || askedParts >= 2);
 }
 
 function extractDomain(message: string, lastConcept?: string): string | null {
@@ -52,7 +51,7 @@ function extractDomain(message: string, lastConcept?: string): string | null {
     const candidate = sobre[1].trim();
     if (!/^(español|spanish|pdf|curso|nivel)$/i.test(candidate)) return candidate;
   }
-  const teach = text.match(/(?:ens[eé]ñame|ensename|expl[ií]came|teach me)\s+(.+?)(?:\s+y\s+|\s+en pdf|$)/i);
+  const teach = text.match(/(?:ens[eé]name|ensename|expl[ií]came|teach me)\s+(.+?)(?:\s+y\s+|\s+en pdf|$)/i);
   if (teach) {
     const candidate = teach[1].replace(/\b(como una profesora|por favor)\b/ig, '').trim();
     if (candidate.length > 2 && !/^(español|spanish)$/i.test(candidate)) return candidate;
@@ -75,19 +74,19 @@ export function buildContextPack(input: {
     targetLanguage: 'es',
     languageProficiency: asCefr(input.languageProficiency),
     domain,
-    domainProficiency: domain ? 'unknown' : 'unknown',
+    domainProficiency: 'unknown',
     pedagogicalGoal: 'teach',
     artifactGoal: null,
     lastConcept: input.lastConcept ?? null,
     lastUserGoal: input.lastUserGoal ?? null,
     activeFlowType: input.activeMode === 'pdf_course' || input.activeMode === 'structured' ? 'course' : null,
     turnCount: input.turnCount ?? 0,
+    compoundPedagogicalAct: isCompoundPedagogicalAct(input.message),
   };
 }
 
-/** Serialize the pack as information. No branching. No responseMode decision. */
 export function formatContextPack(pack: ContextPack): string {
-  return [
+  const lines = [
     '[ContextPack — information for this turn; not a decision procedure]',
     `interfaceLanguage: ${pack.interfaceLanguage}`,
     `targetLanguage: ${pack.targetLanguage}`,
@@ -100,6 +99,11 @@ export function formatContextPack(pack: ContextPack): string {
     `lastUserGoal: ${pack.lastUserGoal ?? 'null'}`,
     `activeFlowType: ${pack.activeFlowType ?? 'null'}`,
     `turnCount: ${pack.turnCount}`,
+    `compoundPedagogicalAct: ${pack.compoundPedagogicalAct ? 'true' : 'false'}`,
     'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
-  ].join('\n');
+  ];
+  if (pack.compoundPedagogicalAct) {
+    lines.push('The student explicitly sequenced more than one pedagogical request in this message. That is information about the request shape, not a router.');
+  }
+  return lines.join('\n');
 }
