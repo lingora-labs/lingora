@@ -1,14 +1,13 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
 // LINGORA SEEK 3.9 — Mentor Engine
-// No functional changes from SEEK 3.8 — header bump only.
-// All logic, directives, buildModelParams, and getMentorResponseStream
-// preserved exactly as delivered in SEEK 3.8.
+// SEEK 5.0 S1 E-11 — ContextPack injected into the turn as information.
 // =============================================================================
 
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
+import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import type {
   SessionState,
   ChatRequest,
@@ -26,7 +25,7 @@ const FALLBACKS: Record<string, string> = {
   de: 'Konnte Ihre Nachricht nicht verarbeiten. Versuchen Sie es erneut.',
   it: 'Non ho potuto elaborare il tuo messaggio. Riprova.',
   pt: 'Nao consegui processar sua mensagem. Tente novamente.',
-  ar: "Could not process your message. Please try again.", // Arabic UI fallback — ASCII safe
+  ar: "Could not process your message. Please try again.",
   ja: 'messeji wo shori dekimasendeshita. mou ichido o tameshi kudasai.',
   zh: 'Wufa chuli您de xiaoxi. Qing chongshi.',
 }
@@ -101,6 +100,33 @@ function resolveTopic(state: LegacyMentorState): string | null {
 
 function resolveLevel(state: LegacyMentorState): string | undefined {
   return state.confirmedLevel ?? state.userLevel ?? state.level
+}
+
+function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
+  const step = plan?.executionOrder?.find(
+    (item) => item.params != null && Object.prototype.hasOwnProperty.call(item.params, 'contextPack'),
+  )
+  const raw = step?.params?.contextPack
+  if (raw && typeof raw === 'object') return raw as ContextPack
+  return undefined
+}
+
+function resolveTurnContextPack(
+  message: string,
+  state: LegacyMentorState,
+  plan?: ExecutionPlan,
+): ContextPack {
+  const transported = readPlanContextPack(plan)
+  if (transported) return transported
+  return buildContextPack({
+    interfaceLanguage: resolveInterfaceLanguage(state),
+    languageProficiency: resolveLevel(state),
+    message,
+    lastConcept: state.lastConcept,
+    lastUserGoal: state.lastUserGoal,
+    turnCount: state.tokens ?? 0,
+    activeMode: state.activeMode,
+  })
 }
 
 function buildContext(state: LegacyMentorState): string {
@@ -264,6 +290,8 @@ export function buildMentorPrompt(params: {
         'The pedagogical phase sequence does NOT apply to this response. ' +
         'Ignore any prior instruction to stay in phase or not blend steps.'
       : ''
+  const pack = resolveTurnContextPack(params.message, state, params.plan)
+  const packBlock = '\n\n' + formatContextPack(pack)
   const system = [
     profile.system,
     fastPathOverride,
@@ -271,6 +299,7 @@ export function buildMentorPrompt(params: {
     modeInstructions,
     TUTOR_PROHIBITIONS,
     context,
+    packBlock,
   ].filter(Boolean).join('')
   const user = String(params.message || '')
   return { system, user }
@@ -300,10 +329,6 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall
     priorContext:    params.priorContext,
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MODEL PARAMS — single source of truth for entire runtime
-// ─────────────────────────────────────────────────────────────────────────────
 
 export interface ModelParams {
   model: string;
