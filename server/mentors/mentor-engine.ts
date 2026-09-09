@@ -1,6 +1,6 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// SEEK 5.0 P4 budget + E-06 structured artifact channel
+// SEEK 5.0 P4 budget + E-06 structured artifact channel (post-content)
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -21,7 +21,6 @@ import type {
 } from '@/lib/contracts'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-
 const MENTOR_MAX_OUTPUT_TOKENS = 4096
 const COMPOUND_MAX_OUTPUT_TOKENS = 8192
 
@@ -86,7 +85,6 @@ function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
       return 'structured'
     case 'free':
       return 'free'
-    case 'interact':
     default:
       return 'conversational'
   }
@@ -195,12 +193,9 @@ export function buildMentorPrompt(params: {
   plan?: ExecutionPlan
 }): { system: string; user: string } {
   const state = params.state ?? {}
-  const mentorName = resolveMentorName(state)
-  const profile = getMentorProfile(mentorName)
+  const profile = getMentorProfile(resolveMentorName(state))
   const mode = resolveTutorMode(state)
-  const protocolMode = resolveProtocolMode(mode)
   const topic = resolveTopic(state)
-  const context = buildContext(state)
   const executionDirective = buildExecutionDirective({
     systemDirective: params.systemDirective,
     plan: params.plan,
@@ -208,17 +203,12 @@ export function buildMentorPrompt(params: {
     priorContext: params.priorContext,
     state,
   })
-  const baseModeInstructions = getModeInstruction(protocolMode, topic)
+  const baseModeInstructions = getModeInstruction(resolveProtocolMode(mode), topic)
   const modeInstructions = (params.plan?.priority ?? 0) >= 70
     ? baseModeInstructions + '\n\n[OVERRIDE ACTIVE] An explicit artifact was requested. Deliver it now.'
     : baseModeInstructions
-  const fastPathOverride =
-    (params.plan?.priority ?? 0) >= 70
-      ? '\n\nOVERRIDE — EXPLICIT ARTIFACT REQUEST: Deliver the requested artifact immediately.'
-      : ''
   const pack = resolveTurnContextPack(params.message, state, params.plan)
-  const packBlock = '\n\n' + formatContextPack(pack)
-  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, fastPathOverride, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, context, packBlock].filter(Boolean).join('')
+  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
@@ -227,7 +217,7 @@ function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, sys
 }
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
-  const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Audio input — respond to the transcription in the prior context]'
+  const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Audio input]'
   return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext }
 }
 
@@ -254,21 +244,16 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   })
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
-    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Mentor timeout')), 14000))
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
-    const completion = await Promise.race([
-      openai.chat.completions.create({
-        ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      }),
-      timeout,
-    ])
+    const completion = await openai.chat.completions.create({
+      ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    })
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.error('[MENTOR] Error:', msg)
-    const lang = resolveInterfaceLanguage(normalized.state)
-    return FALLBACKS[lang] ?? FALLBACKS.en
+    return FALLBACKS[resolveInterfaceLanguage(normalized.state)] ?? FALLBACKS.en
   }
 }
 
@@ -285,44 +270,47 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     const stream = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
       stream: true,
-      tools: [SIGNAL_ARTIFACT_TOOL],
-      tool_choice: 'auto',
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     })
     const gen = (async function* () {
-      const acc: Record<number, { name: string; args: string }> = {}
+      let taught = ''
       for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta
-        if (delta?.content) yield delta.content
-        const calls = delta?.tool_calls
-        if (!calls) continue
-        for (const tc of calls) {
-          const idx = typeof tc.index === 'number' ? tc.index : 0
-          if (!acc[idx]) acc[idx] = { name: '', args: '' }
-          if (tc.function?.name) acc[idx].name = tc.function.name
-          if (tc.function?.arguments) acc[idx].args += tc.function.arguments
+        const delta = chunk.choices?.[0]?.delta?.content
+        if (delta) {
+          taught += delta
+          yield delta
         }
       }
-      for (const item of Object.values(acc)) {
-        if (item.name !== 'signal_artifact') continue
-        try {
-          const parsed = parseArtifactSignal(JSON.parse(item.args))
-          if (parsed) signals.push(parsed)
-        } catch {
-          /* invalid structured args — drop */
+      if (taught.trim().length < 200) return
+      try {
+        const decision = await openai.chat.completions.create({
+          ...buildModelParams(RUNTIME_MODEL, 400, 0),
+          tools: [SIGNAL_ARTIFACT_TOOL],
+          tool_choice: 'auto',
+          messages: [
+            { role: 'system', content: system + '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.' },
+            { role: 'user', content: user },
+            { role: 'assistant', content: taught.slice(0, 8000) },
+          ],
+        })
+        for (const tc of decision.choices?.[0]?.message?.tool_calls ?? []) {
+          if (tc.function?.name !== 'signal_artifact') continue
+          try {
+            const parsed = parseArtifactSignal(JSON.parse(tc.function.arguments || '{}'))
+            if (parsed) signals.push(parsed)
+          } catch { /* drop */ }
         }
+      } catch (e) {
+        console.warn('[E-06] signal decision failed', e instanceof Error ? e.message : e)
       }
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals
     return wrapped
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    console.warn('[MENTOR] Streaming unavailable, falling back:', msg)
+    console.warn('[MENTOR] Streaming unavailable, falling back:', error instanceof Error ? error.message : error)
     const fallbackText = await getMentorResponse(params)
-    const gen = (async function* () {
-      if (fallbackText) yield fallbackText
-    })()
+    const gen = (async function* () { if (fallbackText) yield fallbackText })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals
     return wrapped
