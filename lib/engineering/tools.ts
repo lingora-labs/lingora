@@ -20,16 +20,12 @@ function repoPath() {
 // browser). DAE can invoke this tool directly to run WILLY FREE without a
 // human intermediary.
 //
-// DIAGNOSTIC NOTE (401 investigation, 9 sep 2026):
-// Do NOT assume Vercel Deployment Protection is the cause. "Standard
-// Protection" typically excludes Production, and field evidence (IJL, Grok,
-// and the human user all reach the tutor and download artifacts without any
-// Vercel login) contradicts that hypothesis. The prior 401 carried an EMPTY
-// body, which is inconsistent with Vercel's auth wall (which returns full
-// HTML). This block now surfaces response headers on any non-2xx so the next
-// failure carries real evidence (x-vercel-id, www-authenticate, server,
-// content-type, set-cookie) instead of speculation. No infra/security
-// settings were changed to produce this fix.
+// P9-trace (9 sep 2026): the SSE `done` chunk from execution-engine-stream.ts
+// already includes `artifactSignals` — the RAW signals the model decided to
+// emit, with real subjects, BEFORE dedupe/compose/render. This client never
+// captured that field. Capturing it lets DAE distinguish "model emitted 1
+// signal" (Caso A, upstream, not a P9 regression) from "model emitted 2 and
+// one was lost downstream" (Caso B) WITHOUT touching any kernel file.
 
 const WILLY_FREE_PROMPT = `Quiero que me enseñes de verdad, no que me resumas. Supón que tengo nivel A1 de español pero buena capacidad intelectual general.
 
@@ -86,14 +82,17 @@ function extractDiagnosticHeaders(headers: Headers): Record<string, string> {
   return out;
 }
 
-async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE): Promise<{
+interface ChatAPIResult {
   message: string;
   artifact: unknown;
   artifacts: unknown[];
+  modelSignals: unknown[];
   state: unknown;
   chars: number;
   durationMs: number;
-}> {
+}
+
+async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE): Promise<ChatAPIResult> {
   const url = getChatUrl();
   const t0 = Date.now();
   const res = await fetch(url, {
@@ -126,6 +125,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
     let finalState: unknown = null;
     let artifact: unknown = null;
     const artifacts: unknown[] = [];
+    let modelSignals: unknown[] = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -143,6 +143,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
             if (chunk.state) finalState = chunk.state;
             if (chunk.artifact) { artifact = chunk.artifact; artifacts.push(chunk.artifact); }
             if (chunk.artifacts) artifacts.push(...chunk.artifacts);
+            if (Array.isArray(chunk.artifactSignals)) modelSignals = chunk.artifactSignals;
           } else if (chunk.artifact) {
             artifact = chunk.artifact;
             artifacts.push(chunk.artifact);
@@ -151,7 +152,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       }
     }
 
-    return { message: fullText, artifact, artifacts, state: finalState, chars: fullText.length, durationMs };
+    return { message: fullText, artifact, artifacts, modelSignals, state: finalState, chars: fullText.length, durationMs };
   } else {
     const data = await res.json();
     const msg = data.message || '';
@@ -160,6 +161,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       message: msg,
       artifact: art,
       artifacts: art ? [art] : [],
+      modelSignals: Array.isArray(data.artifactSignals) ? data.artifactSignals : [],
       state: data.state,
       chars: msg.length,
       durationMs,
@@ -177,6 +179,7 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   const msg = result.message;
   const arts = result.artifacts;
   const chars = result.chars;
+  const modelSignals = result.modelSignals as Array<{ type?: string; subject?: string; trigger?: string }>;
 
   // Evaluate WILLY FREE criteria
   const mentorFirst = chars > 200
@@ -189,7 +192,11 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   const multiSignal = artifactCount >= 2;
   const noAudio = !arts.some((a: any) => a?.type === 'audio');
   const noDebugJson = !msg.includes('"executor"') && !msg.includes('"pedagogicalAction"');
-  const artifactSubjects = arts.map((a: any) => a?.subject || a?.type || '?');
+  const artifactSubjects = arts.map((a: any) => a?.subject || a?.title || a?.type || '?');
+  const artifactComposerStatus = arts.map((a: any) => a?.composerStatus ?? 'unknown');
+
+  const registryEntries = (result.state as { artifactRegistry?: Array<{ id?: string; title?: string }> } | null)
+    ?.artifactRegistry ?? [];
 
   const verdict = mentorFirst && streamComplete && compoundActAcupuncture ? 'PROGRESO' : 'FAIL';
 
@@ -198,6 +205,13 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
     verdict,
     chars,
     durationMs: result.durationMs,
+    trace: {
+      modelSignalCount: modelSignals.length,
+      modelSignals: modelSignals.map((s) => ({ type: s?.type, subject: s?.subject, trigger: s?.trigger })),
+      artifactRegistryCount: registryEntries.length,
+      artifactRegistry: registryEntries.map((e) => ({ id: e?.id, title: e?.title })),
+      composerStatusPerArtifact: artifactComposerStatus,
+    },
     criteria: {
       mentorFirst,
       compoundActAcupuncture,
