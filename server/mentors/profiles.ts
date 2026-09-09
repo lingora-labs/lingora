@@ -1,21 +1,8 @@
-// ============================================================================
+// =============================================================================
 // server/mentors/profiles.ts
 // LINGORA SEEK 3.1 — Mentor Identity System
-// FASE 0-A — Estado, Precedencia e Identidad Base
-// BLOQUE 0-A.2 — Limpieza de identidad institucional
-// ============================================================================
-// OBJETIVO: eliminar contaminación comercial/institucional del flujo pedagógico,
-//           retirando la línea de Formspree del identity base de los mentores.
-// ALCANCE: elimina la referencia espontánea a contacto humano dentro del prompt
-//          base LINGORA_IDENTITY. El resto del archivo permanece intacto.
-// EXCLUSIONES: no modifica ningún otro bloque del archivo; no implementa el
-//              branch institucional separado (eso corresponde a fase posterior);
-//              no afecta perfiles individuales (Sarah, Alex, Nick).
-// COMPATIBILIDAD: solo afecta prompt base; sync y stream reciben mismo identity.
-// DOCTRINA: prohibida contaminación comercial del branch pedagógico.
-//           El contacto humano solo debe aparecer cuando el usuario lo pide.
-// RIESGO COMPILACIÓN: BAJO — solo elimina una línea de texto, no modifica tipos.
-// ============================================================================
+// SEEK 5.0 P3 — Zakia coherence, not a one-act prison
+// =============================================================================
 
 export type MentorKey = 'sarah' | 'alex' | 'nick'
 
@@ -24,9 +11,6 @@ export interface MentorProfile {
   system: string
 }
 
-// ─── LINGORA institutional identity ───────────────
-// Inyectado en cada mentor. Compacto, sin contaminación comercial.
-// Línea de Formspree ELIMINADA en Fase 0-A.
 const LINGORA_IDENTITY = `
 QUIÉN ERES:
 Trabajas para LINGORA, un instituto cultural especializado en español como lengua viva. No eres un chatbot. Eres un mentor con criterio pedagógico real.
@@ -35,10 +19,10 @@ LINGORA no es una app de idiomas genérica. Es un instituto fundado por un equip
 
 MISIÓN: Que cada persona que aprende español con LINGORA pueda usarlo de verdad, en la vida real.
 
-PRINCIPIO ZAKIA — UNA ACCIÓN POR MENSAJE:
-Cada respuesta contiene UNA sola acción pedagógica ejecutable: una pregunta, un ejercicio, una corrección, o una explicación breve.
-Nunca combines varias acciones en un mensaje. Si necesitas entregar varias cosas, distribúyelas en turnos.
-Tu objetivo no es explicar todo. Es avanzar al usuario un paso.
+PRINCIPIO ZAKIA — COHERENCIA POR TURNO:
+Por defecto cada respuesta avanza un paso pedagógico claro. No mezcles fases sin motivo.
+Si el estudiante pide explícitamente una secuencia coherente A → B → C en este mismo mensaje, completa esa secuencia en este turno cuando el presupuesto de salida lo permita. No aplaces una parte ya pedida diciendo que no cabe en un solo mensaje.
+El tutor decide el orden interno. No conviertas esto en una máquina de estados.
 
 DIAGNÓSTICO PRODUCTIVO:
 Cuando el nivel sea A0 o el usuario diga que no sabe nada: NO preguntes qué sabe. Pídele que produzca.
@@ -101,8 +85,3 @@ export function getMentorProfile(key?: string | null): MentorProfile {
   const k = (key || 'sarah') as MentorKey
   return MENTOR_PROFILES[k] || MENTOR_PROFILES.sarah
 }
-
-// ============================================================================
-// COMMIT:
-// refactor(identity): remove spontaneous human handoff from mentor base profile
-// ============================================================================
