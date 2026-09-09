@@ -1,6 +1,6 @@
 // =============================================================================
 // server/core/orchestrator.ts
-// LINGORA SEEK 4.1c2 + SEEK 5.0 S1 Camino C — mentor-first authority
+// LINGORA SEEK 4.1c2 + SEEK 5.0 S1 Camino C — mentor-first + ContextPack transport
 // =============================================================================
 import {
   OrchestrationContext,
@@ -21,6 +21,8 @@ import {
   isStrongCurriculumRequest,
   isFastPathArtifact,
 } from './intent-router';
+
+import { buildContextPack } from '../../lib/context-pack';
 
 const PRIORITY = {
   HARD_OVERRIDE:    100,
@@ -163,18 +165,15 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
   const tokens = ctx.state.tokens ?? 0;
   const existing = ctx.state.pendingDocumentRequest as PendingDocumentRequest | undefined;
   const turnClass = classifyDocumentTurn(ctx.message);
-
   if (existing && (tokens - existing.openedAtToken) > CONTRACT_EXPIRY_TURNS) {
     return buildOpenContractPlan(ctx, null, null);
   }
-
   if (!existing) {
     const levelFromMsg = extractDocumentLevel(ctx.message);
     const topicRaw = extractCourseTopic(ctx.message);
     const validTopic = (topicRaw && !isInvalidCourseTopic(topicRaw)) ? topicRaw : null;
     return buildOpenContractPlan(ctx, levelFromMsg, validTopic);
   }
-
   let { level, topic } = existing;
   if (turnClass === 'level_input') {
     level = extractDocumentLevel(ctx.message) ?? level;
@@ -182,14 +181,12 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
     const t = extractCourseTopic(ctx.message);
     if (t && !isInvalidCourseTopic(t)) topic = t;
   }
-
   const hasLevel = !!(level && level !== 'General');
   if (hasLevel && (turnClass === 'confirmation' || turnClass === 'level_input' || turnClass === 'topic_input')) {
     return topic
       ? buildGeneratePdfPlan(ctx, topic, level!)
       : buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
   }
-
   return buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
 }
 
@@ -323,6 +320,15 @@ function isCompoundPedagogicalAct(message: string): boolean {
 }
 
 function buildMentorFirstPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const contextPack = buildContextPack({
+    interfaceLanguage: ctx.interfaceLanguage,
+    languageProficiency: ctx.state.confirmedLevel ?? ctx.state.userLevel,
+    message: ctx.message,
+    lastConcept: ctx.state.lastConcept,
+    lastUserGoal: ctx.state.lastUserGoal,
+    turnCount: ctx.state.tokens ?? 0,
+    activeMode: ctx.state.activeMode,
+  });
   return withoutAudioSteps({
     executor: 'mentor',
     priority: PRIORITY.DEFAULT,
@@ -332,11 +338,11 @@ function buildMentorFirstPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: 's1_e01: mentor-first — learn/topic_lesson before first-turn and document gate. Artifact is a later side-effect.',
+    reason: 's1_e01: mentor-first — learn/topic_lesson before first-turn and document gate. Artifact is a later side-effect. ContextPack transported as information.',
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: [
       { order: 1, executor: 'mentor', action: 'conversation', timeout: 180000,
-        params: { pedagogicalGoal: 'teach', artifactGoal: null } },
+        params: { pedagogicalGoal: 'teach', artifactGoal: null, contextPack } },
     ],
   });
 }
@@ -346,49 +352,42 @@ export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
   if (pedagogicalMode !== ctx.state.pedagogicalMode) {
     ctx = { ...ctx, state: { ...ctx.state, pedagogicalMode } };
   }
-
   if (isMentorFirstIntent(ctx.intent) || isCompoundPedagogicalAct(ctx.message)) {
     return buildMentorFirstPlan(ctx);
   }
-
   if (isHardOverride(ctx.intent)) {
     return withoutAudioSteps(buildHardOverridePlan(ctx));
   }
-
   if (ctx.state.expectedResponseMode === 'exercise_answer' && ctx.state.currentExercise) {
     return withoutAudioSteps(buildExerciseLockPlan(ctx));
   }
-
   if (ctx.state.pendingDocumentRequest?.status === 'collecting') {
     return buildDocumentContractGate(ctx);
   }
-
   if (ctx.isFirstTurn) {
     return withoutAudioSteps(buildFirstTurnPlan(ctx));
   }
-
   const semanticOp = resolveSemanticOperation(ctx);
-  if (semanticOp === 'package_session') return buildPackageSessionPlan(ctx);
-  if (semanticOp === 'export_artifact') return buildExportArtifactPlan(ctx);
-
+  if (semanticOp === 'package_session') {
+    return buildPackageSessionPlan(ctx);
+  }
+  if (semanticOp === 'export_artifact') {
+    return buildExportArtifactPlan(ctx);
+  }
   if (isStrongCurriculumRequest(ctx.intent)) {
     return buildCurriculumPlan(ctx);
   }
-
   if (isFastPathArtifact(ctx.intent)) {
     return buildFastPathPlan(ctx);
   }
-
   if (ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course') {
     return withoutAudioSteps(buildPedagogicalPlan(ctx));
   }
-
   return withoutAudioSteps(buildConversationPlan(ctx));
 }
 
 function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
   const subtype = ctx.intent.subtype as IntentSubtype;
-
   const overrideMap: Record<string, {
     executor: ExecutorType | 'hybrid';
     action: string;
@@ -404,25 +403,21 @@ function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
     export_artifact: { executor: 'tool_pdf', action: 'exportArtifact', pedagogicalAction: 'export_artifact', artifacts: ['pdf'] },
     pronunciation_eval: { executor: 'hybrid', action: 'evaluatePronunciation', pedagogicalAction: 'pronunciation_eval', artifacts: ['pronunciation_report', 'audio'] },
   };
-
   const config = overrideMap[subtype] ?? {
     executor: 'mentor' as ExecutorType,
     action: 'hardOverrideFallback',
     pedagogicalAction: 'conversation' as PedagogicalAction,
     artifacts: [] as ArtifactType[],
   };
-
   if (subtype === 'generate_course_pdf') {
     return buildDocumentContractGate(ctx);
   }
-
   const step: ExecutionStep = {
     order: 1,
     executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
     action: config.action,
     timeout: 15000,
   };
-
   return {
     executor: config.executor,
     priority: PRIORITY.HARD_OVERRIDE,
@@ -476,7 +471,7 @@ function buildPackageSessionPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `semantic_op:package_session — artifactRegistry has ${artifactCount} entries. Honest mentor response.`,
+    reason: `semantic_op:package_session — user wants session materials packaged. artifactRegistry has ${artifactCount} entries. exportSessionStudyPdf available in SEEK 4.2. Honest mentor response.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: [
       { order: 1, executor: 'mentor', action: 'packageSessionHonestResponse', timeout: 12000,
@@ -495,7 +490,7 @@ function buildExportArtifactPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: 'semantic_op:export_artifact — honest mentor response.',
+    reason: `semantic_op:export_artifact — user wants individual artifact exported. Per-artifact export buttons available in SEEK 4.2.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: [
       { order: 1, executor: 'mentor', action: 'exportArtifactHonestResponse', timeout: 12000,
@@ -514,7 +509,7 @@ function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'EXERCISE_FEEDBACK_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: `exercise_lock:priority_95 — user answering active exercise.`,
+    reason: `exercise_lock:priority_95 — user answering active exercise "${ctx.state.currentExercise?.substring(0, 60) ?? 'unknown'}".`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: [
       { order: 1, executor: 'mentor', action: 'evaluateExerciseResponse', timeout: 15000 },
@@ -540,7 +535,7 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'FIRST_TURN_DIRECTIVE', ctx),
     commercial: undefined,
     skipPhaseAdvance: false,
-    reason: 'first_turn — tokens=0, session start.',
+    reason: `first_turn — tokens=0, session start.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: steps,
   };
@@ -627,7 +622,7 @@ function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
     mentor: buildMentorDirective(ctx.state.mentorProfile, directive, ctx),
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: `default_conversation — fallthrough. mode=${ctx.state.activeMode}.`,
+    reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}.`,
     resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
     executionOrder: [
       { order: 1, executor: 'mentor', action: 'conversation', timeout: 15000 },
