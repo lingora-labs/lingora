@@ -2,24 +2,9 @@
 // server/tools/pdf-generator.ts
 // LINGORA SEEK 3.9-c — PDF Generator Router (Integration Fix)
 // =============================================================================
-// SEEK 3.5 base: lesson → generateLessonPdf.ts, course → generateCourseContentPdf()
-//                (inline implementation), plain text → generatePlainTextPdf().
-//
-// SEEK 3.9-c CHANGE — LAYOUT-INTEGRATION:
-//   The inline generateCourseContentPdf() used fixed Y coordinates, producing
-//   PDFs with 60-70% blank whitespace and truncated text. The new flowing-
-//   layout renderer lives in ./pdf/generateCoursePdf.ts (renderCoursePdf).
-//   This file now routes courseContent to that renderer instead of the
-//   inline implementation.
-//   The inline generateCourseContentPdf() is preserved below as legacy/reference
-//   but is no longer called.
-//
-// DAE note: IS identified this as the missing integration link.
-// Without this change, generateCoursePdf_SEEK39c.ts would compile but never
-// be called — a "no-op deploy" where build passes but runtime uses old renderer.
-// =============================================================================
 import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
+import { CANONICAL_PRODUCT_URL } from '../../lib/product';
 
 function toPdfSafeText(s: string, maxLen: number = 400): string {
   return String(s ?? '')
@@ -67,11 +52,6 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
       const { generateLessonPdf } = await import('./pdf/generateLessonPdf');
       pdfBytes = await generateLessonPdf(params.lessonContent);
     } else if (params.courseContent) {
-      // SEEK 3.9-c — LAYOUT-INTEGRATION: route to flowing-layout renderer.
-      // Replaces inline generateCourseContentPdf() which used fixed Y coordinates
-      // and produced PDFs with 60-70% blank whitespace per module page.
-      // renderCoursePdf() uses tracking currentY for full-page utilization,
-      // wrapText() to prevent truncation, and continueOnNewPage() for overflow.
       const { renderCoursePdf } = await import('./pdf/generateCoursePdf');
       pdfBytes = await renderCoursePdf(params.courseContent);
     } else {
@@ -90,7 +70,7 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
       }
     }
 
-    const dataUrl = `data:application/pdf;base64,${buffer.toString('base64')}`;
+    const dataUrl = 'data:application/pdf;base64,' + buffer.toString('base64');
     return { success: true, url: dataUrl, method: 'dataurl' };
 
   } catch (error: unknown) {
@@ -100,7 +80,6 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
   }
 }
 
-// ── Plain text PDF (chat export) ──────────────────────────────────────────────
 async function generatePlainTextPdf(title: string, content: string): Promise<Uint8Array> {
   const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
 
@@ -144,7 +123,7 @@ async function generatePlainTextPdf(title: string, content: string): Promise<Uin
   }
 
   page.drawRectangle({ x: 0, y: 0, width: 595.28, height: 26, color: NAVY });
-  page.drawText('lingora.netlify.app - Exportado desde LINGORA', { x: 48, y: 9, size: 7.5, font: regular, color: MIDGRAY });
+  page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - Exportado desde LINGORA`, { x: 48, y: 9, size: 7.5, font: regular, color: MIDGRAY });
 
   return doc.save();
 }
