@@ -2,6 +2,12 @@
 // server/mentors/mentor-engine.ts
 // SEEK 5.0 P4 budget + E-06 structured artifact channel (post-content)
 // SEEK 5.0 P8b — multi-signal decision: tokens 400→700 + explicit multi-call reminder
+// SEEK 5.0 P8c — root cause fix: decision call only saw taught.slice(0, 8000).
+// Forensic WILLY FREE run produced 16,941 chars; the second taught domain
+// (Acupuntura) landed past the 8000-char cut and was invisible to the model
+// deciding signal_artifact calls — so only the first domain could ever be
+// signalled. Raised to 40000 (comfortably above observed compound-act length,
+// well within model context). No other files touched.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -24,6 +30,11 @@ import type {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 const MENTOR_MAX_OUTPUT_TOKENS = 4096
 const COMPOUND_MAX_OUTPUT_TOKENS = 8192
+
+// P8c — decision-call context window for `taught`. Was 8000; observed compound
+// response was 16,941 chars and got truncated mid-first-domain, hiding the
+// second domain from the signal-decision model entirely.
+const DECISION_TAUGHT_CONTEXT_CHARS = 40000
 
 const FALLBACKS: Record<string, string> = {
   es: 'No pude procesar tu mensaje. Intenta de nuevo.',
@@ -287,6 +298,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
         // P8b: 700 tokens (was 400) to accommodate multiple tool calls.
         // Explicit multi-call reminder: if distinct subjects were taught,
         // the model may call signal_artifact once per subject.
+        // P8c: decision model must see the FULL taught content, not a prefix —
+        // a compound act's second domain can start well past a short cutoff.
         const decisionSystemAddition =
           '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.' +
           '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.'
@@ -297,7 +310,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           messages: [
             { role: 'system', content: system + decisionSystemAddition },
             { role: 'user', content: user },
-            { role: 'assistant', content: taught.slice(0, 8000) },
+            { role: 'assistant', content: taught.slice(0, DECISION_TAUGHT_CONTEXT_CHARS) },
           ],
         })
         for (const tc of decision.choices?.[0]?.message?.tool_calls ?? []) {
