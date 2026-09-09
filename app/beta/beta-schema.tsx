@@ -1,6 +1,7 @@
 'use client'
+export { fmt } from './fmt'
 export {
-  ss, sa, normSchema, fmt,
+  ss, sa, normSchema,
   Badge, SL, TableBlock, QuizBlock, SchemaBlock, TableArtifactBlock,
 } from './beta-schema-a'
 export {
