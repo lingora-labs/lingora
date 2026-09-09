@@ -84,3 +84,22 @@ export function buildContextPack(input: {
     turnCount: input.turnCount ?? 0,
   };
 }
+
+/** Serialize the pack as information. No branching. No responseMode decision. */
+export function formatContextPack(pack: ContextPack): string {
+  return [
+    '[ContextPack — information for this turn; not a decision procedure]',
+    `interfaceLanguage: ${pack.interfaceLanguage}`,
+    `targetLanguage: ${pack.targetLanguage}`,
+    `languageProficiency: ${pack.languageProficiency}`,
+    `domain: ${pack.domain ?? 'null'}`,
+    `domainProficiency: ${pack.domainProficiency}`,
+    `pedagogicalGoal: ${pack.pedagogicalGoal}`,
+    `artifactGoal: ${pack.artifactGoal ?? 'null'}`,
+    `lastConcept: ${pack.lastConcept ?? 'null'}`,
+    `lastUserGoal: ${pack.lastUserGoal ?? 'null'}`,
+    `activeFlowType: ${pack.activeFlowType ?? 'null'}`,
+    `turnCount: ${pack.turnCount}`,
+    'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
+  ].join('\n');
+}
