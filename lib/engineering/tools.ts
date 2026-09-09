@@ -1,5 +1,6 @@
 import { ALLOWED_OWNER, ALLOWED_REPO, assertRepo, gh } from './github-app';
 import { POLICY, forbidDestructive, resolveBranch } from './policy';
+import { CANONICAL_PRODUCT_URL } from '../product';
 
 type GhRef = { object: { sha: string } };
 type GhCommit = {
@@ -15,8 +16,14 @@ function repoPath() {
 }
 
 // ─── run_diagnostic ──────────────────────────────────────────────────────────
-// Calls /api/chat internally (same Vercel deployment, no CORS, no browser).
-// DAE can invoke this tool directly to run WILLY FREE without human intermediary.
+// Calls /api/chat via the canonical production URL (no CORS restriction from
+// server-to-server; no browser). DAE can invoke this tool directly to run
+// WILLY FREE without human intermediary.
+//
+// FIX (401): process.env.VERCEL_URL resolves to a deployment-specific URL,
+// which can sit behind Vercel Deployment Protection and reject unauthenticated
+// server-to-server requests. CANONICAL_PRODUCT_URL is the public production
+// alias and does not have that protection.
 
 const WILLY_FREE_PROMPT = `Quiero que me enseñes de verdad, no que me resumas. Supón que tengo nivel A1 de español pero buena capacidad intelectual general.
 
@@ -46,11 +53,12 @@ const WILLY_INITIAL_STATE = {
 };
 
 function getChatUrl(): string {
-  // Internal same-deployment call — use VERCEL_URL when available
-  const host = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000';
-  return `${host}/api/chat`;
+  // Prefer the canonical production alias — it is public and does not sit
+  // behind Vercel Deployment Protection, unlike the per-deployment VERCEL_URL.
+  if (process.env.NODE_ENV !== 'production') {
+    return 'http://localhost:3000/api/chat';
+  }
+  return `${CANONICAL_PRODUCT_URL}/api/chat`;
 }
 
 async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE): Promise<{
@@ -71,7 +79,8 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
   const durationMs = Date.now() - t0;
 
   if (!res.ok) {
-    throw new Error(`chat API error: HTTP ${res.status}`);
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`chat API error: HTTP ${res.status} ${bodyText.slice(0, 300)}`);
   }
 
   const ct = res.headers.get('content-type') || '';
