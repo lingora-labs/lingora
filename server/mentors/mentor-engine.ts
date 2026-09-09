@@ -2,6 +2,7 @@
 // server/mentors/mentor-engine.ts
 // LINGORA SEEK 3.9 — Mentor Engine
 // SEEK 5.0 S1 E-11 — ContextPack injected into the turn as information.
+// SEEK 5.0 P4 — adaptive output budget (4096 default / 8192 compound)
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -17,8 +18,8 @@ import type {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
-// P1 stream completion: prior 650-token cap cut long pedagogical turns.
 const MENTOR_MAX_OUTPUT_TOKENS = 4096
+const COMPOUND_MAX_OUTPUT_TOKENS = 8192
 
 const FALLBACKS: Record<string, string> = {
   es: 'No pude procesar tu mensaje. Intenta de nuevo.',
@@ -103,6 +104,16 @@ function resolveTopic(state: LegacyMentorState): string | null {
 
 function resolveLevel(state: LegacyMentorState): string | undefined {
   return state.confirmedLevel ?? state.userLevel ?? state.level
+}
+
+function resolveOutputBudget(plan?: ExecutionPlan, pack?: ContextPack): number {
+  const step = plan?.executionOrder?.find(
+    (item) => item.params != null && Object.prototype.hasOwnProperty.call(item.params, 'outputBudget'),
+  )
+  const raw = step?.params?.outputBudget
+  if (typeof raw === 'number' && raw > 0) return raw
+  if (pack?.compoundPedagogicalAct) return COMPOUND_MAX_OUTPUT_TOKENS
+  return MENTOR_MAX_OUTPUT_TOKENS
 }
 
 function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
@@ -290,9 +301,10 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
     const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Mentor timeout')), 14000))
+    const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const completion = await Promise.race([
       openai.chat.completions.create({
-        ...buildModelParams(RUNTIME_MODEL, MENTOR_MAX_OUTPUT_TOKENS, 0.7, 0.88),
+        ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       }),
       timeout,
@@ -314,8 +326,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
   })
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
+    const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const stream = await openai.chat.completions.create({
-      ...buildModelParams(RUNTIME_MODEL, MENTOR_MAX_OUTPUT_TOKENS, 0.7, 0.88),
+      ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
       stream: true,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     })
