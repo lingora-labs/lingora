@@ -16,14 +16,20 @@ function repoPath() {
 }
 
 // ─── run_diagnostic ──────────────────────────────────────────────────────────
-// Calls /api/chat via the canonical production URL (no CORS restriction from
-// server-to-server; no browser). DAE can invoke this tool directly to run
-// WILLY FREE without human intermediary.
+// Calls /api/chat via the canonical production URL (server-to-server, no
+// browser). DAE can invoke this tool directly to run WILLY FREE without a
+// human intermediary.
 //
-// FIX (401): process.env.VERCEL_URL resolves to a deployment-specific URL,
-// which can sit behind Vercel Deployment Protection and reject unauthenticated
-// server-to-server requests. CANONICAL_PRODUCT_URL is the public production
-// alias and does not have that protection.
+// DIAGNOSTIC NOTE (401 investigation, 9 sep 2026):
+// Do NOT assume Vercel Deployment Protection is the cause. "Standard
+// Protection" typically excludes Production, and field evidence (IJL, Grok,
+// and the human user all reach the tutor and download artifacts without any
+// Vercel login) contradicts that hypothesis. The prior 401 carried an EMPTY
+// body, which is inconsistent with Vercel's auth wall (which returns full
+// HTML). This block now surfaces response headers on any non-2xx so the next
+// failure carries real evidence (x-vercel-id, www-authenticate, server,
+// content-type, set-cookie) instead of speculation. No infra/security
+// settings were changed to produce this fix.
 
 const WILLY_FREE_PROMPT = `Quiero que me enseñes de verdad, no que me resumas. Supón que tengo nivel A1 de español pero buena capacidad intelectual general.
 
@@ -53,12 +59,31 @@ const WILLY_INITIAL_STATE = {
 };
 
 function getChatUrl(): string {
-  // Prefer the canonical production alias — it is public and does not sit
-  // behind Vercel Deployment Protection, unlike the per-deployment VERCEL_URL.
+  // Prefer the canonical production alias — it is the public domain real
+  // users and other agents already reach successfully.
   if (process.env.NODE_ENV !== 'production') {
     return 'http://localhost:3000/api/chat';
   }
   return `${CANONICAL_PRODUCT_URL}/api/chat`;
+}
+
+const DIAGNOSTIC_HEADER_KEYS = [
+  'x-vercel-id',
+  'www-authenticate',
+  'server',
+  'content-type',
+  'set-cookie',
+  'location',
+  'x-vercel-cache',
+] as const;
+
+function extractDiagnosticHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of DIAGNOSTIC_HEADER_KEYS) {
+    const value = headers.get(key);
+    if (value) out[key] = value;
+  }
+  return out;
 }
 
 async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE): Promise<{
@@ -69,8 +94,9 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
   chars: number;
   durationMs: number;
 }> {
+  const url = getChatUrl();
   const t0 = Date.now();
-  const res = await fetch(getChatUrl(), {
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, state }),
@@ -80,7 +106,12 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
 
   if (!res.ok) {
     const bodyText = await res.text().catch(() => '');
-    throw new Error(`chat API error: HTTP ${res.status} ${bodyText.slice(0, 300)}`);
+    const diagHeaders = extractDiagnosticHeaders(res.headers);
+    throw new Error(
+      `chat API error: HTTP ${res.status} url=${url} `
+      + `headers=${JSON.stringify(diagHeaders)} `
+      + `bodyLen=${bodyText.length} body=${bodyText.slice(0, 300)}`,
+    );
   }
 
   const ct = res.headers.get('content-type') || '';
