@@ -4,7 +4,9 @@
 // can be rendered by the existing rich pipeline (renderCoursePdf). Does NOT
 // generate new pedagogical content, does NOT decide domain complexity — the
 // mentor already decided that when it taught. This is organization only.
-// Falls back to null on any failure; caller falls back to the plain-text path.
+// P9-diag: returns a discriminated result with a failure reason instead of
+// an opaque null, so the caller can surface WHY the rich path was skipped
+// without needing server log access.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 
@@ -22,8 +24,12 @@ export interface ComposeParams {
   nativeLanguage?: string
 }
 
-export async function composeDocumentFromTaught(params: ComposeParams): Promise<DocumentContent | null> {
-  if (!params.body?.trim()) return null
+export type ComposeResult =
+  | { ok: true; content: DocumentContent }
+  | { ok: false; reason: string }
+
+export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
+  if (!params.body?.trim()) return { ok: false, reason: 'empty_body' }
 
   try {
     const OpenAI = (await import('openai')).default
@@ -65,11 +71,17 @@ Return ONLY this JSON:
     })
 
     const raw = completion.choices?.[0]?.message?.content ?? ''
-    if (!raw.trim()) return null
+    if (!raw.trim()) return { ok: false, reason: 'empty_completion' }
 
-    const parsed = JSON.parse(raw) as Record<string, unknown>
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch (parseErr) {
+      return { ok: false, reason: `json_parse_failed:${parseErr instanceof Error ? parseErr.message.slice(0, 120) : 'unknown'}` }
+    }
+
     const rawBlocks = Array.isArray(parsed.blocks) ? (parsed.blocks as Array<Record<string, unknown>>) : []
-    if (rawBlocks.length === 0) return null
+    if (rawBlocks.length === 0) return { ok: false, reason: 'no_blocks_in_response' }
 
     const blocks: DocumentBlock[] = rawBlocks.map((b) => ({
       type: (typeof b.type === 'string' && VALID_BLOCK_TYPES.has(b.type as DocumentBlockType) ? b.type : 'paragraph') as DocumentBlockType,
@@ -83,22 +95,24 @@ Return ONLY this JSON:
     }))
 
     const hasContent = blocks.length >= 2 && blocks.some((b) => (b.type === 'heading' || b.type === 'paragraph') && !!b.content)
-    if (!hasContent) return null
+    if (!hasContent) return { ok: false, reason: `insufficient_content_blocks:${blocks.length}` }
 
     return {
-      title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title : `LINGORA — ${params.subject}`,
-      subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : undefined,
-      documentType: typeof parsed.documentType === 'string' ? parsed.documentType : 'documento',
-      level: params.level,
-      mentorName: params.mentorName,
-      nativeLanguage: params.nativeLanguage,
-      studentName: 'Estudiante',
-      blocks,
-      nextStep: typeof parsed.nextStep === 'string' ? parsed.nextStep : '',
-      generatedAt: new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' }),
+      ok: true,
+      content: {
+        title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title : `LINGORA — ${params.subject}`,
+        subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : undefined,
+        documentType: typeof parsed.documentType === 'string' ? parsed.documentType : 'documento',
+        level: params.level,
+        mentorName: params.mentorName,
+        nativeLanguage: params.nativeLanguage,
+        studentName: 'Estudiante',
+        blocks,
+        nextStep: typeof parsed.nextStep === 'string' ? parsed.nextStep : '',
+        generatedAt: new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' }),
+      },
     }
   } catch (e) {
-    console.warn('[P9] composeDocumentFromTaught failed', e instanceof Error ? e.message : e)
-    return null
+    return { ok: false, reason: `exception:${e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160)}` }
   }
 }

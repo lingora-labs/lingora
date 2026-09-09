@@ -2,6 +2,9 @@
 // SEEK 5.0 P9 — route through the existing rich renderCoursePdf pipeline via a
 // structuring composer. Falls back to the prior flat-text path only if
 // composition fails — never worse than the pre-P9 baseline.
+// P9-diag: surfaces WHY the fallback was used, as a non-breaking additive
+// field on the artifact object, so DAE can diagnose from run_diagnostic
+// output without server log access. Not rendered by the product UI.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
 
@@ -35,7 +38,7 @@ export async function fulfillArtifactSignals(
   for (const signal of pdfs) {
     const body = excerptForSubject(pedagogicalContent, signal.subject)
 
-    const documentContent = await composeDocumentFromTaught({
+    const composed = await composeDocumentFromTaught({
       subject: signal.subject,
       body,
       mentorName,
@@ -43,13 +46,13 @@ export async function fulfillArtifactSignals(
       nativeLanguage,
     })
 
-    const title = documentContent?.title ?? `LINGORA — ${signal.subject}`.slice(0, 80)
+    const title = composed.ok ? composed.content.title : `LINGORA — ${signal.subject}`.slice(0, 80)
 
-    const result = documentContent
+    const result = composed.ok
       ? await generatePDF({
           title,
           content: '',
-          courseContent: documentContent,
+          courseContent: composed.content,
           filename: `lingora-${Date.now()}-${out.length}`,
         })
       : await generatePDF({
@@ -62,7 +65,12 @@ export async function fulfillArtifactSignals(
       console.error('[P8] generatePDF failed', signal.subject, result.error ?? result.message)
       continue
     }
-    out.push({ type: 'pdf', url: result.url, title } as ArtifactPayload)
+    out.push({
+      type: 'pdf',
+      url: result.url,
+      title,
+      composerStatus: composed.ok ? 'rich' : `fallback:${composed.reason}`,
+    } as ArtifactPayload)
   }
   return out
 }
