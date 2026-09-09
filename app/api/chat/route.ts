@@ -1,6 +1,7 @@
 // =============================================================================
 // app/api/chat/route.ts
 // LINGORA SEEK 4.1b/4.1c2 — Thin Router | FIX_ID: TRACER_SOVEREIGN | patchSet: 4.1c2
+// S0: CORS headers added for diagnostic access
 // =============================================================================
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -66,6 +67,16 @@ const RUNTIME_FEATURES = {
 } as const;
 
 const SOURCE_OF_TRUTH: 'code+vercel-auto' = 'code+vercel-auto';
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+} as const;
+
+export async function OPTIONS(): Promise<NextResponse> {
+  return new NextResponse(null, { status: 204, headers: { ...CORS_HEADERS } });
+}
 
 export async function POST(req: NextRequest): Promise<NextResponse | Response> {
   let callerState: SessionState | undefined;
@@ -155,7 +166,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         message: JSON.stringify(diagResponse, null, 2),
         state,
         suggestedActions: [],
-      });
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
     }
 
     if (message?.trim() === '*2468*#') {
@@ -240,7 +251,8 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
               message: JSON.stringify({ summary, traces }, null, 2),
               state,
               suggestedActions: [],
-            }
+            },
+        { headers: { ...NO_CACHE, ...CORS_HEADERS } },
       );
     }
 
@@ -308,7 +320,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }),
     };
 
-    return NextResponse.json(response, { headers: NO_CACHE });
+    return NextResponse.json(response, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Internal server error';
     console.error('[route] unhandled error:', msg, err);
@@ -323,6 +335,7 @@ function buildSSEResponse(stream: ReadableStream<Uint8Array>): Response {
       'Cache-Control':      'no-store, no-cache, must-revalidate',
       'Connection':         'keep-alive',
       'X-Accel-Buffering':  'no',
+      ...CORS_HEADERS,
     },
   });
 }
@@ -343,7 +356,7 @@ function errorResponse(
 ): NextResponse {
   const body: Record<string, unknown> = { message, suggestedActions: [], error: true };
   if (preservedState && preservedState.tokens > 0) body.state = preservedState;
-  return NextResponse.json(body, { status, headers: NO_CACHE });
+  return NextResponse.json(body, { status, headers: { ...NO_CACHE, ...CORS_HEADERS } });
 }
 
 const NO_CACHE = {
