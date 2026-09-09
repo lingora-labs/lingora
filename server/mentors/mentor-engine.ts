@@ -1,14 +1,18 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// LINGORA SEEK 3.9 — Mentor Engine
-// SEEK 5.0 S1 E-11 — ContextPack injected into the turn as information.
-// SEEK 5.0 P4 — adaptive output budget (4096 default / 8192 compound)
+// SEEK 5.0 P4 budget + E-06 structured artifact channel
 // =============================================================================
 
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
+import {
+  ARTIFACT_CHANNEL_INSTRUCTION,
+  SIGNAL_ARTIFACT_TOOL,
+  parseArtifactSignal,
+  type ArtifactSignal,
+} from '@/lib/artifact-signal'
 import type {
   SessionState,
   ChatRequest,
@@ -66,14 +70,14 @@ type NormalizedMentorCall = {
   priorContext?: string
 }
 
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[] }
+
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
 }
-
 function resolveMentorName(state: LegacyMentorState): 'Alex' | 'Sarah' | 'Nick' {
   return state.mentorProfile ?? state.mentor ?? 'Alex'
 }
-
 function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
   if (state.tutorMode) return state.tutorMode
   switch (state.activeMode) {
@@ -87,12 +91,10 @@ function resolveTutorMode(state: LegacyMentorState): ContractsTutorMode {
       return 'conversational'
   }
 }
-
 function resolveProtocolMode(mode: ContractsTutorMode): ProtocolTutorMode {
   if (mode === 'free') return 'conversational' as ProtocolTutorMode
   return mode as ProtocolTutorMode
 }
-
 function resolveTopic(state: LegacyMentorState): string | null {
   if ((state as any).currentLessonTopic?.trim()) return (state as any).currentLessonTopic
   if (state.curriculumPlan?.topic) return state.curriculumPlan.topic
@@ -101,11 +103,9 @@ function resolveTopic(state: LegacyMentorState): string | null {
   if (state.topic) return state.topic
   return null
 }
-
 function resolveLevel(state: LegacyMentorState): string | undefined {
   return state.confirmedLevel ?? state.userLevel ?? state.level
 }
-
 function resolveOutputBudget(plan?: ExecutionPlan, pack?: ContextPack): number {
   const step = plan?.executionOrder?.find(
     (item) => item.params != null && Object.prototype.hasOwnProperty.call(item.params, 'outputBudget'),
@@ -115,7 +115,6 @@ function resolveOutputBudget(plan?: ExecutionPlan, pack?: ContextPack): number {
   if (pack?.compoundPedagogicalAct) return COMPOUND_MAX_OUTPUT_TOKENS
   return MENTOR_MAX_OUTPUT_TOKENS
 }
-
 function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
   const step = plan?.executionOrder?.find(
     (item) => item.params != null && Object.prototype.hasOwnProperty.call(item.params, 'contextPack'),
@@ -124,12 +123,7 @@ function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
   if (raw && typeof raw === 'object') return raw as ContextPack
   return undefined
 }
-
-function resolveTurnContextPack(
-  message: string,
-  state: LegacyMentorState,
-  plan?: ExecutionPlan,
-): ContextPack {
+function resolveTurnContextPack(message: string, state: LegacyMentorState, plan?: ExecutionPlan): ContextPack {
   const transported = readPlanContextPack(plan)
   if (transported) return transported
   return buildContextPack({
@@ -142,7 +136,6 @@ function resolveTurnContextPack(
     activeMode: state.activeMode,
   })
 }
-
 function buildContext(state: LegacyMentorState): string {
   const parts: string[] = []
   const level = resolveLevel(state)
@@ -152,27 +145,6 @@ function buildContext(state: LegacyMentorState): string {
   if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
   if (topic) parts.push(`Current topic: ${topic}`)
   if (lang) parts.push(`Student interface language: ${lang}`)
-  if (state.lastAction) parts.push(`Last action: ${state.lastAction}`)
-  const lessonIndex = state.currentModuleIndex ?? state.lessonIndex
-  if (lessonIndex && lessonIndex > 0) parts.push(`Module index: ${lessonIndex}`)
-  if (state.tutorPhase) parts.push(`Current phase: ${state.tutorPhase}`)
-  const courseActive = state.curriculumPlan != null || state.courseActive
-  if (courseActive !== undefined) parts.push(`Course active: ${courseActive}`)
-  if (state.awaitingQuizAnswer) parts.push(`Awaiting quiz answer: true`)
-  if ((state.samples ?? []).length > 0) parts.push(`Student samples collected: ${(state.samples ?? []).length}`)
-  if ((state.diagnosticSamples ?? 0) > 0) parts.push(`Diagnostic samples: ${state.diagnosticSamples}`)
-  if (state.errorMemory) {
-    const errs = [
-      ...(state.errorMemory.grammar ?? []),
-      ...(state.errorMemory.vocabulary ?? []),
-      ...(state.errorMemory.pronunciation ?? []),
-    ]
-    if (errs.length > 0) parts.push(`Recurring errors: ${errs.slice(0, 3).join(', ')}`)
-  }
-  if ((state as Record<string, unknown>).lastUserAudioTranscript) {
-    const t = (state as Record<string, unknown>).lastUserAudioTranscript as string
-    parts.push(`Audio transcript from prior turn: "${t}" — do NOT ask the student to send audio again.`)
-  }
   return parts.length > 0 ? '\n\n[Session state: ' + parts.join(' | ') + ']' : ''
 }
 
@@ -182,28 +154,17 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
     '\n\nCRITICAL: NEVER refuse a task by citing your Spanish-teaching function. If the task is in Spanish or serves learning — execute it with expert depth.',
   STRUCTURED_COURSE_DIRECTIVE:
     'You are in structured course mode. Follow the pedagogical sequence: guide -> lesson -> schema -> quiz -> feedback. Do not skip steps. Do not blend phases unless the student explicitly sequenced several requests in this message — then fulfill that sequence now.',
-  FREE_CONVERSATION_DIRECTIVE:
-    'You are in free conversation mode. Respond naturally. Correct errors inline and briefly.',
-  PDF_COURSE_DIRECTIVE:
-    'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained.',
-  CORRECTION_ONLY_DIRECTIVE:
-    'The student asked for a correction. Correct exactly what they wrote. Do not teach a full lesson.',
-  TRANSLATION_ONLY_DIRECTIVE:
-    'The student asked for a translation. Provide ONLY the translation.',
-  FIRST_TURN_DIRECTIVE:
-    'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet.',
-  CURRICULUM_PRESENTER_DIRECTIVE:
-    'Present a full, structured curriculum for the requested topic.',
-  EXERCISE_FEEDBACK_DIRECTIVE:
-    'The student just responded to an active exercise. Evaluate that specific response only.',
-  SCHEMA_DIRECTIVE:
-    'You are generating a LINGORA study schema. Use only plain text and standard markdown.',
-  TABLE_DIRECTIVE:
-    'You are generating a comparison table. Columns: CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE.',
-  PRONUNCIATION_EVAL_DIRECTIVE:
-    'Evaluate pronunciation. Respond with JSON only.',
-  DIAGNOSTIC_FIRST_TURN_DIRECTIVE:
-    'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson.',
+  FREE_CONVERSATION_DIRECTIVE: 'You are in free conversation mode. Respond naturally. Correct errors inline and briefly.',
+  PDF_COURSE_DIRECTIVE: 'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained.',
+  CORRECTION_ONLY_DIRECTIVE: 'The student asked for a correction. Correct exactly what they wrote. Do not teach a full lesson.',
+  TRANSLATION_ONLY_DIRECTIVE: 'The student asked for a translation. Provide ONLY the translation.',
+  FIRST_TURN_DIRECTIVE: 'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet.',
+  CURRICULUM_PRESENTER_DIRECTIVE: 'Present a full, structured curriculum for the requested topic.',
+  EXERCISE_FEEDBACK_DIRECTIVE: 'The student just responded to an active exercise. Evaluate that specific response only.',
+  SCHEMA_DIRECTIVE: 'You are generating a LINGORA study schema. Use only plain text and standard markdown.',
+  TABLE_DIRECTIVE: 'You are generating a comparison table. Columns: CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE.',
+  PRONUNCIATION_EVAL_DIRECTIVE: 'Evaluate pronunciation. Respond with JSON only.',
+  DIAGNOSTIC_FIRST_TURN_DIRECTIVE: 'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson.',
 }
 
 function buildExecutionDirective(params: {
@@ -220,9 +181,6 @@ function buildExecutionDirective(params: {
     if (instruction) parts.push('\nINSTRUCTION FOR THIS RESPONSE:\n' + instruction)
     else parts.push('Mentor directive: ' + params.plan.mentor.directive)
   }
-  const mentor = params.plan?.mentor as (NonNullable<ExecutionPlan['mentor']> & { activeExercise?: string; activeTopic?: string }) | undefined
-  if (mentor?.activeExercise) parts.push('\nACTIVE EXERCISE:\n"' + mentor.activeExercise + '"')
-  if (mentor?.activeTopic) parts.push('LESSON TOPIC: ' + mentor.activeTopic)
   if (params.action && params.action !== 'conversation') parts.push('Current execution action: ' + params.action)
   if (params.priorContext?.trim()) parts.push('Prior context for this response:\n' + params.priorContext)
   return parts.length > 0 ? '\n\n' + parts.join('\n\n') : ''
@@ -260,14 +218,13 @@ export function buildMentorPrompt(params: {
       : ''
   const pack = resolveTurnContextPack(params.message, state, params.plan)
   const packBlock = '\n\n' + formatContextPack(pack)
-  const system = [profile.system, fastPathOverride, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, context, packBlock].filter(Boolean).join('')
+  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, fastPathOverride, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, context, packBlock].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
 function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
   return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined }
 }
-
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
   const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Audio input — respond to the transcription in the prior context]'
@@ -281,12 +238,9 @@ export interface ModelParams {
   max_tokens?: number
   max_completion_tokens?: number
 }
-
 export function buildModelParams(model: string, tokens: number, temperature?: number, topP?: number): ModelParams {
   const isGPT5Family = /^gpt-5/i.test(model) || /^o[0-9]/i.test(model)
-  if (isGPT5Family) {
-    return { model, max_completion_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}) }
-  }
+  if (isGPT5Family) return { model, max_completion_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}) }
   return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) }
 }
 
@@ -318,32 +272,59 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
-export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<AsyncGenerator<string>> {
+export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
   const normalized = normalizeRuntimeCall(params)
   const { system, user } = buildMentorPrompt({
     message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
     plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext,
   })
+  const signals: ArtifactSignal[] = []
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const stream = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
       stream: true,
+      tools: [SIGNAL_ARTIFACT_TOOL],
+      tool_choice: 'auto',
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     })
-    return (async function* () {
+    const gen = (async function* () {
+      const acc: Record<number, { name: string; args: string }> = {}
       for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content
-        if (delta) yield delta
+        const delta = chunk.choices?.[0]?.delta
+        if (delta?.content) yield delta.content
+        const calls = delta?.tool_calls
+        if (!calls) continue
+        for (const tc of calls) {
+          const idx = typeof tc.index === 'number' ? tc.index : 0
+          if (!acc[idx]) acc[idx] = { name: '', args: '' }
+          if (tc.function?.name) acc[idx].name = tc.function.name
+          if (tc.function?.arguments) acc[idx].args += tc.function.arguments
+        }
+      }
+      for (const item of Object.values(acc)) {
+        if (item.name !== 'signal_artifact') continue
+        try {
+          const parsed = parseArtifactSignal(JSON.parse(item.args))
+          if (parsed) signals.push(parsed)
+        } catch {
+          /* invalid structured args — drop */
+        }
       }
     })()
+    const wrapped = gen as MentorStream
+    wrapped.artifactSignals = signals
+    return wrapped
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.warn('[MENTOR] Streaming unavailable, falling back:', msg)
     const fallbackText = await getMentorResponse(params)
-    return (async function* () {
+    const gen = (async function* () {
       if (fallbackText) yield fallbackText
     })()
+    const wrapped = gen as MentorStream
+    wrapped.artifactSignals = signals
+    return wrapped
   }
 }
