@@ -1,6 +1,7 @@
 export function escapeHtml(t: string): string {
+  const amp = String.fromCharCode(38)
   return t
-    .replace(/&/g, '\u0026amp;')
-    .replace(/</g, '\u0026lt;')
-    .replace(/>/g, '\u0026gt;')
+    .split(amp).join(amp + 'amp;')
+    .split('<').join(amp + 'lt;')
+    .split('>').join(amp + 'gt;')
 }
