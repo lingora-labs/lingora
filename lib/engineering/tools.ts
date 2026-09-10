@@ -15,11 +15,6 @@ function repoPath() {
   return `/repos/${ALLOWED_OWNER}/${ALLOWED_REPO}`;
 }
 
-// ─── run_diagnostic ──────────────────────────────────────────────────────────
-// Calls /api/chat via the canonical production URL (server-to-server, no
-// browser). DAE can invoke this tool directly to run WILLY FREE without a
-// human intermediary.
-
 const WILLY_FREE_PROMPT = `Quiero que me enseñes de verdad, no que me resumas. Supón que tengo nivel A1 de español pero buena capacidad intelectual general.
 
 Primero enséñame a presentarme en español y explícame claramente SER/ESTAR, HAY/ESTÁ, presente regular y ME GUSTA/ME GUSTAN. Quiero una explicación pedagógica larga, como una profesora real, no como una ficha.
@@ -160,11 +155,11 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
-  // P10 — ARTIFACT EMISSION RELIABILITY harness.
-  // Isolates the signal_artifact decision call from full teaching+render, so
-  // emission reliability can be measured N times against ONE captured taught
-  // text without paying for N full WILLY runs. Self-contained in this file —
-  // no production file touched by this harness.
+  if (prompt && prompt.startsWith('decision_harness_json')) {
+    const parts = prompt.split(':');
+    const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
+    return runDecisionHarnessJSON(runs);
+  }
   if (prompt && prompt.startsWith('decision_harness')) {
     const parts = prompt.split(':');
     const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
@@ -235,6 +230,20 @@ function harnessModelParams(model: string, tokens: number, temperature?: number,
   return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) };
 }
 
+async function captureTaught(openai: any, harnessModelParamsFn: typeof harnessModelParams, model: string, system: string, user: string): Promise<string> {
+  const teachCompletion = await openai.chat.completions.create({
+    ...harnessModelParamsFn(model, 8192, 0.7, 0.88),
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+  });
+  return (teachCompletion.choices?.[0]?.message?.content ?? '').trim();
+}
+
+// P10 — baseline harness: replicates production's tool-calling decision exactly
+// (mentor-engine.ts getMentorResponseStream), N times against ONE captured
+// taught text. No production file touched.
 async function runDecisionHarness(runs: number): Promise<Record<string, unknown>> {
   const { SIGNAL_ARTIFACT_TOOL, parseArtifactSignal, ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
   const OpenAI = (await import('openai')).default;
@@ -244,14 +253,7 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
   const system = `You are Sarah, a warm and expert Spanish tutor at LINGORA, teaching an adult student with strong general intelligence.${ARTIFACT_CHANNEL_INSTRUCTION}\n\nRespond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.`;
   const user = WILLY_FREE_PROMPT;
 
-  const teachCompletion = await openai.chat.completions.create({
-    ...harnessModelParams(RUNTIME_MODEL, 8192, 0.7, 0.88),
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-  });
-  const taught = (teachCompletion.choices?.[0]?.message?.content ?? '').trim();
+  const taught = await captureTaught(openai, harnessModelParams, RUNTIME_MODEL, system, user);
 
   const decisionSystemAddition =
     '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.'
@@ -297,7 +299,82 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
   }
 
   return {
-    harness: 'decision_harness',
+    harness: 'decision_harness (tool_calls baseline)',
+    taughtChars: taught.length,
+    taughtPreview: taught.slice(0, 300),
+    runs,
+    distribution,
+    outcomes,
+  };
+}
+
+// P10 — alternative design: instead of relying on the model to emit MULTIPLE
+// tool_calls in a single completion (probabilistic — baseline harness shows
+// 16-20/20 depending on the specific taught text), ask for a single JSON
+// object listing every subject that warrants materialization, then let CODE
+// deterministically construct one ArtifactSignal per listed subject. The
+// MODEL still decides what/whether to materialize (untouched authority);
+// the CODE deterministically executes that decision instead of hoping the
+// API returns N tool_calls in one turn. Same taught-capture, same subjects,
+// only the decision mechanism differs. No production file touched.
+async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unknown>> {
+  const { parseArtifactSignal, ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
+  const OpenAI = (await import('openai')).default;
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
+  const system = `You are Sarah, a warm and expert Spanish tutor at LINGORA, teaching an adult student with strong general intelligence.${ARTIFACT_CHANNEL_INSTRUCTION}\n\nRespond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.`;
+  const user = WILLY_FREE_PROMPT;
+
+  const taught = await captureTaught(openai, harnessModelParams, RUNTIME_MODEL, system, user);
+
+  const jsonDecisionSystem =
+    'You already taught the content below. Now decide, for the ENTIRE taught content, which distinct subjects warrant a materialized artifact (e.g. a downloadable PDF course). '
+    + 'List EVERY subject that warrants one — if the content covered two distinct domains and both deserve materialization, list both as separate entries. Do not merge distinct subjects into one entry. '
+    + 'Respond with ONLY this JSON object, no other text: {"artifacts": [{"type": "emit_pdf", "trigger": "pedagogical_completion", "subject": "exact subject name"}]} — the array may have 0, 1, or more entries.';
+
+  const outcomes: Array<{ count: number; subjects: string[]; finishReason?: string; rawEntryCount?: number }> = [];
+  for (let i = 0; i < runs; i++) {
+    try {
+      const decision = await openai.chat.completions.create({
+        ...harnessModelParams(RUNTIME_MODEL, 700, 0),
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: jsonDecisionSystem },
+          { role: 'user', content: user },
+          { role: 'assistant', content: taught.slice(0, 40000) },
+        ],
+      });
+      const raw = decision.choices?.[0]?.message?.content ?? '{}';
+      let rawEntries: unknown[] = [];
+      try {
+        const parsed = JSON.parse(raw);
+        rawEntries = Array.isArray(parsed.artifacts) ? parsed.artifacts : [];
+      } catch { /* leave empty */ }
+      const subjects: string[] = [];
+      for (const entry of rawEntries) {
+        const parsed = parseArtifactSignal(entry);
+        if (parsed) subjects.push(parsed.subject);
+      }
+      outcomes.push({
+        count: subjects.length,
+        subjects,
+        finishReason: decision.choices?.[0]?.finish_reason,
+        rawEntryCount: rawEntries.length,
+      });
+    } catch (e) {
+      outcomes.push({ count: -1, subjects: [`ERROR: ${e instanceof Error ? e.message : String(e)}`] });
+    }
+  }
+
+  const distribution: Record<string, number> = {};
+  for (const o of outcomes) {
+    const k = String(o.count);
+    distribution[k] = (distribution[k] ?? 0) + 1;
+  }
+
+  return {
+    harness: 'decision_harness_json (structured list alternative)',
     taughtChars: taught.length,
     taughtPreview: taught.slice(0, 300),
     runs,
@@ -640,7 +717,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE, a custom prompt, or decision_harness:<N> against /api/chat / OpenAI directly. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE, a custom prompt, decision_harness:<N> (tool_calls baseline), or decision_harness_json:<N> (structured list alternative). No browser needed.' },
   ];
 }
 
