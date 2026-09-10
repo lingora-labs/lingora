@@ -103,7 +103,7 @@ export function useBetaPage() {
         const reader = res.body!.getReader()
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
-        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null }])
+        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null }])
         let accumulated = ''
         let sseBuffer = ''
         while (true) {
@@ -130,7 +130,12 @@ export function useBetaPage() {
                 }
                 const defaultActions = [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
                 const finalActions = (parsed.suggestedActions && parsed.suggestedActions.length > 0) ? parsed.suggestedActions : defaultActions
-                setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, artifact: parsed.artifact ?? m.artifact ?? null, suggestedActions: finalActions } : m))
+                setMsgs(prev => prev.map(m => m.id === streamId ? {
+                  ...m,
+                  artifact: parsed.artifact ?? m.artifact ?? null,
+                  artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
+                  suggestedActions: finalActions,
+                } : m))
               }
             } catch {}
           }
@@ -157,7 +162,9 @@ export function useBetaPage() {
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
-      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null, score: data.pronunciationScore,
+      addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null,
+        artifacts: (Array.isArray(data.artifacts) && data.artifacts.length > 0) ? data.artifacts : null,
+        score: data.pronunciationScore,
         suggestedActions: (data.suggestedActions && data.suggestedActions.length > 0) ? data.suggestedActions : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }] })
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e)

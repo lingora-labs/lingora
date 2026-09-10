@@ -33,9 +33,24 @@ export type SuggestedAction = {
 export interface Msg {
   id: string; sender: 'user' | MK | 'ln'; text: string
   artifact?: Artifact | null; score?: number
+  // P10b — backend can emit multiple artifacts in one turn (e.g. two PDFs
+  // from a compound teaching act). `artifact` is preserved as the legacy
+  // single-value field; `artifacts` is the source of truth when present.
+  artifacts?: Artifact[] | null
   audioUrl?: string
   imageUrl?: string
   suggestedActions?: SuggestedAction[]
+}
+
+// P10b — precedence resolver: if `artifacts` is present and non-empty, it is
+// authoritative and `artifact` is NOT additionally concatenated (avoids
+// double-rendering when a payload carries both for legacy compatibility).
+// Otherwise falls back to the single legacy `artifact`. Never hardcodes a
+// count — works for 0, 1, 2, or N artifacts.
+export function resolveMsgArtifacts(msg: Pick<Msg, 'artifact' | 'artifacts'>): Artifact[] {
+  if (msg.artifacts && msg.artifacts.length > 0) return msg.artifacts
+  if (msg.artifact) return [msg.artifact]
+  return []
 }
 export type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 

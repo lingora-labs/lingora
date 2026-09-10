@@ -1,6 +1,7 @@
 'use client'
 import React from 'react'
 import type { Msg } from './beta-model'
+import { resolveMsgArtifacts } from './beta-model'
 import { fmt } from './beta-schema'
 import { CopyBlock, isCopyable, SuggestedActionBar } from './beta-actions'
 import { ArtifactRender } from './beta-artifacts'
@@ -36,7 +37,9 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
               <audio controls src={msg.audioUrl} style={{ flex:1, height:24, minWidth:0 }} />
             </div>
           )}
-          {msg.artifact && <div className="artifact-in"><ArtifactRender a={msg.artifact} /></div>}
+          {resolveMsgArtifacts(msg).map((art, i) => (
+            <div className="artifact-in" key={`artifact-${msg.id}-${i}`}><ArtifactRender a={art} /></div>
+          ))}
           {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
         </div>
       </div>
