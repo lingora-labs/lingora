@@ -19,13 +19,6 @@ function repoPath() {
 // Calls /api/chat via the canonical production URL (server-to-server, no
 // browser). DAE can invoke this tool directly to run WILLY FREE without a
 // human intermediary.
-//
-// P9-trace (9 sep 2026): the SSE `done` chunk from execution-engine-stream.ts
-// already includes `artifactSignals` — the RAW signals the model decided to
-// emit, with real subjects, BEFORE dedupe/compose/render. This client never
-// captured that field. Capturing it lets DAE distinguish "model emitted 1
-// signal" (Caso A, upstream, not a P9 regression) from "model emitted 2 and
-// one was lost downstream" (Caso B) WITHOUT touching any kernel file.
 
 const WILLY_FREE_PROMPT = `Quiero que me enseñes de verdad, no que me resumas. Supón que tengo nivel A1 de español pero buena capacidad intelectual general.
 
@@ -170,6 +163,19 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  // P10 — ARTIFACT EMISSION RELIABILITY harness.
+  // Isolates the signal_artifact decision call from full teaching+render, so
+  // emission reliability can be measured N times against ONE captured taught
+  // text without paying for N full WILLY runs (teaching regeneration + PDF
+  // materialization). Reuses buildMentorPrompt/buildModelParams from
+  // mentor-engine.ts and SIGNAL_ARTIFACT_TOOL/parseArtifactSignal from
+  // artifact-signal.ts UNCHANGED — no production file touched by this harness.
+  if (prompt && prompt.startsWith('decision_harness')) {
+    const parts = prompt.split(':');
+    const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
+    return runDecisionHarness(runs);
+  }
+
   const isWilly = !prompt || prompt === 'willy';
   const actualPrompt = isWilly ? WILLY_FREE_PROMPT : prompt;
   const label = isWilly ? 'WILLY FREE' : 'CUSTOM';
@@ -226,6 +232,76 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
     },
     messagePreview: msg.slice(0, 600),
     state: result.state,
+  };
+}
+
+async function runDecisionHarness(runs: number): Promise<Record<string, unknown>> {
+  const { buildMentorPrompt, buildModelParams } = await import('../../server/mentors/mentor-engine');
+  const { SIGNAL_ARTIFACT_TOOL, parseArtifactSignal } = await import('../artifact-signal');
+  const OpenAI = (await import('openai')).default;
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+
+  const { system, user } = buildMentorPrompt({ message: WILLY_FREE_PROMPT, state: WILLY_INITIAL_STATE });
+
+  // Step 1: capture ONE realistic compound taught text (teaching only, no
+  // decision call, no PDF materialization) — reused for all N decision runs.
+  const teachCompletion = await openai.chat.completions.create({
+    ...buildModelParams(RUNTIME_MODEL, 8192, 0.7, 0.88),
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+  });
+  const taught = (teachCompletion.choices?.[0]?.message?.content ?? '').trim();
+
+  // Step 2: replicate the exact production decision call (mentor-engine.ts
+  // getMentorResponseStream), unmodified in logic, `runs` times against the
+  // SAME taught text.
+  const decisionSystemAddition =
+    '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.'
+    + '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.';
+
+  const outcomes: Array<{ count: number; subjects: string[] }> = [];
+  for (let i = 0; i < runs; i++) {
+    try {
+      const decision = await openai.chat.completions.create({
+        ...buildModelParams(RUNTIME_MODEL, 700, 0),
+        tools: [SIGNAL_ARTIFACT_TOOL],
+        tool_choice: 'auto',
+        messages: [
+          { role: 'system', content: system + decisionSystemAddition },
+          { role: 'user', content: user },
+          { role: 'assistant', content: taught.slice(0, 40000) },
+        ],
+      });
+      const subjects: string[] = [];
+      for (const tc of decision.choices?.[0]?.message?.tool_calls ?? []) {
+        if (tc.function?.name !== 'signal_artifact') continue;
+        try {
+          const parsed = parseArtifactSignal(JSON.parse(tc.function.arguments || '{}'));
+          if (parsed) subjects.push(parsed.subject);
+        } catch { /* drop */ }
+      }
+      outcomes.push({ count: subjects.length, subjects });
+    } catch (e) {
+      outcomes.push({ count: -1, subjects: [`ERROR: ${e instanceof Error ? e.message : String(e)}`] });
+    }
+  }
+
+  const distribution: Record<string, number> = {};
+  for (const o of outcomes) {
+    const k = String(o.count);
+    distribution[k] = (distribution[k] ?? 0) + 1;
+  }
+
+  return {
+    harness: 'decision_harness',
+    taughtChars: taught.length,
+    taughtPreview: taught.slice(0, 300),
+    runs,
+    distribution,
+    outcomes,
   };
 }
 
@@ -563,7 +639,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE or a custom prompt against /api/chat internally. Returns structured field report. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE, a custom prompt, or decision_harness:<N> against /api/chat / OpenAI directly. No browser needed.' },
   ];
 }
 
