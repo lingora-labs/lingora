@@ -154,6 +154,74 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
   }
 }
 
+// P11 — ARTIFACT BINARY DELIVERY (QA escrow).
+// Manual base64 reproduction (DAE retyping a 10K+ char string into bash) was
+// demonstrated to corrupt bytes: a single-character substitution
+// (WinAnsiEncoding -> RinAnsiEncoding) and, separately, a wrong byte length
+// entirely. That is a transcription-fidelity problem, not a product defect.
+// Fix: the base64 already sitting in the artifact's data: URL — produced by
+// the server, never touched by DAE — is written AS-IS (no decode/re-encode)
+// to a QA-only path in this repo via the GitHub Contents API, whose base64
+// handling is done by code, not by DAE retyping text. DAE then retrieves the
+// exact bytes via raw.githubusercontent.com, which IS reachable from the
+// sandbox (unlike lingora-labs.vercel.app), using curl — zero manual copy at
+// any step. No new secrets: reuses the GitHub App credentials this MCP
+// already holds. Does not touch artifactRegistry, mentor-engine, or any
+// product runtime file.
+async function putBinaryFile(path: string, base64Content: string, message: string, branch: string) {
+  const existing = await readFile(path, branch);
+  const { status, data } = await gh<{
+    commit: { sha: string; html_url: string };
+    content: { sha: string };
+  }>(
+    'PUT',
+    `${repoPath()}/contents/${encodeURIComponent(path)}`,
+    {
+      message,
+      content: base64Content,
+      branch,
+      ...(existing.found && existing.sha ? { sha: existing.sha } : {}),
+    },
+  );
+  if (status >= 400) throw new Error(`putBinaryFile failed: ${status} ${JSON.stringify(data)}`);
+  return { path, commitSha: data.commit.sha, blobSha: data.content.sha };
+}
+
+interface EscrowedArtifact {
+  id?: string;
+  title?: string;
+  path: string;
+  commitSha: string;
+  rawUrl: string;
+  serverSha256?: string;
+  serverByteLength?: number;
+}
+
+async function escrowPdfArtifacts(registryEntries: Array<{ id?: string; title?: string; payload?: any }>): Promise<EscrowedArtifact[]> {
+  const b = resolveBranch('main');
+  const out: EscrowedArtifact[] = [];
+  const ts = Date.now();
+  let i = 0;
+  for (const entry of registryEntries) {
+    const url: string | undefined = entry?.payload?.url;
+    if (!url || !url.startsWith('data:application/pdf;base64,')) continue;
+    const b64 = url.slice('data:application/pdf;base64,'.length);
+    const path = `qa-artifacts/${ts}-${i}.pdf`;
+    const written = await putBinaryFile(path, b64, `lingora(qa): escrow artifact ${entry.id ?? i} for P9c visual certification`, b);
+    out.push({
+      id: entry.id,
+      title: entry.title,
+      path,
+      commitSha: written.commitSha,
+      rawUrl: `https://raw.githubusercontent.com/${ALLOWED_OWNER}/${ALLOWED_REPO}/${written.commitSha}/${path}`,
+      serverSha256: entry?.payload?.pdfSha256,
+      serverByteLength: entry?.payload?.pdfByteLength,
+    });
+    i++;
+  }
+  return out;
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
   if (prompt && prompt.startsWith('decision_harness_json')) {
     const parts = prompt.split(':');
@@ -166,7 +234,8 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
     return runDecisionHarness(runs);
   }
 
-  const isWilly = !prompt || prompt === 'willy';
+  const isEscrow = prompt === 'willy_escrow';
+  const isWilly = isEscrow || !prompt || prompt === 'willy';
   const actualPrompt = isWilly ? WILLY_FREE_PROMPT : prompt;
   const label = isWilly ? 'WILLY FREE' : 'CUSTOM';
 
@@ -190,12 +259,12 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   const artifactSubjects = arts.map((a: any) => a?.subject || a?.title || a?.type || '?');
   const artifactComposerStatus = arts.map((a: any) => a?.composerStatus ?? 'unknown');
 
-  const registryEntries = (result.state as { artifactRegistry?: Array<{ id?: string; title?: string }> } | null)
+  const registryEntries = (result.state as { artifactRegistry?: Array<{ id?: string; title?: string; payload?: any }> } | null)
     ?.artifactRegistry ?? [];
 
   const verdict = mentorFirst && streamComplete && compoundActAcupuncture ? 'PROGRESO' : 'FAIL';
 
-  return {
+  const out: Record<string, unknown> = {
     test: label,
     verdict,
     chars,
@@ -222,6 +291,16 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
     messagePreview: msg.slice(0, 600),
     state: result.state,
   };
+
+  if (isEscrow) {
+    try {
+      out.escrow = await escrowPdfArtifacts(registryEntries);
+    } catch (e) {
+      out.escrowError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  return out;
 }
 
 function harnessModelParams(model: string, tokens: number, temperature?: number, topP?: number) {
@@ -717,7 +796,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE, a custom prompt, decision_harness:<N> (tool_calls baseline), or decision_harness_json:<N> (structured list alternative). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, or decision_harness_json:<N>. No browser needed.' },
   ];
 }
 
