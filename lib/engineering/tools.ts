@@ -257,7 +257,7 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
     '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.'
     + '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.';
 
-  const outcomes: Array<{ count: number; subjects: string[] }> = [];
+  const outcomes: Array<{ count: number; subjects: string[]; finishReason?: string; rawToolCallCount?: number }> = [];
   for (let i = 0; i < runs; i++) {
     try {
       const decision = await openai.chat.completions.create({
@@ -270,15 +270,21 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
           { role: 'assistant', content: taught.slice(0, 40000) },
         ],
       });
+      const rawToolCalls = decision.choices?.[0]?.message?.tool_calls ?? [];
       const subjects: string[] = [];
-      for (const tc of decision.choices?.[0]?.message?.tool_calls ?? []) {
+      for (const tc of rawToolCalls) {
         if (tc.function?.name !== 'signal_artifact') continue;
         try {
           const parsed = parseArtifactSignal(JSON.parse(tc.function.arguments || '{}'));
           if (parsed) subjects.push(parsed.subject);
         } catch { /* drop */ }
       }
-      outcomes.push({ count: subjects.length, subjects });
+      outcomes.push({
+        count: subjects.length,
+        subjects,
+        finishReason: decision.choices?.[0]?.finish_reason,
+        rawToolCallCount: rawToolCalls.length,
+      });
     } catch (e) {
       outcomes.push({ count: -1, subjects: [`ERROR: ${e instanceof Error ? e.message : String(e)}`] });
     }
