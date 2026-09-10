@@ -48,8 +48,6 @@ const WILLY_INITIAL_STATE = {
 };
 
 function getChatUrl(): string {
-  // Prefer the canonical production alias — it is the public domain real
-  // users and other agents already reach successfully.
   if (process.env.NODE_ENV !== 'production') {
     return 'http://localhost:3000/api/chat';
   }
@@ -109,7 +107,6 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
   const ct = res.headers.get('content-type') || '';
 
   if (ct.includes('text/event-stream')) {
-    // SSE — accumulate stream
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No readable body');
     const decoder = new TextDecoder();
@@ -166,10 +163,8 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   // P10 — ARTIFACT EMISSION RELIABILITY harness.
   // Isolates the signal_artifact decision call from full teaching+render, so
   // emission reliability can be measured N times against ONE captured taught
-  // text without paying for N full WILLY runs (teaching regeneration + PDF
-  // materialization). Reuses buildMentorPrompt/buildModelParams from
-  // mentor-engine.ts and SIGNAL_ARTIFACT_TOOL/parseArtifactSignal from
-  // artifact-signal.ts UNCHANGED — no production file touched by this harness.
+  // text without paying for N full WILLY runs. Self-contained in this file —
+  // no production file touched by this harness.
   if (prompt && prompt.startsWith('decision_harness')) {
     const parts = prompt.split(':');
     const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
@@ -187,7 +182,6 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   const chars = result.chars;
   const modelSignals = result.modelSignals as Array<{ type?: string; subject?: string; trigger?: string }>;
 
-  // Evaluate WILLY FREE criteria
   const mentorFirst = chars > 200
     && !msg.slice(0, 400).toLowerCase().includes('has pedido artifact')
     && !msg.slice(0, 400).toLowerCase().includes('solicitud explícita de artefacto');
@@ -235,19 +229,23 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   };
 }
 
+function harnessModelParams(model: string, tokens: number, temperature?: number, topP?: number) {
+  const isGPT5Family = /^gpt-5/i.test(model) || /^o[0-9]/i.test(model);
+  if (isGPT5Family) return { model, max_completion_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}) };
+  return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) };
+}
+
 async function runDecisionHarness(runs: number): Promise<Record<string, unknown>> {
-  const { buildMentorPrompt, buildModelParams } = await import('../../server/mentors/mentor-engine');
-  const { SIGNAL_ARTIFACT_TOOL, parseArtifactSignal } = await import('../artifact-signal');
+  const { SIGNAL_ARTIFACT_TOOL, parseArtifactSignal, ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
   const OpenAI = (await import('openai')).default;
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
 
-  const { system, user } = buildMentorPrompt({ message: WILLY_FREE_PROMPT, state: WILLY_INITIAL_STATE });
+  const system = `You are Sarah, a warm and expert Spanish tutor at LINGORA, teaching an adult student with strong general intelligence.${ARTIFACT_CHANNEL_INSTRUCTION}\n\nRespond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.`;
+  const user = WILLY_FREE_PROMPT;
 
-  // Step 1: capture ONE realistic compound taught text (teaching only, no
-  // decision call, no PDF materialization) — reused for all N decision runs.
   const teachCompletion = await openai.chat.completions.create({
-    ...buildModelParams(RUNTIME_MODEL, 8192, 0.7, 0.88),
+    ...harnessModelParams(RUNTIME_MODEL, 8192, 0.7, 0.88),
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -255,9 +253,6 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
   });
   const taught = (teachCompletion.choices?.[0]?.message?.content ?? '').trim();
 
-  // Step 2: replicate the exact production decision call (mentor-engine.ts
-  // getMentorResponseStream), unmodified in logic, `runs` times against the
-  // SAME taught text.
   const decisionSystemAddition =
     '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.'
     + '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.';
@@ -266,7 +261,7 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
   for (let i = 0; i < runs; i++) {
     try {
       const decision = await openai.chat.completions.create({
-        ...buildModelParams(RUNTIME_MODEL, 700, 0),
+        ...harnessModelParams(RUNTIME_MODEL, 700, 0),
         tools: [SIGNAL_ARTIFACT_TOOL],
         tool_choice: 'auto',
         messages: [
