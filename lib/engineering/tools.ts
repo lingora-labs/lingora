@@ -223,9 +223,6 @@ async function escrowPdfArtifacts(registryEntries: Array<{ id?: string; title?: 
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
-  if (prompt && prompt.startsWith('compose_harness')) {
-    return runComposeHarness();
-  }
   if (prompt && prompt.startsWith('decision_harness_json')) {
     const parts = prompt.split(':');
     const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
@@ -462,68 +459,6 @@ async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unkn
     runs,
     distribution,
     outcomes,
-  };
-}
-
-// P12-C — controlled reproduction of composeDocumentFromTaught's exact call
-// shape (same MAX_FULL_CONTENT_CHARS, same system/user prompt structure),
-// WITHOUT touching composeArtifactDocument.ts. Captures every intermediate
-// stage — fullContent length, boundedContent tail, raw completion, parsed
-// block content — so the CASE 1-5 question can be answered from one cheap
-// call instead of guessing. server/tools/pdf/composeArtifactDocument.ts and
-// generateCoursePdf.ts remain unmodified by this function.
-async function runComposeHarness(): Promise<Record<string, unknown>> {
-  const { ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
-  const OpenAI = (await import('openai')).default;
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
-  const MAX_FULL_CONTENT_CHARS = 24000; // must mirror composeArtifactDocument.ts exactly
-
-  const teachSystem = `You are Sarah, a warm and expert Spanish tutor at LINGORA, teaching an adult student with strong general intelligence.${ARTIFACT_CHANNEL_INSTRUCTION}\n\nRespond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.`;
-  const fullContent = await captureTaught(openai, harnessModelParams, RUNTIME_MODEL, teachSystem, WILLY_FREE_PROMPT);
-
-  const subject = 'Introducción seria a la acupuntura china';
-  const otherSubjects = ['Curso de español A1'];
-  const boundedContent = fullContent.slice(0, MAX_FULL_CONTENT_CHARS);
-  const otherSubjectsLine = otherSubjects.map((s) => `"${s}"`).join(', ');
-
-  // Exact mirror of composeArtifactDocument.ts's prompts.
-  const composerSystem = `You structure already-taught pedagogical content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is STRUCTURING: organize that portion into clear blocks.\n\nIsolation rules:\n- Exclude turn-level framing text (e.g. "I will do this in the order you asked", opening/closing summaries that talk ABOUT the plan rather than teaching content).\n- Exclude any content that belongs to the other subjects listed below — do not summarize them, do not reference them, do not include their exercises or examples.\n- Exclude a closing activity/exercise unless it is specifically about YOUR subject, not a different one.\n- If the source text has a clear section (e.g. under a heading) dedicated to your subject, treat that as your primary source.\n\nStructuring rules:\n- Do not invent new content. Do not change complexity, register, or level — that was already decided correctly by the tutor when it taught. Do not simplify or infantilize.\n- Organize into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, and one exercise block if practice material specific to YOUR subject is present.\n- If almost nothing in the text belongs to your subject, it is correct to produce a shorter document rather than padding it with unrelated content.\n\nRespond with valid JSON only — no markdown, no preamble.`;
-  const composerUser = `Your assigned subject: "${subject}"\n\nOther subjects taught in the SAME turn (their content does not belong to you — exclude it): ${otherSubjectsLine}\n\nFull taught text for this turn:\n"""\n${boundedContent}\n"""\n\nReturn ONLY this JSON:\n{\n  "title": "string - specific to \\"${subject}\\", not generic",\n  "subtitle": "string or null",\n  "documentType": "string (e.g. leccion, guia, resumen tematico)",\n  "blocks": [\n    {"type":"heading","level":1,"content":"Section title"},\n    {"type":"paragraph","content":"Prose text..."},\n    {"type":"table","headers":["Col A","Col B"],"rows":[["a1","b1"]]},\n    {"type":"bullets","items":["item one","item two"]},\n    {"type":"exercise","label":"Practica","content":"..."}\n  ],\n  "nextStep": "string"\n}`;
-
-  const completion = await openai.chat.completions.create({
-    ...harnessModelParams(RUNTIME_MODEL, 4500, 0.3),
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: composerSystem },
-      { role: 'user', content: composerUser },
-    ],
-  });
-
-  const rawCompletion = completion.choices?.[0]?.message?.content ?? '';
-  const finishReason = completion.choices?.[0]?.finish_reason;
-
-  let parsed: any = null;
-  let parseError: string | null = null;
-  try { parsed = JSON.parse(rawCompletion); } catch (e) { parseError = e instanceof Error ? e.message : String(e); }
-
-  const blocks: any[] = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
-  const suspectBlock = blocks.find((b) =>
-    typeof b?.content === 'string' && /evidencia/i.test(b.content) && b.type === 'paragraph');
-
-  return {
-    harness: 'compose_harness (P12-C reproduction)',
-    A_fullContentLength: fullContent.length,
-    B_boundedContentLength: boundedContent.length,
-    B_boundedContentTail200: boundedContent.slice(-200),
-    C_finishReason: finishReason,
-    C_rawCompletionLength: rawCompletion.length,
-    C_rawCompletionTail300: rawCompletion.slice(-300),
-    D_parseError: parseError,
-    E_blockCount: blocks.length,
-    E_suspectParagraphFound: !!suspectBlock,
-    E_suspectParagraphContent: suspectBlock?.content ?? null,
-    E_allParagraphContents: blocks.filter((b) => b?.type === 'paragraph').map((b) => b.content),
   };
 }
 
@@ -861,7 +796,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, or compose_harness. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, or decision_harness_json:<N>. No browser needed.' },
   ];
 }
 

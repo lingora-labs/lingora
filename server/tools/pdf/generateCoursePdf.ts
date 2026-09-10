@@ -1,6 +1,16 @@
 // =============================================================================
 // server/tools/pdf/generateCoursePdf.ts
 // LINGORA SEEK 4.1a — Document Composer + Neutral Renderer
+// P12-A+B (10 sep 2026): table and key_value blocks used to hard-truncate
+// content via safe(cell,35)/safe(h,30) and by drawing only vLines[0]. That
+// destroyed real pedagogical content (confirmed: table cells and glossary
+// entries stored truncated strings inside the PDF, not just visually
+// clipped). Fixed by wrapping every header/cell/key/value at its real column
+// width, computing dynamic row height from the tallest wrapped cell, drawing
+// ALL wrapped lines, and page-breaking safely (repeating the header row on
+// tables) before any row that doesn't fit. No content-length caps remain in
+// either block type. Verified with deterministic PDF fixtures (long cells,
+// forced multi-page table, short-table regression) — see tests/p12-fixtures.ts.
 // =============================================================================
 import { PDFDocument, PDFPage, PDFFont, rgb, StandardFonts } from 'pdf-lib';
 import { CANONICAL_PRODUCT_URL } from '../../../lib/product';
@@ -254,20 +264,34 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
 
     case 'key_value': {
       const items = block.items ?? [];
-      if (!ensureSpace(ps, items.length * 14 + 10)) {
-        footer(ps, content);
-        ps = await newPage(ps.doc, ps.bold, ps.reg, content);
-      }
       const colW = CW * 0.30;
+      const cellPad = 4;
+      const keyLineH = 9 * 1.3;
+      const valLineH = 9 * 1.3;
+      const rowVPad = 6;
+
       for (let i = 0; i < items.length; i++) {
         const [k, ...rest] = items[i].split(':');
         const v = rest.join(':').trim();
+        const keyLines = wrapLines(k ?? '', ps.bold, 9, colW - cellPad * 2);
+        const valLines = wrapLines(v, ps.reg, 9, CW - colW - cellPad * 2);
+        const lineCount = Math.max(keyLines.length, valLines.length, 1);
+        const rowH = lineCount * Math.max(keyLineH, valLineH) + rowVPad;
+
+        if (!ensureSpace(ps, rowH)) {
+          footer(ps, content);
+          ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+        }
+
         const bg = i % 2 === 0 ? C_LIGHT : C_WHITE;
-        ps.page.drawRectangle({ x: ML, y: ps.y - 12, width: CW, height: 14, color: bg });
-        ps.page.drawText(safe(k ?? '', 35), { x: ML + 4, y: ps.y - 10, size: 9, font: ps.bold, color: C_ACCENT });
-        const vLines = wrapLines(v, ps.reg, 9, CW - colW - 8);
-        ps.page.drawText(safe(vLines[0] ?? '', 80), { x: ML + colW, y: ps.y - 10, size: 9, font: ps.reg, color: C_DARK });
-        ps.y -= 14;
+        ps.page.drawRectangle({ x: ML, y: ps.y - rowH, width: CW, height: rowH, color: bg });
+        keyLines.forEach((line, li) => {
+          ps.page.drawText(safe(line), { x: ML + cellPad, y: ps.y - (li + 1) * keyLineH + 2, size: 9, font: ps.bold, color: C_ACCENT });
+        });
+        valLines.forEach((line, li) => {
+          ps.page.drawText(safe(line), { x: ML + colW, y: ps.y - (li + 1) * valLineH + 2, size: 9, font: ps.reg, color: C_DARK });
+        });
+        ps.y -= rowH;
       }
       gap(ps, 6);
       break;
@@ -276,28 +300,58 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
     case 'table': {
       const headers = block.headers ?? [];
       const rows = block.rows ?? [];
-      const colW = headers.length > 0 ? CW / headers.length : CW;
-      const totalH = (rows.length + 1) * 16 + 12;
-      if (!ensureSpace(ps, Math.min(totalH, H / 2))) {
-        footer(ps, content);
-        ps = await newPage(ps.doc, ps.bold, ps.reg, content);
-      }
-      ps.page.drawRectangle({ x: ML, y: ps.y - 14, width: CW, height: 16, color: C_DARK });
-      headers.forEach((h, i) => {
-        ps.page.drawText(safe(h, 30), { x: ML + i * colW + 4, y: ps.y - 11, size: 8, font: ps.bold, color: C_WHITE });
-      });
-      ps.y -= 16;
-      for (let r = 0; r < rows.length; r++) {
-        if (!ensureSpace(ps, 16)) {
+      const nCols = headers.length > 0 ? headers.length : (rows[0]?.length ?? 1);
+      const colW = nCols > 0 ? CW / nCols : CW;
+      const cellPad = 4;
+      const headerLineH = 8 * 1.3;
+      const rowLineH = 8.5 * 1.3;
+      const rowVPad = 6;
+
+      const drawHeaderRow = (): void => {
+        if (headers.length === 0) return;
+        const headerWrapped = headers.map((h) => wrapLines(h, ps.bold, 8, colW - cellPad * 2));
+        const headerLineCount = Math.max(1, ...headerWrapped.map((l) => l.length));
+        const headerH = headerLineCount * headerLineH + rowVPad;
+        ps.page.drawRectangle({ x: ML, y: ps.y - headerH, width: CW, height: headerH, color: C_DARK });
+        headerWrapped.forEach((lines, i) => {
+          lines.forEach((line, li) => {
+            ps.page.drawText(safe(line), { x: ML + i * colW + cellPad, y: ps.y - (li + 1) * headerLineH + 2, size: 8, font: ps.bold, color: C_WHITE });
+          });
+        });
+        ps.y -= headerH;
+      };
+
+      if (headers.length > 0) {
+        const headerWrapped = headers.map((h) => wrapLines(h, ps.bold, 8, colW - cellPad * 2));
+        const headerLineCount = Math.max(1, ...headerWrapped.map((l) => l.length));
+        const headerH = headerLineCount * headerLineH + rowVPad;
+        if (!ensureSpace(ps, headerH)) {
           footer(ps, content);
           ps = await newPage(ps.doc, ps.bold, ps.reg, content);
         }
+        drawHeaderRow();
+      }
+
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r] ?? [];
+        const wrapped = row.map((cell) => wrapLines(cell, ps.reg, 8.5, colW - cellPad * 2));
+        const lineCount = Math.max(1, ...wrapped.map((l) => l.length));
+        const rowH = lineCount * rowLineH + rowVPad;
+
+        if (!ensureSpace(ps, rowH)) {
+          footer(ps, content);
+          ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+          drawHeaderRow();
+        }
+
         const rowBg = r % 2 === 0 ? C_LIGHT : C_WHITE;
-        ps.page.drawRectangle({ x: ML, y: ps.y - 14, width: CW, height: 16, color: rowBg });
-        (rows[r] ?? []).forEach((cell, i) => {
-          ps.page.drawText(safe(cell, 35), { x: ML + i * colW + 4, y: ps.y - 11, size: 8.5, font: ps.reg, color: C_DARK });
+        ps.page.drawRectangle({ x: ML, y: ps.y - rowH, width: CW, height: rowH, color: rowBg });
+        wrapped.forEach((lines, i) => {
+          lines.forEach((line, li) => {
+            ps.page.drawText(safe(line), { x: ML + i * colW + cellPad, y: ps.y - (li + 1) * rowLineH + 2, size: 8.5, font: ps.reg, color: C_DARK });
+          });
         });
-        ps.y -= 16;
+        ps.y -= rowH;
       }
       gap(ps, 8);
       break;
