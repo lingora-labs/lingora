@@ -19,6 +19,18 @@
 // already-taught text belongs to this artifact) — not a pedagogical one
 // (what to teach). No domain names are hardcoded; subjects and otherSubjects
 // are always caller-supplied strings.
+//
+// SEEK 5.0 P13-B — ARTIFACT TYPE COHERENCE (COURSE-vs-LESSON).
+// Root gap: documentType was a free-text string with only an inline example
+// ("e.g. leccion, guia, resumen tematico"). Nothing constrained it to match
+// the actual depth/structure of the content, so a single-turn explanation
+// could come back labeled "curso" while a title independently said "Guía" —
+// type, title and content could each say something different.
+// Fix: closed 7-value taxonomy, explicit definition of what each implies,
+// and an explicit instruction that title wording must agree with the chosen
+// type. Code-level normalization maps common ES/EN variants to the closed
+// set and falls back to the most modest truthful label ('lesson') for
+// anything unrecognized — never inflates to 'course' by default.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 
@@ -27,6 +39,31 @@ const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
   'divider', 'key_value', 'exercise', 'answer_key', 'case', 'timeline',
   'comparison', 'framework', 'glossary', 'index', 'summary',
 ])
+
+// P13-B — closed artifact-type taxonomy. Values are the canonical internal
+// slugs; generateCoursePdf.ts's ARTIFACT_TYPE_BADGE maps each to its Spanish
+// display label on the cover page.
+export type ArtifactTypeSlug =
+  | 'lesson' | 'study_guide' | 'course' | 'worksheet'
+  | 'reference' | 'assessment' | 'learning_plan'
+
+const ARTIFACT_TYPE_ALIASES: Record<string, ArtifactTypeSlug> = {
+  lesson: 'lesson', leccion: 'lesson', 'lección': 'lesson',
+  study_guide: 'study_guide', guia: 'study_guide', 'guía': 'study_guide',
+  'guia de estudio': 'study_guide', 'guía de estudio': 'study_guide',
+  course: 'course', curso: 'course',
+  worksheet: 'worksheet', ficha: 'worksheet', 'ficha de ejercicios': 'worksheet', ejercicios: 'worksheet',
+  reference: 'reference', referencia: 'reference', 'material de referencia': 'reference',
+  assessment: 'assessment', evaluacion: 'assessment', 'evaluación': 'assessment', examen: 'assessment',
+  learning_plan: 'learning_plan', 'plan de aprendizaje': 'learning_plan', plan: 'learning_plan',
+}
+
+// Safest truthful default: an unrecognized/ambiguous type is treated as a
+// single-session lesson, never inflated to 'course'.
+function normalizeArtifactType(raw: unknown): ArtifactTypeSlug {
+  const key = String(raw ?? '').trim().toLowerCase()
+  return ARTIFACT_TYPE_ALIASES[key] ?? 'lesson'
+}
 
 // Full taught text can legitimately run long for a rich compound act.
 // This is a safety ceiling against runaway input, not a content-selection
@@ -60,7 +97,7 @@ export async function composeDocumentFromTaught(params: ComposeParams): Promise<
       ? params.otherSubjects.map((s) => `"${s}"`).join(', ')
       : '(none — this was the only subject taught in this turn)'
 
-    const systemPrompt = `You structure already-taught pedagogical content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is STRUCTURING: organize that portion into clear blocks.
+    const systemPrompt = `You structure already-taught pedagogical content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is STRUCTURING: organize that portion into clear blocks. Your third job is HONEST TYPING: classify what this document actually is.
 
 Isolation rules:
 - Exclude turn-level framing text (e.g. "I will do this in the order you asked", opening/closing summaries that talk ABOUT the plan rather than teaching content).
@@ -72,6 +109,16 @@ Structuring rules:
 - Do not invent new content. Do not change complexity, register, or level — that was already decided correctly by the tutor when it taught. Do not simplify or infantilize.
 - Organize into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, and one exercise block if practice material specific to YOUR subject is present.
 - If almost nothing in the text belongs to your subject, it is correct to produce a shorter document rather than padding it with unrelated content.
+
+Honest typing rules — choose exactly ONE documentType from this closed list, based on what the content actually is, not what would sound impressive:
+- "lesson": a single teaching episode on one or a few closely related points. This is the correct choice for most single-turn output, including compound acts that taught more than one point in one sitting.
+- "study_guide": a reference-style overview of a topic meant for review, not first teaching.
+- "course": genuinely structured multi-module curriculum with sequenced sessions. Do NOT use this for a single turn's output, however long.
+- "worksheet": primarily practice items/exercises with little explanatory prose.
+- "reference": a lookup-style document (glossary, table of facts) with minimal narrative.
+- "assessment": a test, quiz, or evaluation instrument.
+- "learning_plan": a roadmap of what to study next, not the content itself.
+Your title MUST agree with documentType: never use words like "Curso"/"Course" in the title unless documentType is "course"; never call something a "Guía"/"Guide" unless it is guide-shaped. When in doubt between "lesson" and something grander, choose "lesson" — it is always truthful for single-turn output.
 
 Respond with valid JSON only — no markdown, no preamble.`
 
@@ -86,9 +133,9 @@ ${boundedContent}
 
 Return ONLY this JSON:
 {
-  "title": "string - specific to \"${params.subject}\", not generic",
+  "title": "string - specific to \"${params.subject}\", must agree with documentType, not generic",
   "subtitle": "string or null",
-  "documentType": "string (e.g. leccion, guia, resumen tematico)",
+  "documentType": "one of: lesson, study_guide, course, worksheet, reference, assessment, learning_plan",
   "blocks": [
     {"type":"heading","level":1,"content":"Section title"},
     {"type":"paragraph","content":"Prose text..."},
@@ -140,7 +187,7 @@ Return ONLY this JSON:
       content: {
         title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title : `LINGORA — ${params.subject}`,
         subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : undefined,
-        documentType: typeof parsed.documentType === 'string' ? parsed.documentType : 'documento',
+        documentType: normalizeArtifactType(parsed.documentType),
         level: params.level,
         mentorName: params.mentorName,
         nativeLanguage: params.nativeLanguage,

@@ -11,6 +11,15 @@
 // tables) before any row that doesn't fit. No content-length caps remain in
 // either block type. Verified with deterministic PDF fixtures (long cells,
 // forced multi-page table, short-table regression) — see tests/p12-fixtures.ts.
+//
+// P13-B+C (10 sep 2026): ARTIFACT_TYPE_BADGE gives the cover page a closed,
+// truthful set of type labels (see composeArtifactDocument.ts's
+// normalizeArtifactType) instead of echoing whatever free text the composer
+// wrote. "Nivel" renamed to "Nivel de español" on cover and closing summary —
+// it always meant the student's Spanish proficiency (E-11: languageProficiency
+// ≠ domainProficiency), never the domain's own level, but the generic label
+// let a domain-general artifact (e.g. acupuncture) read as if the SUBJECT
+// were classified A1. No new fields, no ContextPack changes — label only.
 // =============================================================================
 import { PDFDocument, PDFPage, PDFFont, rgb, StandardFonts } from 'pdf-lib';
 import { CANONICAL_PRODUCT_URL } from '../../../lib/product';
@@ -418,6 +427,21 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
   return ps;
 }
 
+// P13-B — closed artifact-type taxonomy display labels (Spanish), keyed on
+// the canonical slugs normalized in composeArtifactDocument.ts. Replaces the
+// old free-text documentType badge, which let title/type/content each say
+// something different. Falls back to the raw value (existing behavior) for
+// any legacy/unrecognized type, so nothing already in flight breaks.
+const ARTIFACT_TYPE_BADGE: Record<string, string> = {
+  lesson: 'LECCIÓN',
+  study_guide: 'GUÍA DE ESTUDIO',
+  course: 'CURSO',
+  worksheet: 'FICHA DE EJERCICIOS',
+  reference: 'MATERIAL DE REFERENCIA',
+  assessment: 'EVALUACIÓN',
+  learning_plan: 'PLAN DE APRENDIZAJE',
+};
+
 async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, content: DocumentContent): Promise<void> {
   const cover = doc.addPage([W, H]);
 
@@ -438,7 +462,7 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
   };
   const badgeText = content.epistemicNature
     ? (badgeMap[content.epistemicNature] ?? content.documentType)
-    : content.documentType;
+    : (ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType);
   if (badgeText) {
     const badge = safe(badgeText.toUpperCase(), 30);
     cover.drawText(badge, { x: ML, y: H - 144, size: 9, font: bold, color: C_TEAL });
@@ -462,7 +486,7 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
 
   y -= 20;
   const meta = [
-    content.level ? ['Nivel', content.level] : null,
+    content.level ? ['Nivel de español', content.level] : null,
     content.mentorName ? ['Mentor', content.mentorName] : null,
     content.nativeLanguage ? ['Idioma', (content.nativeLanguage).toUpperCase()] : null,
     ['Bloques', String(content.blocks?.length ?? 0)],
@@ -497,7 +521,7 @@ async function renderClosing(ps: PS, content: DocumentContent): Promise<void> {
 
   const summary = [
     content.studentName ? ['Estudiante', content.studentName] : null,
-    content.level       ? ['Nivel',      content.level]       : null,
+    content.level       ? ['Nivel de español', content.level]       : null,
     ['Mentor',           content.mentorName],
     ['Bloques',          String(content.blocks?.length ?? 0)],
   ].filter(Boolean) as [string, string][];
