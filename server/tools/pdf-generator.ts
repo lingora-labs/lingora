@@ -1,6 +1,13 @@
 // =============================================================================
 // server/tools/pdf-generator.ts
 // LINGORA SEEK 3.9-c — PDF Generator Router (Integration Fix)
+// P9c-diag (10 sep 2026): self-validation round-trip. Immediately after
+// generation, attempt to re-parse the produced bytes with pdf-lib's own
+// PDFDocument.load(). This isolates WHERE a corruption originates: if this
+// check passes, the bytes leaving the server are structurally valid and any
+// corruption observed downstream happened in transport/handling, not in
+// generation. Purely additive — does not alter any rendering logic or
+// behavior on success/failure paths.
 // =============================================================================
 import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
@@ -42,6 +49,21 @@ export interface GeneratePDFResult {
   method?: 'dataurl' | 's3';
   error?: string;
   message?: string;
+  renderValidated?: boolean;
+  renderValidationError?: string;
+  pdfByteLength?: number;
+}
+
+async function validateRender(pdfBytes: Uint8Array): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { PDFDocument: PDFDocumentCheck } = await import('pdf-lib');
+    const reloaded = await PDFDocumentCheck.load(pdfBytes);
+    // Touch page count to force parsing of the page tree, not just the header.
+    void reloaded.getPageCount();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePDFResult> {
@@ -58,20 +80,38 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
       pdfBytes = await generatePlainTextPdf(params.title, params.content);
     }
 
+    const validation = await validateRender(pdfBytes);
+
     const buffer  = Buffer.from(pdfBytes);
     const key     = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;
 
     if (uploadToS3) {
       try {
         const s3Url = await uploadToS3(buffer, key, 'application/pdf');
-        if (s3Url) return { success: true, url: s3Url, method: 's3' };
+        if (s3Url) {
+          return {
+            success: true,
+            url: s3Url,
+            method: 's3',
+            renderValidated: validation.ok,
+            renderValidationError: validation.error,
+            pdfByteLength: pdfBytes.length,
+          };
+        }
       } catch (s3Err) {
         console.warn('[pdf-generator] S3 upload failed, using data URL fallback:', s3Err);
       }
     }
 
     const dataUrl = 'data:application/pdf;base64,' + buffer.toString('base64');
-    return { success: true, url: dataUrl, method: 'dataurl' };
+    return {
+      success: true,
+      url: dataUrl,
+      method: 'dataurl',
+      renderValidated: validation.ok,
+      renderValidationError: validation.error,
+      pdfByteLength: pdfBytes.length,
+    };
 
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);

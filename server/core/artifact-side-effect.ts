@@ -13,6 +13,11 @@
 // the composer, which performs semantic isolation itself — see
 // composeArtifactDocument.ts. No domain names hardcoded here; subjects come
 // entirely from the caller-supplied signals.
+//
+// SEEK 5.0 P9c-diag — propagate the renderer's own self-validation
+// (pdf-generator.ts: PDFDocument.load round-trip) onto the artifact object,
+// additive only, so DAE can see from run_diagnostic whether generation
+// produced structurally valid bytes without needing server logs.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
 
@@ -81,6 +86,9 @@ export async function fulfillArtifactSignals(
       url: result.url,
       title,
       composerStatus: composed.ok ? 'rich' : `fallback:${composed.reason}`,
+      renderValidated: result.renderValidated,
+      renderValidationError: result.renderValidationError,
+      pdfByteLength: result.pdfByteLength,
     } as ArtifactPayload)
   }
   return out
