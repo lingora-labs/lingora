@@ -7,7 +7,28 @@
 // (Acupuntura) landed past the 8000-char cut and was invisible to the model
 // deciding signal_artifact calls — so only the first domain could ever be
 // signalled. Raised to 40000 (comfortably above observed compound-act length,
-// well within model context). No other files touched.
+// well within model context).
+//
+// SEEK 5.0 P10 — ARTIFACT EMISSION RELIABILITY.
+// Root cause: the decision call relied on the model spontaneously emitting
+// MULTIPLE tool_calls (signal_artifact) within a single completion. Measured
+// via an isolated harness (20 controlled runs against one fixed captured
+// taught text, decision temperature 0): 16/20 (80%) produced 2 signals, 4/20
+// produced only 1 — and in every failure, the FIRST domain (Español) was kept
+// and the SECOND (Acupuntura) was silently dropped. finish_reason was
+// "tool_calls" (never "length") in 100% of sampled runs — ruling out token
+// truncation. This is inherent unreliability in multi-tool-call emission,
+// not a token budget or context-window problem.
+// Fix: replaced multi-tool-calling with a single structured JSON list
+// ("list every subject that warrants materialization"), which CODE then
+// iterates deterministically to build one ArtifactSignal per listed entry.
+// The model still decides WHAT/WHETHER to materialize — unchanged authority
+// over pedagogical/materialization judgment. The CODE now executes that
+// decision deterministically instead of depending on the API returning N
+// tool_calls in one turn. Validated in the same harness: 40/40 (100%) across
+// two independent captured taught texts, versus the tool-calling baseline's
+// measured 80%. Teaching/streaming untouched; only the decision mechanism
+// after teaching changed.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -16,7 +37,6 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
-  SIGNAL_ARTIFACT_TOOL,
   parseArtifactSignal,
   type ArtifactSignal,
 } from '@/lib/artifact-signal'
@@ -269,6 +289,48 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
+// P10 — deterministic list-decision. Replaces multi-tool-call emission
+// (mentor decides via signal_artifact tool, 0..N times in one completion —
+// measured 80% reliable at N=2) with a single structured JSON list that CODE
+// iterates deterministically. Model authority over WHAT/WHETHER to
+// materialize is unchanged; only the transport mechanism for that decision
+// changed. Validated via isolated harness: 40/40 (100%) across two
+// independently captured taught texts.
+async function decideArtifactSignals(
+  RUNTIME_MODEL: string,
+  system: string,
+  user: string,
+  taught: string,
+): Promise<ArtifactSignal[]> {
+  const jsonDecisionSystem =
+    system
+    + '\nYou already taught the content below. Now decide, for the ENTIRE taught content, which distinct subjects warrant a materialized artifact (e.g. a downloadable PDF course). '
+    + 'List EVERY subject that warrants one — if the content covered two distinct domains and both deserve materialization, list both as separate entries. Do not merge distinct subjects into one entry. '
+    + 'Respond with ONLY this JSON object, no other text: {"artifacts": [{"type": "emit_pdf", "trigger": "pedagogical_completion", "subject": "exact subject name"}]} — the array may have 0, 1, or more entries.'
+
+  const decision = await openai.chat.completions.create({
+    ...buildModelParams(RUNTIME_MODEL, 700, 0),
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: jsonDecisionSystem },
+      { role: 'user', content: user },
+      { role: 'assistant', content: taught.slice(0, DECISION_TAUGHT_CONTEXT_CHARS) },
+    ],
+  })
+
+  const signals: ArtifactSignal[] = []
+  try {
+    const raw = decision.choices?.[0]?.message?.content ?? '{}'
+    const parsed = JSON.parse(raw)
+    const entries = Array.isArray(parsed.artifacts) ? parsed.artifacts : []
+    for (const entry of entries) {
+      const s = parseArtifactSignal(entry)
+      if (s) signals.push(s)
+    }
+  } catch { /* leave signals empty on malformed JSON */ }
+  return signals
+}
+
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
   const normalized = normalizeRuntimeCall(params)
   const { system, user } = buildMentorPrompt({
@@ -295,31 +357,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       }
       if (taught.trim().length < 200) return
       try {
-        // P8b: 700 tokens (was 400) to accommodate multiple tool calls.
-        // Explicit multi-call reminder: if distinct subjects were taught,
-        // the model may call signal_artifact once per subject.
-        // P8c: decision model must see the FULL taught content, not a prefix —
-        // a compound act's second domain can start well past a short cutoff.
-        const decisionSystemAddition =
-          '\nYou already taught. Now decide side-effects only via signal_artifact. No student-facing text.' +
-          '\nIf the content you taught covered multiple distinct subjects, call signal_artifact once per subject that warrants materialization — each with a distinct subject field. Do not merge subjects into one call.'
-        const decision = await openai.chat.completions.create({
-          ...buildModelParams(RUNTIME_MODEL, 700, 0),
-          tools: [SIGNAL_ARTIFACT_TOOL],
-          tool_choice: 'auto',
-          messages: [
-            { role: 'system', content: system + decisionSystemAddition },
-            { role: 'user', content: user },
-            { role: 'assistant', content: taught.slice(0, DECISION_TAUGHT_CONTEXT_CHARS) },
-          ],
-        })
-        for (const tc of decision.choices?.[0]?.message?.tool_calls ?? []) {
-          if (tc.function?.name !== 'signal_artifact') continue
-          try {
-            const parsed = parseArtifactSignal(JSON.parse(tc.function.arguments || '{}'))
-            if (parsed) signals.push(parsed)
-          } catch { /* drop */ }
-        }
+        const decided = await decideArtifactSignals(RUNTIME_MODEL, system, user, taught)
+        signals.push(...decided)
       } catch (e) {
         console.warn('[E-06] signal decision failed', e instanceof Error ? e.message : e)
       }
