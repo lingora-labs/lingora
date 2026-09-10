@@ -18,6 +18,10 @@
 // (pdf-generator.ts: PDFDocument.load round-trip) onto the artifact object,
 // additive only, so DAE can see from run_diagnostic whether generation
 // produced structurally valid bytes without needing server logs.
+//
+// SEEK 5.0 P9c chain-of-custody — also propagate pdfSha256, the server-side
+// hash of the exact bytes generated, so any later copy of the PDF (however
+// obtained) can be verified byte-for-byte against the source.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
 
@@ -89,6 +93,7 @@ export async function fulfillArtifactSignals(
       renderValidated: result.renderValidated,
       renderValidationError: result.renderValidationError,
       pdfByteLength: result.pdfByteLength,
+      pdfSha256: result.pdfSha256,
     } as ArtifactPayload)
   }
   return out

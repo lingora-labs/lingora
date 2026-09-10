@@ -3,12 +3,13 @@
 // LINGORA SEEK 3.9-c — PDF Generator Router (Integration Fix)
 // P9c-diag (10 sep 2026): self-validation round-trip. Immediately after
 // generation, attempt to re-parse the produced bytes with pdf-lib's own
-// PDFDocument.load(). This isolates WHERE a corruption originates: if this
-// check passes, the bytes leaving the server are structurally valid and any
-// corruption observed downstream happened in transport/handling, not in
-// generation. Purely additive — does not alter any rendering logic or
-// behavior on success/failure paths.
+// PDFDocument.load(). Structural check only — does not certify visual render.
+// P9c chain-of-custody (10 sep 2026): SHA-256 of the exact bytes produced,
+// computed server-side before any base64/transport handling. Lets DAE verify
+// byte-for-byte integrity of whatever copy later reaches inspection, instead
+// of trusting the transport path. Purely additive — no rendering logic changed.
 // =============================================================================
+import { createHash } from 'crypto';
 import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
 import { CANONICAL_PRODUCT_URL } from '../../lib/product';
@@ -52,6 +53,7 @@ export interface GeneratePDFResult {
   renderValidated?: boolean;
   renderValidationError?: string;
   pdfByteLength?: number;
+  pdfSha256?: string;
 }
 
 async function validateRender(pdfBytes: Uint8Array): Promise<{ ok: boolean; error?: string }> {
@@ -81,8 +83,8 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
     }
 
     const validation = await validateRender(pdfBytes);
-
     const buffer  = Buffer.from(pdfBytes);
+    const sha256  = createHash('sha256').update(buffer).digest('hex');
     const key     = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;
 
     if (uploadToS3) {
@@ -96,6 +98,7 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
             renderValidated: validation.ok,
             renderValidationError: validation.error,
             pdfByteLength: pdfBytes.length,
+            pdfSha256: sha256,
           };
         }
       } catch (s3Err) {
@@ -111,6 +114,7 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
       renderValidated: validation.ok,
       renderValidationError: validation.error,
       pdfByteLength: pdfBytes.length,
+      pdfSha256: sha256,
     };
 
   } catch (error: unknown) {
