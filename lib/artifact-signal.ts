@@ -77,6 +77,18 @@ export const SIGNAL_ARTIFACT_TOOL = {
 // must never claim one is already generated before signal_artifact and the
 // side-effect pipeline actually produce it. No new capability system: this
 // reuses the exact mechanism already governing the audio statement.
+//
+// SEEK 5.0 P15 — AUDIO CAPABILITY RECOVERY.
+// The "emit_audio is unavailable" line was accurate about the RUNTIME AS IT
+// STOOD, but that runtime state was itself a regression: STT input was
+// disconnected from the streaming path and TTS output was never wired to
+// signal_artifact at all (see artifact-side-effect.ts P15 for the
+// execution-side fix; execution-engine-stream.ts and route.ts P15 for the
+// input-side fix). Declarative text must describe truth — it cannot BE the
+// fix for a missing capability (Manifiesto 7.0 Art. 16). Now that the
+// underlying mechanism is actually wired, the line is flipped to match,
+// mirroring the emit_pdf pattern exactly: availability, not a promise that
+// audio already exists.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 ARTIFACT CHANNEL:
 You have a structured side-effect channel named signal_artifact.
@@ -86,5 +98,5 @@ Do not emit an artifact per part by default. Decide.
 Do not print JSON, tool names, or debug to the student.
 Do not call the tool merely because the user wrote PDF or artifact; finish teaching, then decide.
 emit_pdf IS available in this runtime: you may truthfully offer to prepare/materialize what you taught as a downloadable PDF. This states that the mechanism exists, not that a specific file is already generated — never claim a document has been created or is ready to download before it actually has been; simply teach, then let materialization happen through the normal signal_artifact decision.
-emit_audio is unavailable in this runtime.
+emit_audio IS available in this runtime: you may truthfully offer to speak what you taught aloud. This states the mechanism exists, not that audio has already been generated — never claim audio is ready before it actually is. Only offer or emit audio when it genuinely serves the student (e.g. pronunciation modeling, listening practice) — not by default on every turn.
 `
