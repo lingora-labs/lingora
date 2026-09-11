@@ -30,6 +30,10 @@ export type SuggestedAction = {
   emoji?:   string
 }
 
+export interface ArtifactFailure {
+  subject: string
+}
+
 export interface Msg {
   id: string; sender: 'user' | MK | 'ln'; text: string
   artifact?: Artifact | null; score?: number
@@ -37,6 +41,12 @@ export interface Msg {
   // from a compound teaching act). `artifact` is preserved as the legacy
   // single-value field; `artifacts` is the source of truth when present.
   artifacts?: Artifact[] | null
+  // P14-C — materialization failures, reported by the ONLY layer that
+  // actually knows an artifact failed to generate (the server-side
+  // executor). Independent of `artifacts`: a turn can carry both a
+  // successful artifact and a failed one side by side — cardinality is
+  // preserved per-signal, never collapsed.
+  artifactFailures?: ArtifactFailure[] | null
   audioUrl?: string
   imageUrl?: string
   suggestedActions?: SuggestedAction[]
@@ -51,6 +61,12 @@ export function resolveMsgArtifacts(msg: Pick<Msg, 'artifact' | 'artifacts'>): A
   if (msg.artifacts && msg.artifacts.length > 0) return msg.artifacts
   if (msg.artifact) return [msg.artifact]
   return []
+}
+
+// P14-C — trivial accessor kept symmetric with resolveMsgArtifacts so
+// callers never need to know the underlying field can be null/undefined.
+export function resolveMsgArtifactFailures(msg: Pick<Msg, 'artifactFailures'>): ArtifactFailure[] {
+  return msg.artifactFailures ?? []
 }
 export type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 

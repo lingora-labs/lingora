@@ -22,6 +22,23 @@
 // SEEK 5.0 P9c chain-of-custody — also propagate pdfSha256, the server-side
 // hash of the exact bytes generated, so any later copy of the PDF (however
 // obtained) can be verified byte-for-byte against the source.
+//
+// SEEK 5.0 P14-C — FAILURE TRUTH.
+// Root gap: on generatePDF failure this function logged server-side and
+// silently `continue`d — no false success ever reached the UI, but the
+// failure was also invisible to it. A user who asked for a document and
+// got nothing had no way to know materialization was attempted and failed
+// versus never attempted at all.
+// Fix: buildFulfillmentEntry() is the ONLY place that decides artifact vs.
+// failure, extracted as a pure function so it's unit-testable without any
+// API call (see tests/p14-fulfillment.ts). fulfillArtifactSignals now
+// returns BOTH arrays — successes and failures — instead of dropping
+// failures. This is the layer that actually knows the executor's result;
+// per the required contract, failure truth must originate here, not be
+// guessed by the tutor. Only `{ subject }` is exposed — no stack traces,
+// tool names, or provider details reach the caller/UI. Cardinality is
+// preserved per-item: one signal in, one artifact OR one failure out —
+// never both, never neither, never a partial success masked as a full one.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
 
@@ -35,13 +52,56 @@ function excerptForSubject(content: string, subject: string): string {
   return text.slice(start, start + 6000)
 }
 
+export interface ArtifactFailure {
+  subject: string
+}
+
+export interface FulfillResult {
+  artifacts: ArtifactPayload[]
+  failures: ArtifactFailure[]
+}
+
+// Pure decision function: given one signal's compose+render outcome, decide
+// artifact vs. failure. No imports, no I/O — directly unit-testable with
+// fabricated inputs, no API credits required (tests/p14-fulfillment.ts).
+export function buildFulfillmentEntry(
+  subject: string,
+  title: string,
+  composed: { ok: boolean; content?: unknown; reason?: string },
+  result: {
+    success: boolean
+    url?: string
+    renderValidated?: boolean
+    renderValidationError?: string
+    pdfByteLength?: number
+    pdfSha256?: string
+  },
+): { kind: 'artifact'; payload: ArtifactPayload } | { kind: 'failure'; failure: ArtifactFailure } {
+  if (!result.success || !result.url) {
+    return { kind: 'failure', failure: { subject } }
+  }
+  return {
+    kind: 'artifact',
+    payload: {
+      type: 'pdf',
+      url: result.url,
+      title,
+      composerStatus: composed.ok ? 'rich' : `fallback:${composed.reason}`,
+      renderValidated: result.renderValidated,
+      renderValidationError: result.renderValidationError,
+      pdfByteLength: result.pdfByteLength,
+      pdfSha256: result.pdfSha256,
+    } as ArtifactPayload,
+  }
+}
+
 export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
-): Promise<ArtifactPayload[]> {
+): Promise<FulfillResult> {
   const pdfs = dedupeSignals(signals).filter((s) => s.type === 'emit_pdf')
-  if (pdfs.length === 0) return []
+  if (pdfs.length === 0) return { artifacts: [], failures: [] }
 
   const { generatePDF } = await import('../tools/pdf-generator')
   const { composeDocumentFromTaught } = await import('../tools/pdf/composeArtifactDocument')
@@ -53,7 +113,9 @@ export async function fulfillArtifactSignals(
 
   const allSubjects = pdfs.map((s) => s.subject)
 
-  const out: ArtifactPayload[] = []
+  const artifacts: ArtifactPayload[] = []
+  const failures: ArtifactFailure[] = []
+
   for (const signal of pdfs) {
     const otherSubjects = allSubjects.filter((s) => s !== signal.subject)
 
@@ -73,28 +135,22 @@ export async function fulfillArtifactSignals(
           title,
           content: '',
           courseContent: composed.content,
-          filename: `lingora-${Date.now()}-${out.length}`,
+          filename: `lingora-${Date.now()}-${artifacts.length}`,
         })
       : await generatePDF({
           title,
           content: `# ${signal.subject}\n\n${excerptForSubject(pedagogicalContent, signal.subject)}`,
-          filename: `lingora-${Date.now()}-${out.length}`,
+          filename: `lingora-${Date.now()}-${artifacts.length}`,
         })
 
     if (!result.success || !result.url) {
       console.error('[P8] generatePDF failed', signal.subject, result.error ?? result.message)
-      continue
     }
-    out.push({
-      type: 'pdf',
-      url: result.url,
-      title,
-      composerStatus: composed.ok ? 'rich' : `fallback:${composed.reason}`,
-      renderValidated: result.renderValidated,
-      renderValidationError: result.renderValidationError,
-      pdfByteLength: result.pdfByteLength,
-      pdfSha256: result.pdfSha256,
-    } as ArtifactPayload)
+
+    const entry = buildFulfillmentEntry(signal.subject, title, composed, result)
+    if (entry.kind === 'artifact') artifacts.push(entry.payload)
+    else failures.push(entry.failure)
   }
-  return out
+
+  return { artifacts, failures }
 }

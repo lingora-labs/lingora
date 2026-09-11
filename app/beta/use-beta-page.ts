@@ -103,7 +103,7 @@ export function useBetaPage() {
         const reader = res.body!.getReader()
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
-        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null }])
+        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }])
         let accumulated = ''
         let sseBuffer = ''
         while (true) {
@@ -134,6 +134,7 @@ export function useBetaPage() {
                   ...m,
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
+                  artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
                   suggestedActions: finalActions,
                 } : m))
               }
@@ -164,6 +165,7 @@ export function useBetaPage() {
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
       addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null,
         artifacts: (Array.isArray(data.artifacts) && data.artifacts.length > 0) ? data.artifacts : null,
+        artifactFailures: (Array.isArray(data.artifactFailures) && data.artifactFailures.length > 0) ? data.artifactFailures : null,
         score: data.pronunciationScore,
         suggestedActions: (data.suggestedActions && data.suggestedActions.length > 0) ? data.suggestedActions : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }] })
     } catch (e) {

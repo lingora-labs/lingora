@@ -1,4 +1,8 @@
 // SEEK 4.1c2 stream + E-06/P8 post-content multi-signal fulfillment
+// P14-C — SSEDone gains artifactFailures: ArtifactFailure[], additive and
+// optional (legacy consumers that don't read it are unaffected — D4). This
+// is the same result channel that already carries artifacts[], extended
+// with the sibling failure case instead of a parallel notification system.
 import {
   ExecutionPlan,
   ArtifactPayload,
@@ -10,6 +14,7 @@ import {
 import { mergeStatePatch } from './state-manager'
 import { evaluateCommercial } from './commercial-engine-adapter'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
+import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
 interface SSEDone {
@@ -17,6 +22,7 @@ interface SSEDone {
   state: SessionState
   artifact?: ArtifactPayload
   artifacts?: ArtifactPayload[]
+  artifactFailures?: ArtifactFailure[]
   artifactSignals?: ArtifactSignal[]
   suggestedActions?: SuggestedAction[]
 }
@@ -47,9 +53,12 @@ export function executePlanStream(
         }
         const signals: ArtifactSignal[] = stream.artifactSignals ?? []
         let artifacts: ArtifactPayload[] = []
+        let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
           const { fulfillArtifactSignals } = await import('./artifact-side-effect')
-          artifacts = await fulfillArtifactSignals(signals, fullText, state)
+          const fulfilled = await fulfillArtifactSignals(signals, fullText, state)
+          artifacts = fulfilled.artifacts
+          artifactFailures = fulfilled.failures
         }
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
@@ -76,6 +85,7 @@ export function executePlanStream(
           state: updatedState,
           ...(artifact ? { artifact } : {}),
           ...(artifacts.length ? { artifacts } : {}),
+          ...(artifactFailures.length ? { artifactFailures } : {}),
           ...(signals.length ? { artifactSignals: signals } : {}),
           ...(artifact ? { suggestedActions: [{ type: 'export_chat_pdf', label: 'Export as PDF' } as SuggestedAction] } : {}),
         })
