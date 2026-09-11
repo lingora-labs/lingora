@@ -223,6 +223,9 @@ async function escrowPdfArtifacts(registryEntries: Array<{ id?: string; title?: 
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('voice_loop')) {
+    return runVoiceLoop();
+  }
   if (prompt && prompt.startsWith('audio_roundtrip')) {
     return runAudioRoundtrip();
   }
@@ -306,14 +309,7 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   return out;
 }
 
-// P15 — AUDIO INPUT CLOSED-LOOP VERIFICATION.
-// Generates real speech server-side (reusing the SAME generateSpeech already
-// relied on by production — no new capability), sends it to production
-// /api/chat exactly as a real user's recorded audio would arrive
-// (audioDataUrl + audioMimeType, no text), and inspects whether the
-// mentor's response reflects the actual spoken content — proving the STT
-// fix (route.ts) actually reaches the tutor, not just that the code
-// compiles. Cheap: one TTS call + one chat call, no full WILLY.
+// P15 — AUDIO INPUT CLOSED-LOOP VERIFICATION (single turn).
 async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
   const spokenText = 'Hoy quiero aprender a decir la hora en español, por favor.';
@@ -340,6 +336,82 @@ async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
     isPlaceholderOrEmpty,
     verdict: reflectsSpokenContent && !isPlaceholderOrEmpty ? 'PASS' : 'FAIL',
     messagePreview: result.message.slice(0, 500),
+  };
+}
+
+// P16 — VOICE CONVERSATION LOOP VERIFICATION.
+// Real multi-turn production check covering P16-T1/T2/T3/T7 in one pass:
+//  Turn 1 (voice): "Sarah, quiero aprender a decir la hora en español."
+//    -> expects: Sarah's text response + an automatic 'audio' artifact
+//       (proves P16 auto-speak-on-voice-turn, not just PDF/emit_audio signal).
+//  Turn 2 (voice, same session/state): "¿Y cómo digo ocho y media?"
+//    -> expects: context continuity (references time/hour topic) + audio
+//       artifact again, proving the SAME Sarah/session continues.
+//  Turn 3 (text, same session): "Ahora dame otro ejemplo."
+//    -> expects: NO audio artifact (text-in -> text-out, no forced speech)
+//       AND topical continuity, proving text<->voice share one conversation.
+// Uses real generated speech (generateSpeech) as input for turns 1-2 —
+// same mechanism production already relies on, no new capability.
+async function runVoiceLoop(): Promise<Record<string, unknown>> {
+  const { generateSpeech } = await import('../../server/tools/audio-toolkit');
+
+  const turn1Text = 'Sarah, quiero aprender a decir la hora en español.';
+  const tts1 = await generateSpeech(turn1Text, { voice: 'nova' });
+  if (!tts1.success || !tts1.url) {
+    return { harness: 'voice_loop', stage: 'turn1_tts_failed', error: tts1.message };
+  }
+  const r1 = await callChatAPI('', WILLY_INITIAL_STATE, { audioDataUrl: tts1.url, audioMimeType: 'audio/mpeg' });
+  const r1HasAudio = r1.artifacts.some((a: any) => a?.type === 'audio');
+  const r1ReflectsContent = r1.message.toLowerCase().includes('hora');
+
+  if (!r1.state) {
+    return { harness: 'voice_loop', stage: 'turn1_no_state_returned', turn1: { chars: r1.chars, hasAudio: r1HasAudio, reflectsContent: r1ReflectsContent } };
+  }
+
+  const turn2Text = 'Y cómo digo ocho y media.';
+  const tts2 = await generateSpeech(turn2Text, { voice: 'nova' });
+  if (!tts2.success || !tts2.url) {
+    return { harness: 'voice_loop', stage: 'turn2_tts_failed', error: tts2.message, turn1: { chars: r1.chars, hasAudio: r1HasAudio, reflectsContent: r1ReflectsContent } };
+  }
+  const r2 = await callChatAPI('', r1.state as Record<string, unknown>, { audioDataUrl: tts2.url, audioMimeType: 'audio/mpeg' });
+  const r2HasAudio = r2.artifacts.some((a: any) => a?.type === 'audio');
+  const r2Lower = r2.message.toLowerCase();
+  const r2ShowsContinuity = r2Lower.includes('ocho') || r2Lower.includes('media') || r2Lower.includes('hora');
+
+  const turn3Text = 'Ahora dame otro ejemplo.';
+  const r3 = await callChatAPI(turn3Text, r2.state as Record<string, unknown>);
+  const r3HasAudio = r3.artifacts.some((a: any) => a?.type === 'audio');
+  const r3Lower = r3.message.toLowerCase();
+  const r3ShowsContinuity = r3Lower.includes('hora') || r3Lower.includes('media') || /\d/.test(r3.message);
+
+  return {
+    harness: 'voice_loop',
+    turn1_voice: {
+      spoken: turn1Text,
+      chars: r1.chars,
+      hasAudioArtifact: r1HasAudio,
+      reflectsSpokenContent: r1ReflectsContent,
+      messagePreview: r1.message.slice(0, 300),
+    },
+    turn2_voice_continuity: {
+      spoken: turn2Text,
+      chars: r2.chars,
+      hasAudioArtifact: r2HasAudio,
+      showsContinuity: r2ShowsContinuity,
+      messagePreview: r2.message.slice(0, 300),
+    },
+    turn3_voice_to_text: {
+      typed: turn3Text,
+      chars: r3.chars,
+      hasAudioArtifact_shouldBeFalse: r3HasAudio,
+      showsContinuity: r3ShowsContinuity,
+      messagePreview: r3.message.slice(0, 300),
+    },
+    verdict: {
+      T1_PASS: r1HasAudio && r1ReflectsContent,
+      T2_PASS: r2HasAudio && r2ShowsContinuity,
+      T3_PASS: r3ShowsContinuity && !r3HasAudio,
+    },
   };
 }
 
@@ -836,7 +908,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, or audio_roundtrip. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, or voice_loop (multi-turn voice conversation check). No browser needed.' },
   ];
 }
 
