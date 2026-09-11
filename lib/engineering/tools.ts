@@ -78,13 +78,13 @@ interface ChatAPIResult {
   durationMs: number;
 }
 
-async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE): Promise<ChatAPIResult> {
+async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
   const url = getChatUrl();
   const t0 = Date.now();
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, state }),
+    body: JSON.stringify({ message, state, ...extra }),
   });
 
   const durationMs = Date.now() - t0;
@@ -223,6 +223,9 @@ async function escrowPdfArtifacts(registryEntries: Array<{ id?: string; title?: 
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('audio_roundtrip')) {
+    return runAudioRoundtrip();
+  }
   if (prompt && prompt.startsWith('decision_harness_json')) {
     const parts = prompt.split(':');
     const runs = Math.max(1, Math.min(50, Number(parts[1]) || 20));
@@ -301,6 +304,43 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   }
 
   return out;
+}
+
+// P15 — AUDIO INPUT CLOSED-LOOP VERIFICATION.
+// Generates real speech server-side (reusing the SAME generateSpeech already
+// relied on by production — no new capability), sends it to production
+// /api/chat exactly as a real user's recorded audio would arrive
+// (audioDataUrl + audioMimeType, no text), and inspects whether the
+// mentor's response reflects the actual spoken content — proving the STT
+// fix (route.ts) actually reaches the tutor, not just that the code
+// compiles. Cheap: one TTS call + one chat call, no full WILLY.
+async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
+  const { generateSpeech } = await import('../../server/tools/audio-toolkit');
+  const spokenText = 'Hoy quiero aprender a decir la hora en español, por favor.';
+  const tts = await generateSpeech(spokenText, { voice: 'nova' });
+  if (!tts.success || !tts.url) {
+    return { harness: 'audio_roundtrip', ttsGenerationFailed: true, ttsError: tts.message };
+  }
+
+  const result = await callChatAPI('', WILLY_INITIAL_STATE, {
+    audioDataUrl: tts.url,
+    audioMimeType: 'audio/mpeg',
+  });
+
+  const msgLower = result.message.toLowerCase();
+  const reflectsSpokenContent = msgLower.includes('hora') || msgLower.includes('decir la hora') || msgLower.includes('time');
+  const isPlaceholderOrEmpty = result.chars < 20 || msgLower.includes('audio input') || msgLower.includes('[audio');
+
+  return {
+    harness: 'audio_roundtrip',
+    spokenText,
+    ttsBytesGenerated: tts.url.startsWith('data:') ? tts.url.length : 'external_url',
+    chars: result.chars,
+    reflectsSpokenContent,
+    isPlaceholderOrEmpty,
+    verdict: reflectsSpokenContent && !isPlaceholderOrEmpty ? 'PASS' : 'FAIL',
+    messagePreview: result.message.slice(0, 500),
+  };
 }
 
 function harnessModelParams(model: string, tokens: number, temperature?: number, topP?: number) {
@@ -796,7 +836,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, or decision_harness_json:<N>. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, or audio_roundtrip. No browser needed.' },
   ];
 }
 
