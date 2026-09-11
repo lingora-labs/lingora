@@ -299,7 +299,16 @@ function ttsEnabled(): boolean {
 
 function withoutAudioSteps(plan: ExecutionPlan): ExecutionPlan {
   if (ttsEnabled()) return plan;
-  const executionOrder = plan.executionOrder.filter(s => s.executor !== 'tool_audio' && s.action !== 'generateTTS');
+  // P15 — was `s.executor !== 'tool_audio' && s.action !== 'generateTTS'`
+  // (AND of two negations): that removes EVERY tool_audio step, including
+  // transcribeAudio, whenever TTS is disabled — not just generateTTS steps.
+  // That silently broke the hard_override transcribe path (step 1 removed)
+  // and pronunciation_eval (step 2 evaluatePronunciation depends on step 1
+  // transcribeAudio, which was also being stripped, degrading the whole
+  // chain). Only generateTTS should be conditional on the TTS flag —
+  // transcription is input processing, not audio *output*, and must never
+  // depend on this flag.
+  const executionOrder = plan.executionOrder.filter(s => !(s.executor === 'tool_audio' && s.action === 'generateTTS'));
   return {
     ...plan,
     artifacts: plan.artifacts.filter(a => a !== 'audio'),

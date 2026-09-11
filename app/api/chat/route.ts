@@ -257,15 +257,52 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     }
 
     const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
-    const normalizedMessage =
+
+    // P15 — AUDIO INPUT RECOVERY.
+    // Root gap: audioDataUrl reached this route and was carried into
+    // ChatRequest, but was never transcribed before reaching the mentor in
+    // the streaming path (the one actually serving /beta traffic). The
+    // mentor received a bare "[Audio input]" placeholder — the user's
+    // spoken content was silently dropped. Also, the mentor-first plan
+    // (the most common plan branch) never included a transcription step at
+    // all, independent of the withoutAudioSteps flag bug fixed in
+    // orchestrator.ts.
+    // Fix: transcribe centrally, once, before intent classification — so
+    // EVERY downstream branch (intent routing, orchestration, streaming and
+    // non-streaming mentor calls) sees the same real text a typed message
+    // would have produced. This is pre-processing, not a pedagogical
+    // decision: Tutor Core still decides everything about how to respond —
+    // this only restores what it can read. No new capability: reuses the
+    // existing, unmodified transcribeAudio() already relied on by the
+    // non-streaming execution-engine.ts audio path.
+    let audioTranscript: string | null = null;
+    if (hasAudio && audioDataUrl) {
+      try {
+        const { transcribeAudio } = await import('../../../server/tools/audio-toolkit');
+        const base64 = audioDataUrl.includes(',') ? audioDataUrl.split(',')[1] : audioDataUrl;
+        const format = audioMimeType?.split('/')[1] || 'webm';
+        const transcription = await transcribeAudio({ data: base64, format });
+        if (transcription.success && transcription.text?.trim()) {
+          audioTranscript = transcription.text.trim();
+        } else if (!transcription.success) {
+          console.warn('[route] audio transcription failed:', transcription.message);
+        }
+      } catch (e) {
+        console.error('[route] audio transcription exception:', e instanceof Error ? e.message : e);
+      }
+    }
+
+    const rawMessageForNormalization =
       hasAudio && (message ?? '').trim() !== '' && AUDIO_FILENAME_RE.test((message ?? '').trim())
         ? ''
         : (message ?? '');
 
+    const normalizedMessage = audioTranscript || rawMessageForNormalization;
+
     const intent = classifyIntent(normalizedMessage, state, hasFiles, hasAudio);
 
     const ctx: OrchestrationContext = {
-      message:           message ?? '',
+      message:           normalizedMessage,
       state,
       intent,
       files,

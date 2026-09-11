@@ -100,8 +100,10 @@ export async function fulfillArtifactSignals(
   pedagogicalContent: string,
   state: SessionState,
 ): Promise<FulfillResult> {
-  const pdfs = dedupeSignals(signals).filter((s) => s.type === 'emit_pdf')
-  if (pdfs.length === 0) return { artifacts: [], failures: [] }
+  const deduped = dedupeSignals(signals);
+  const pdfs = deduped.filter((s) => s.type === 'emit_pdf');
+  const audioSignals = deduped.filter((s) => s.type === 'emit_audio');
+  if (pdfs.length === 0 && audioSignals.length === 0) return { artifacts: [], failures: [] };
 
   const { generatePDF } = await import('../tools/pdf-generator')
   const { composeDocumentFromTaught } = await import('../tools/pdf/composeArtifactDocument')
@@ -150,6 +152,34 @@ export async function fulfillArtifactSignals(
     const entry = buildFulfillmentEntry(signal.subject, title, composed, result)
     if (entry.kind === 'artifact') artifacts.push(entry.payload)
     else failures.push(entry.failure)
+  }
+
+  // P15 — AUDIO OUTPUT RECONNECTION.
+  // Root gap: emit_audio was a valid signal type in the schema (the model
+  // could technically call it) but fulfillArtifactSignals only ever
+  // filtered for emit_pdf — an emit_audio signal was silently accepted and
+  // then never executed. Fix mirrors the emit_pdf pattern exactly: the
+  // model (Sarah, via signal_artifact) decides WHETHER audio is warranted;
+  // this function executes that decision using the same generateSpeech()
+  // already relied upon by execution-engine.ts's non-streaming tool_audio
+  // path. No new capability, no second tutor — Tutor Core still decides,
+  // this only carries the decision through in the streaming path too.
+  if (audioSignals.length > 0) {
+    const { generateSpeech } = await import('../tools/audio-toolkit')
+    const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' }
+    const voice = MENTOR_VOICES[String(mentorName).toLowerCase()] ?? 'fable'
+
+    for (const signal of audioSignals) {
+      const textToSpeak = (excerptForSubject(pedagogicalContent, signal.subject) || pedagogicalContent)
+        .slice(0, 3000)
+      const result = await generateSpeech(textToSpeak, { voice })
+      if (result.success && result.url) {
+        artifacts.push({ type: 'audio', dataUrl: result.url } as ArtifactPayload)
+      } else {
+        console.error('[P15] generateSpeech failed', signal.subject, result.message)
+        failures.push({ subject: signal.subject })
+      }
+    }
   }
 
   return { artifacts, failures }
