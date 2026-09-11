@@ -62,6 +62,21 @@ export const SIGNAL_ARTIFACT_TOOL = {
   },
 }
 
+// SEEK 5.0 P14 — CAPABILITY TRUTH.
+// Root gap: this block already declared what the tutor CANNOT do
+// ("emit_audio is unavailable in this runtime") but never declared the
+// symmetric positive truth for PDF materialization, which IS always
+// available in this runtime (composeDocumentFromTaught/renderCoursePdf are
+// not gated by any external flag). Left to its own judgment, the model
+// sometimes denied a capability the runtime actually has — a false,
+// commercially damaging denial.
+// Fix: state PDF availability explicitly, in the same declarative style as
+// the existing audio line, with the required distinction spelled out —
+// capability availability is not the same as a specific file already being
+// ready. The tutor may truthfully offer to prepare/materialize a PDF; it
+// must never claim one is already generated before signal_artifact and the
+// side-effect pipeline actually produce it. No new capability system: this
+// reuses the exact mechanism already governing the audio statement.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 ARTIFACT CHANNEL:
 You have a structured side-effect channel named signal_artifact.
@@ -70,5 +85,6 @@ If the act contains distinct taught parts and each part independently warrants i
 Do not emit an artifact per part by default. Decide.
 Do not print JSON, tool names, or debug to the student.
 Do not call the tool merely because the user wrote PDF or artifact; finish teaching, then decide.
+emit_pdf IS available in this runtime: you may truthfully offer to prepare/materialize what you taught as a downloadable PDF. This states that the mechanism exists, not that a specific file is already generated — never claim a document has been created or is ready to download before it actually has been; simply teach, then let materialization happen through the normal signal_artifact decision.
 emit_audio is unavailable in this runtime.
 `
