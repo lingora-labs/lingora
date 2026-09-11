@@ -60,6 +60,37 @@ export function executePlanStream(
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
         }
+
+        // P16 — VOICE CONVERSATION: if this turn started as spoken input,
+        // the SAME text response Tutor Core just produced is also spoken by
+        // default — a transport/turn-taking decision, not a pedagogical
+        // one. Sarah does not have to call signal_artifact just to talk
+        // back; that mechanism stays reserved for deliberate audio
+        // artifacts (pronunciation models, saved listening material) via
+        // fulfillArtifactSignals above. Exactly fullText is spoken — no
+        // second model, no shorter/parallel answer, no new tutor. If an
+        // emit_audio signal already produced an audio artifact this turn,
+        // do not speak a second time.
+        if (request.audioDataUrl && fullText.trim().length > 0
+            && !artifacts.some((a) => (a as { type?: string }).type === 'audio')) {
+          try {
+            const { generateSpeech } = await import('../tools/audio-toolkit')
+            const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' }
+            const mentorKey = String((state as unknown as { mentorProfile?: string }).mentorProfile ?? 'alex').toLowerCase()
+            const voice = MENTOR_VOICES[mentorKey] ?? 'fable'
+            const tts = await generateSpeech(fullText, { voice })
+            if (tts.success && tts.url) {
+              artifacts.push({ type: 'audio', dataUrl: tts.url } as ArtifactPayload)
+            } else {
+              console.error('[P16] voice-turn TTS failed', tts.message)
+              artifactFailures.push({ subject: 'Respuesta hablada' })
+            }
+          } catch (e) {
+            console.error('[P16] voice-turn TTS exception', e instanceof Error ? e.message : e)
+            artifactFailures.push({ subject: 'Respuesta hablada' })
+          }
+        }
+
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
         if (artifacts.length > 0) {

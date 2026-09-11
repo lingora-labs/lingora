@@ -292,6 +292,26 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
+    // P16-T6 — STT FAILURE TRUTH. Previously: on failed/empty transcription,
+    // an EMPTY message fell through to intent classification and the
+    // mentor, producing a confused or generic reply instead of a truthful
+    // "please try again". Voice input with no usable transcript must never
+    // silently continue as if the user said nothing — session/state is
+    // still preserved (not touched below), only this one turn short-circuits.
+    if (hasAudio && audioDataUrl && !audioTranscript) {
+      const lang = state.interfaceLanguage ?? 'en';
+      const retryMsgs: Record<string, string> = {
+        es: 'No pude entender el audio. ¿Puedes intentarlo de nuevo?',
+        en: 'I could not understand the audio. Could you try again?',
+        no: 'Jeg fikk ikke med meg lyden. Kan du proeve igjen?',
+      };
+      return NextResponse.json({
+        message: retryMsgs[lang] ?? retryMsgs.en,
+        state,
+        suggestedActions: [],
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+    }
+
     const rawMessageForNormalization =
       hasAudio && (message ?? '').trim() !== '' && AUDIO_FILENAME_RE.test((message ?? '').trim())
         ? ''

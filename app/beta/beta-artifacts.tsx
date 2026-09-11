@@ -48,7 +48,12 @@ export function ArtifactRender({ a }: { a: Artifact }) {
     return (
       <div style={{ marginTop:8 }}>
         <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', letterSpacing:'.06em', textTransform:'uppercase' }}>🔊 Respuesta de audio</div>
-        <audio controls src={src} style={{ marginTop:6, width:'100%', height:28 }} />
+        {/* P16 — voice-turn replies autoplay: the mic tap that started this
+            exchange is the user gesture: most browsers permit the audio
+            response from that same interaction chain to play without a
+            second tap. Controls remain visible so the user can pause/replay
+            regardless of autoplay policy in their specific browser. */}
+        <audio controls autoPlay src={src} style={{ marginTop:6, width:'100%', height:28 }} />
       </div>
     )
   }
