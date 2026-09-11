@@ -350,6 +350,35 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const result       = await executePlan(plan, chatRequest, state);
     const updatedState = mergeStatePatch(state, result.statePatch);
 
+    // P16 — VOICE CONVERSATION (blocking/non-streaming path parity).
+    // Blocking plans (first turn, hard overrides, document-contract gates,
+    // structured pedagogical phases) go through executePlan() here, not the
+    // SSE stream — execution-engine-stream.ts's auto-speak-on-voice-turn
+    // fix never runs for them. Verified in production (voice_loop harness):
+    // turn 1 (first turn, blocking) produced no audio while turn 2+
+    // (streaming) did. Mirror the same transport-level decision here: if
+    // this turn started as voice and the plan did not already produce its
+    // own artifact, speak the SAME text Tutor Core just produced. No second
+    // brain, no new capability — same generateSpeech already relied on
+    // elsewhere.
+    let resultArtifact = result.artifact;
+    if (hasAudio && audioDataUrl && result.message.trim().length > 0 && !resultArtifact) {
+      try {
+        const { generateSpeech } = await import('../../../server/tools/audio-toolkit');
+        const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' };
+        const mentorKey = String(state.mentorProfile ?? 'alex').toLowerCase();
+        const voice = MENTOR_VOICES[mentorKey] ?? 'fable';
+        const tts = await generateSpeech(result.message, { voice });
+        if (tts.success && tts.url) {
+          resultArtifact = { type: 'audio', dataUrl: tts.url } as typeof result.artifact;
+        } else {
+          console.error('[P16] blocking-path voice TTS failed', tts.message);
+        }
+      } catch (e) {
+        console.error('[P16] blocking-path voice TTS exception', e instanceof Error ? e.message : e);
+      }
+    }
+
     let commercialSuffix: string | undefined;
     if (!plan.blocking) {
       const commercial = await evaluateCommercial(updatedState, plan);
@@ -362,7 +391,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       message: commercialSuffix
         ? `${result.message}\n\n${commercialSuffix}`
         : result.message,
-      artifact:         result.artifact,
+      artifact:         resultArtifact,
       state:            updatedState,
       suggestedActions: result.suggestedActions,
       ...(!IS_PRODUCTION && DEBUG_TRACE && {
