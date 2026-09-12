@@ -97,6 +97,29 @@ function safe(v: unknown, max = 400): string {
   return toPdfSafeText(String(v ?? ''), max);
 }
 
+// P19 — PREMIUMIZATION. Root gap: content.mentorName arrives as whatever
+// case the caller sent (state.mentorProfile is often lowercase — 'sarah',
+// 'alex', 'nick' — from frontend session state), and every render site
+// echoed it verbatim, showing "sarah" instead of "Sarah" on covers, page
+// headers and closing summaries.
+function capitalizeMentor(name: string | undefined): string {
+  const n = (name ?? '').trim();
+  return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : n;
+}
+
+// P19 — hoisted out of renderCover so the compact header (short documents)
+// can share the exact same badge text instead of duplicating the map.
+const EPISTEMIC_BADGE_MAP: Record<string, string> = {
+  'language_course':       'Curso de idioma',
+  'domain_theoretical':    'Curso teorico',
+  'domain_practical':      'Guia practica',
+  'reference_guide':       'Material de referencia',
+  'exam_preparation':      'Preparacion de examen',
+  'professional_training': 'Formacion profesional',
+  'cultural_guide':        'Guia cultural',
+  'mixed':                 'Material combinado',
+};
+
 const W = 595.28, H = 841.89;
 const ML = 48, MR = 48;
 const CW = W - ML - MR;
@@ -123,7 +146,7 @@ async function newPage(doc: PDFDocument, bold: PDFFont, reg: PDFFont, doc_conten
   const page = doc.addPage([W, H]);
   page.drawRectangle({ x: 0, y: H - 38, width: W, height: 38, color: C_DARK });
   page.drawText('LINGORA', { x: ML, y: H - 24, size: 11, font: bold, color: C_WHITE });
-  const sub = safe(`${doc_content.mentorName} - ${doc_content.level ?? ''} - ${doc_content.title}`, 90);
+  const sub = safe(`${capitalizeMentor(doc_content.mentorName)} - ${doc_content.level ?? ''} - ${doc_content.title}`, 90);
   page.drawText(sub, { x: ML, y: H - 34, size: 7, font: reg, color: C_TEAL });
   return { doc, page, bold, reg, y: H - 52 };
 }
@@ -450,18 +473,8 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
   cover.drawText('AI Cultural Immersion Platform for Spanish', { x: ML, y: H - 102, size: 10, font: reg, color: C_TEAL });
   cover.drawRectangle({ x: ML, y: H - 116, width: CW, height: 1.5, color: C_TEAL });
 
-  const badgeMap: Record<string, string> = {
-    'language_course':       'Curso de idioma',
-    'domain_theoretical':    'Curso teorico',
-    'domain_practical':      'Guia practica',
-    'reference_guide':       'Material de referencia',
-    'exam_preparation':      'Preparacion de examen',
-    'professional_training': 'Formacion profesional',
-    'cultural_guide':        'Guia cultural',
-    'mixed':                 'Material combinado',
-  };
   const badgeText = content.epistemicNature
-    ? (badgeMap[content.epistemicNature] ?? content.documentType)
+    ? (EPISTEMIC_BADGE_MAP[content.epistemicNature] ?? content.documentType)
     : (ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType);
   if (badgeText) {
     const badge = safe(badgeText.toUpperCase(), 30);
@@ -485,14 +498,17 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
   }
 
   y -= 20;
+  // P19 — METADATA HYGIENE. Root gap: "Bloques: N" and "Idioma: ES" are
+  // backend/internal facts with zero value to the student reading a
+  // downloaded document — they described the document's own construction,
+  // not its content. Removed. Level (when actually confirmed) and mentor
+  // (now properly capitalized) remain — both are genuinely useful context.
   const meta = [
     content.level ? ['Nivel de español', content.level] : null,
-    content.mentorName ? ['Mentor', content.mentorName] : null,
-    content.nativeLanguage ? ['Idioma', (content.nativeLanguage).toUpperCase()] : null,
-    ['Bloques', String(content.blocks?.length ?? 0)],
+    content.mentorName ? ['Mentor', capitalizeMentor(content.mentorName)] : null,
   ].filter(Boolean) as [string, string][];
 
-  const colW = CW / Math.min(meta.length, 4);
+  const colW = CW / Math.max(1, Math.min(meta.length, 4));
   meta.slice(0, 4).forEach(([k, v], i) => {
     const x = ML + i * colW;
     cover.drawRectangle({ x, y: y - 36, width: colW - 4, height: 36, color: rgb(0.12, 0.16, 0.28) });
@@ -502,6 +518,43 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
 
   cover.drawText('Learn -> Connect -> Experience', { x: ML, y: 36, size: 9, font: reg, color: C_TEAL });
   cover.drawText(safe(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - ${content.generatedAt}`, 60), { x: ML, y: 20, size: 8, font: reg, color: C_MUTED });
+}
+
+// P19 — ADAPTIVE COVER. Root gap: renderCover() always consumed a full
+// dedicated page — for a short artifact (a single table, a quick schema:
+// a handful of blocks) that meant a nearly-empty premium page followed by
+// the actual content, which read as padding rather than design. This
+// compact variant draws the same visual language (dark band, badge,
+// title, mentor) directly at the top of the FIRST CONTENT page instead of
+// spending a whole page on it — content begins immediately below. Reuses
+// the exact same colors/fonts/badge map as the full cover; no new design
+// language, no new renderer, just a condensed placement for short docs.
+async function newPageWithCompactHeader(doc: PDFDocument, bold: PDFFont, reg: PDFFont, content: DocumentContent): Promise<PS> {
+  const page = doc.addPage([W, H]);
+  const headerH = 116;
+  page.drawRectangle({ x: 0, y: H - headerH, width: W, height: headerH, color: C_DARK });
+  page.drawText('LINGORA', { x: ML, y: H - 26, size: 13, font: bold, color: C_WHITE });
+
+  const badgeText = content.epistemicNature
+    ? (EPISTEMIC_BADGE_MAP[content.epistemicNature] ?? content.documentType)
+    : (ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType);
+  if (badgeText) {
+    page.drawText(safe(badgeText.toUpperCase(), 30), { x: ML, y: H - 46, size: 8, font: bold, color: C_TEAL });
+  }
+
+  let y = H - 64;
+  const titleLines = wrapLines(content.title, bold, 16, CW).slice(0, 2);
+  for (const line of titleLines) {
+    page.drawText(safe(line), { x: ML, y, size: 16, font: bold, color: C_WHITE });
+    y -= 19;
+  }
+
+  const metaLine = [capitalizeMentor(content.mentorName), content.level].filter(Boolean).join('   ·   ');
+  if (metaLine) {
+    page.drawText(safe(metaLine, 70), { x: ML, y: H - headerH + 14, size: 8, font: reg, color: C_TEAL });
+  }
+
+  return { doc, page, bold, reg, y: H - headerH - 18 };
 }
 
 async function renderClosing(ps: PS, content: DocumentContent): Promise<void> {
@@ -519,11 +572,14 @@ async function renderClosing(ps: PS, content: DocumentContent): Promise<void> {
     gap(ps, 12);
   }
 
+  // P19 — METADATA HYGIENE. Root gap: "Estudiante: Estudiante" (the
+  // generic placeholder name is never replaced with a real one anywhere
+  // upstream, so this row always read as a literal duplicate) and
+  // "Bloques: N" (an internal construction count) carried no value for
+  // the student closing the document. Removed. Mentor name capitalized.
   const summary = [
-    content.studentName ? ['Estudiante', content.studentName] : null,
-    content.level       ? ['Nivel de español', content.level]       : null,
-    ['Mentor',           content.mentorName],
-    ['Bloques',          String(content.blocks?.length ?? 0)],
+    content.level ? ['Nivel de español', content.level] : null,
+    ['Mentor', capitalizeMentor(content.mentorName)],
   ].filter(Boolean) as [string, string][];
 
   for (const [k, v] of summary) {
@@ -540,9 +596,22 @@ export async function renderCoursePdf(content: DocumentContent): Promise<Uint8Ar
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const reg  = await doc.embedFont(StandardFonts.Helvetica);
 
-  await renderCover(doc, bold, reg, content);
+  // P19 — ADAPTIVE COVER DENSITY. A dedicated full cover page is worth its
+  // page for a real course/lesson/study guide; for a short artifact (a
+  // quick table, a compact schema — a handful of blocks) it was mostly
+  // empty space ahead of the actual content. Threshold matches the
+  // observed shape of short vs long artifacts in production (a single
+  // table/schema/key_value delivery is typically 1-4 blocks; a real
+  // lesson or study guide is consistently well above that).
+  const isShort = (content.blocks?.length ?? 0) <= 4;
 
-  let ps = await newPage(doc, bold, reg, content);
+  let ps: PS;
+  if (isShort) {
+    ps = await newPageWithCompactHeader(doc, bold, reg, content);
+  } else {
+    await renderCover(doc, bold, reg, content);
+    ps = await newPage(doc, bold, reg, content);
+  }
 
   for (const block of (content.blocks ?? [])) {
     ps = await renderBlock(ps, block, content);
