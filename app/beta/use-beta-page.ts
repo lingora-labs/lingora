@@ -1,7 +1,7 @@
 'use client'
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
-  BACKEND_LANG, MENTOR_META, COPY, GREETINGS, TSYS,
+  BACKEND_LANG, MENTOR_META, COPY, TSYS,
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
@@ -286,7 +286,7 @@ export function useBetaPage() {
     setActiveMode(mode)
     setSession(s => { const n = { ...s, activeMode: mode }; sessionRef.current = n; return n })
     setPhase('chat')
-    const m = mentorRef.current; const l = langRef.current
+    const m = mentorRef.current
     const modeLabels: Record<ActiveMode, string> = {
       interact: 'Interacción inteligente', structured: 'Curso estructurado', pdf_course: 'Curso PDF', free: 'Conversación libre',
     }
@@ -296,9 +296,21 @@ export function useBetaPage() {
         callAPI({ message: 'Modo seleccionado: ' + modeLabels[mode] + '. Tema: ' + topicRef.current + '. Nivel: ' + (sessionRef.current.level ?? 'A1') + '. Por favor muestra la hoja de ruta.', activeMode: mode })
       }, 400)
     } else {
-      const greeting = GREETINGS[m][l] ?? GREETINGS[m].en ?? GREETINGS[m].es ?? ''
-      const modeNote = mode === 'free' ? '' : '\n\n_Modo interacción inteligente activo — respondo con tablas y esquemas cuando el contenido lo merece._'
-      setMsgs([{ id:'init', sender:m, text: greeting + (mode !== 'free' ? modeNote : '') }])
+      // P18 — FIRST-TURN STREAMING. Root gap: this branch inserted a
+      // hardcoded, fully-formed GREETINGS[mentor][lang] string with zero
+      // API call, zero loading state, zero streaming — the mentor appeared
+      // pre-scripted before ever "thinking." Fix: clear the message list
+      // and call the SAME /api/chat pipeline every later turn uses, with
+      // no synthetic message text. The backend's own first-turn detection
+      // (state.tokens === 0) already produces a contextual greeting via
+      // FIRST_TURN_DIRECTIVE — using selected mentor, interfaceLanguage,
+      // topic and mode — and P18's orchestrator fix makes this specific
+      // plan stream instead of blocking, so the existing Typing indicator
+      // (loading && <Typing/>) shows until the first delta arrives, then
+      // the bubble grows progressively exactly like any other turn.
+      // No new first-message brain — one tutor pipeline, for every mentor.
+      setMsgs([])
+      void callAPI({ message: '', activeMode: mode })
     }
   }, [callAPI])
   const toggleRec = useCallback(async () => {

@@ -538,7 +538,18 @@ function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
   return {
     executor: isStructured ? 'hybrid' : 'mentor',
     priority: PRIORITY.FIRST_TURN,
-    blocking: true,
+    // P18 — FIRST-TURN STREAMING. Root gap: this plan was unconditionally
+    // blocking:true, so route.ts's `STREAMING_ENABLED && !plan.blocking`
+    // check always sent the first interact/free turn through the
+    // non-streaming JSON path — even though the frontend, for those two
+    // modes, never called this plan at all (it inserted a hardcoded static
+    // GREETINGS[] string with zero API call — see use-beta-page.ts P18
+    // fix). Now that the frontend actually calls through for the first
+    // turn, it must stream like every later turn does, or "thinking then
+    // progressive response" is impossible. structured/pdf_course keeps
+    // blocking:true unchanged — that path already works as designed and
+    // was not part of the reported defect.
+    blocking: isStructured,
     pedagogicalAction: 'first_turn_greeting',
     artifacts: isStructured ? ['audio'] : [],
     mentor: buildMentorDirective(ctx.state.mentorProfile, 'FIRST_TURN_DIRECTIVE', ctx),
