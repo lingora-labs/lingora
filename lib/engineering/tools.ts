@@ -226,6 +226,9 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('p17_test_plan')) {
+    return runP17TestPlan();
+  }
   if (prompt && prompt.startsWith('product_test_a')) {
     return runProductTestA();
   }
@@ -322,6 +325,102 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
 }
 
 // ============================================================
+// P17 — DELTA REPAIR TEST PLAN (A: pronunciation truth,
+// B: interface language, C: topic continuity, D: export quality).
+// Minimum needed per the P17 CEO directive — one pass, no repeats.
+// ============================================================
+async function runP17TestPlan(): Promise<Record<string, unknown>> {
+  const { generateSpeech } = await import('../../server/tools/audio-toolkit');
+
+  // ---- TEST A: pronunciation truth — same clean audio twice, no invented error ----
+  const targetPhrase = 'Me gusta el café con leche.';
+  const ttsA = await generateSpeech(targetPhrase, { voice: 'nova' });
+  let testA: Record<string, unknown> = { skipped: true, reason: 'tts_failed' };
+  if (ttsA.success && ttsA.url) {
+    const a1 = await callChatAPI('', { ...WILLY_INITIAL_STATE, interfaceLanguage: 'es' }, { audioDataUrl: ttsA.url, audioMimeType: 'audio/mpeg', pronunciationTarget: targetPhrase });
+    const a2 = await callChatAPI('', { ...WILLY_INITIAL_STATE, interfaceLanguage: 'es' }, { audioDataUrl: ttsA.url, audioMimeType: 'audio/mpeg', pronunciationTarget: targetPhrase });
+    const a1Lower = a1.message.toLowerCase();
+    const a2Lower = a2.message.toLowerCase();
+    const a1ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|\u2192/.test(a1Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a1Lower);
+    const a2ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|\u2192/.test(a2Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a2Lower);
+    testA = {
+      target: targetPhrase,
+      attempt1: a1.message.slice(0, 400),
+      attempt2: a2.message.slice(0, 400),
+      attempt1ClaimsError: a1ClaimsError,
+      attempt2ClaimsError: a2ClaimsError,
+      consistentVerdict: a1ClaimsError === a2ClaimsError,
+      usedGroundedPath: a1.message.toUpperCase().includes('SCORE') === false, // grounded path returns feedbackText, not raw SCORE: label
+    };
+  }
+
+  // ---- TEST B: interface language — EN explanation + ES examples, explicit switches ----
+  let stateB: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
+  const b1 = await callChatAPI("I'm a beginner. Teach me ser vs estar simply.", stateB);
+  if (b1.state) stateB = b1.state as Record<string, unknown>;
+  const b2 = await callChatAPI('Ahora explícame eso en español.', stateB);
+  if (b2.state) stateB = b2.state as Record<string, unknown>;
+  const b3 = await callChatAPI('Back to English.', stateB);
+  if (b3.state) stateB = b3.state as Record<string, unknown>;
+
+  const ENGLISH_MARKERS = /\b(the|is|are|use|when|because|for|state|identity)\b/i;
+  const SPANISH_MARKERS = /\b(el|la|es|son|usa|porque|estado|identidad|cuando)\b/i;
+  const testB = {
+    turn1_expectEnglish: { sent: "I'm a beginner. Teach me ser vs estar simply.", preview: b1.message.slice(0, 300), looksEnglish: ENGLISH_MARKERS.test(b1.message) && !/^(hola|claro|perfecto)/i.test(b1.message.trim()) },
+    turn2_expectSpanishSwitch: { sent: 'Ahora explícame eso en español.', preview: b2.message.slice(0, 300), looksSpanish: SPANISH_MARKERS.test(b2.message) },
+    turn3_expectEnglishReturn: { sent: 'Back to English.', preview: b3.message.slice(0, 300), looksEnglish: ENGLISH_MARKERS.test(b3.message) },
+  };
+
+  // ---- TEST C: topic continuity — pluscuamperfecto -> more visual -> table ----
+  let stateC: Record<string, unknown> = { ...WILLY_INITIAL_STATE };
+  const c1 = await callChatAPI('Explícame el pretérito pluscuamperfecto en español.', stateC);
+  if (c1.state) stateC = c1.state as Record<string, unknown>;
+  const c2 = await callChatAPI('Hazlo más visual.', stateC);
+  if (c2.state) stateC = c2.state as Record<string, unknown>;
+  const c3 = await callChatAPI('Quiero tabla.', stateC);
+  if (c3.state) stateC = c3.state as Record<string, unknown>;
+
+  const c3LastConcept = String((stateC as any).lastConcept ?? '');
+  const c3Artifact = c3.artifacts?.[0] as { title?: string } | undefined;
+  const topicPreserved = /pluscuamperfecto/i.test(c3LastConcept) || /pluscuamperfecto/i.test(c3Artifact?.title ?? '') || /pluscuamperfecto/i.test(c3.message);
+  const testC = {
+    turn1: { sent: 'Explícame el pretérito pluscuamperfecto en español.', lastConceptAfter: String((c1.state as any)?.lastConcept ?? 'MISSING') },
+    turn2: { sent: 'Hazlo más visual.', lastConceptAfter: String((c2.state as any)?.lastConcept ?? 'MISSING') },
+    turn3: { sent: 'Quiero tabla.', lastConceptAfter: c3LastConcept, artifactTitle: c3Artifact?.title, messagePreview: c3.message.slice(0, 200) },
+    topicPreserved,
+  };
+
+  // ---- TEST D: export quality — reuse Test B/C transcript, export, inspect ----
+  const exportTranscript = [
+    `[Student]: ${c1.message ? 'Explícame el pretérito pluscuamperfecto en español.' : ''}`,
+    `[SARAH]: ${c1.message.slice(0, 2000)}`,
+    `[Student]: Hazlo más visual.`,
+    `[SARAH]: ${c2.message.slice(0, 2000)}`,
+    `[Student]: Quiero tabla.`,
+    `[SARAH]: ${c3.message.slice(0, 500)}`,
+  ].join('\n\n');
+  const exportR = await callChatAPI('Exporta esta conversación a PDF', stateC, { exportTranscript });
+  let testD: Record<string, unknown> = { artifactPresent: !!exportR.artifact };
+  const exportArtifact = exportR.artifact as { url?: string; type?: string } | undefined;
+  if (exportArtifact?.url) {
+    try {
+      const escrow = await escrowSingleDataUrl(exportArtifact.url, 'p17-export-test');
+      testD = { ...testD, artifactType: exportArtifact.type, escrow };
+    } catch (e) {
+      testD = { ...testD, escrowError: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  return {
+    harness: 'p17_test_plan',
+    TEST_A_pronunciation_truth: testA,
+    TEST_B_interface_language: testB,
+    TEST_C_topic_continuity: testC,
+    TEST_D_export_quality: testD,
+  };
+}
+
+// ============================================================
 // PRODUCT TRUTH AUDIT — SESSION A (Tests 1, 2, 3, 5, 7)
 // One coherent production session, English interface, real multi-turn
 // state continuity via /api/chat, exactly as the browser would send it.
@@ -340,23 +439,15 @@ async function runProductTestA(): Promise<Record<string, unknown>> {
     return r;
   }
 
-  // TEST 1
   await turn('T1a_basic_request', "I'm a beginner. I want to learn when to use ser and estar. Please keep it simple.");
   await turn('T1b_reasoned_mistake', "I think 'soy cansado' is correct because tired is a state of being.");
-
-  // TEST 2
   await turn('T2_depth_shift', "Now explain ser vs estar as if I were a linguistics student. I want the semantic distinction, edge cases, and examples where both are possible but the meaning changes.");
-
-  // TEST 3
   await turn('T3a_topic_switch', "Forget Spanish for a moment. Explain why acupuncture uses the concept of meridians, separating traditional Chinese theory from modern scientific evidence.");
   await turn('T3b_return_to_spanish', "Now use what you just explained to teach me three useful Spanish sentences for discussing acupuncture with a doctor.");
-
-  // TEST 5
   await turn('T5a_best_format', "Show me this in the best visual format for understanding it.");
   const t5b = await turn('T5b_more_visual', "Make it more visual.");
   await turn('T5c_why_format', "Why did you choose this format?");
 
-  // TEST 7 — export this exact session
   const exportTranscript = transcriptLines.join('\n\n');
   const exportR = await callChatAPI('Exporta esta conversación a PDF', state, { exportTranscript });
   if (exportR.state) state = exportR.state as Record<string, unknown>;
@@ -393,7 +484,6 @@ async function runProductTestA(): Promise<Record<string, unknown>> {
 
 // ============================================================
 // PRODUCT TRUTH AUDIT — SESSION B (Test 4, Zakia reproduction)
-// Natural new-learner sequence, no coaching, no mention of Zakia.
 // ============================================================
 async function runProductTestB(): Promise<Record<string, unknown>> {
   let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
@@ -418,10 +508,6 @@ async function runProductTestB(): Promise<Record<string, unknown>> {
 
 // ============================================================
 // PRODUCT TRUTH AUDIT — SESSION C (Test 6, pronunciation)
-// Honest limitation disclosed inline: synthetic TTS input is phonetically
-// clean, so this can only test whether feedback is ATTEMPT-SPECIFIC
-// (references the actual words/target), not whether real human
-// mispronunciation is detected.
 // ============================================================
 async function runProductTestC(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
@@ -430,7 +516,6 @@ async function runProductTestC(): Promise<Record<string, unknown>> {
   const r1 = await callChatAPI('Can you give me a short Spanish phrase to practice pronunciation?', state);
   if (r1.state) state = r1.state as Record<string, unknown>;
 
-  // Extract a plausible target phrase heuristically: look for quoted text.
   const quoteMatch = r1.message.match(/[«"“]([^»"”]{3,60})[»"”]/) || r1.message.match(/\*\*([^*]{3,60})\*\*/);
   const targetPhrase = quoteMatch ? quoteMatch[1] : 'Buenos días, ¿cómo está usted?';
 
@@ -797,7 +882,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a (multi-turn: basic diagnosis, depth shift, topic switch, visual decision, session export), product_test_b (Zakia reproduction check), or product_test_c (pronunciation feedback check). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, or p17_test_plan (A: pronunciation truth, B: interface language, C: topic continuity, D: export quality). No browser needed.' },
   ];
 }
 
