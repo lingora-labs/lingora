@@ -78,6 +78,8 @@ interface ChatAPIResult {
   durationMs: number;
   contentType: string;
   deltaCount: number;
+  suggestedActions: unknown;
+  rawDonePayload: unknown;
 }
 
 async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
@@ -114,6 +116,8 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
     const artifacts: unknown[] = [];
     let modelSignals: unknown[] = [];
     let deltaCount = 0;
+    let suggestedActions: unknown = undefined;
+    let rawDonePayload: unknown = undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -127,11 +131,13 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
           const chunk = JSON.parse(line.slice(6).trim());
           if (typeof chunk.delta === 'string') { fullText += chunk.delta; deltaCount++; }
           if (chunk.done) {
+            rawDonePayload = chunk;
             if (chunk.message) fullText = chunk.message;
             if (chunk.state) finalState = chunk.state;
             if (chunk.artifact) { artifact = chunk.artifact; artifacts.push(chunk.artifact); }
             if (chunk.artifacts) artifacts.push(...chunk.artifacts);
             if (Array.isArray(chunk.artifactSignals)) modelSignals = chunk.artifactSignals;
+            suggestedActions = chunk.suggestedActions;
           } else if (chunk.artifact) {
             artifact = chunk.artifact;
             artifacts.push(chunk.artifact);
@@ -140,7 +146,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       }
     }
 
-    return { message: fullText, artifact, artifacts, modelSignals, state: finalState, chars: fullText.length, durationMs, contentType: ct, deltaCount };
+    return { message: fullText, artifact, artifacts, modelSignals, state: finalState, chars: fullText.length, durationMs, contentType: ct, deltaCount, suggestedActions, rawDonePayload };
   } else {
     const data = await res.json();
     const msg = data.message || '';
@@ -155,6 +161,8 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       durationMs,
       contentType: ct,
       deltaCount: 0,
+      suggestedActions: data.suggestedActions,
+      rawDonePayload: data,
     };
   }
 }
@@ -231,6 +239,9 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('p18_action_trace')) {
+    return runP18ActionTrace();
+  }
   if (prompt && prompt.startsWith('p18_first_turn')) {
     return runP18FirstTurn();
   }
@@ -372,6 +383,48 @@ async function runP18FirstTurn(): Promise<Record<string, unknown>> {
   }
 
   return { harness: 'p18_first_turn', results };
+}
+
+// ============================================================
+// P18 — ACTION BAR END-TO-END TRACE.
+// Real production calls for Sarah and Alex, mentor-first substantive
+// turns (matches pedagogicalAction:'lesson'). Captures the FULL chain the
+// server can observe: raw SSE done payload -> parsed suggestedActions ->
+// what callChatAPI (mirroring use-beta-page.ts's own SSE parser byte-for-
+// byte) would hand to setMsgs(). Cannot observe React state / DOM from
+// here — that boundary is named explicitly in the output.
+// ============================================================
+async function runP18ActionTrace(): Promise<Record<string, unknown>> {
+  const sarahState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 1, userLevel: 'A1' };
+  const sarahR = await callChatAPI("Explain when to use ser vs estar, with examples.", sarahState);
+
+  const alexState = { ...WILLY_INITIAL_STATE, mentorProfile: 'alex', interfaceLanguage: 'en', tokens: 1, userLevel: 'A1' };
+  const alexR = await callChatAPI("I'm planning a trip to Mexico, help me with useful travel phrases.", alexState);
+
+  return {
+    harness: 'p18_action_trace',
+    NOTE: 'This traces backend -> SSE bytes -> what a spec-correct client parser receives. React state / DOM rendering cannot be observed server-side; that boundary starts exactly where use-beta-page.ts calls setMsgs() with the same suggestedActions value shown here.',
+    sarah: {
+      sentMessage: "Explain when to use ser vs estar, with examples.",
+      contentType: sarahR.contentType,
+      responsePreview: sarahR.message.slice(0, 200),
+      artifactPresent: !!sarahR.artifact,
+      artifactType: (sarahR.artifact as { type?: string } | null)?.type ?? null,
+      suggestedActions_parsed: sarahR.suggestedActions,
+      rawDoneSSEPayloadKeys: sarahR.rawDonePayload ? Object.keys(sarahR.rawDonePayload as object) : null,
+      rawDoneSSEPayload_suggestedActionsField: (sarahR.rawDonePayload as { suggestedActions?: unknown } | undefined)?.suggestedActions,
+    },
+    alex: {
+      sentMessage: "I'm planning a trip to Mexico, help me with useful travel phrases.",
+      contentType: alexR.contentType,
+      responsePreview: alexR.message.slice(0, 200),
+      artifactPresent: !!alexR.artifact,
+      artifactType: (alexR.artifact as { type?: string } | null)?.type ?? null,
+      suggestedActions_parsed: alexR.suggestedActions,
+      rawDoneSSEPayloadKeys: alexR.rawDonePayload ? Object.keys(alexR.rawDonePayload as object) : null,
+      rawDoneSSEPayload_suggestedActionsField: (alexR.rawDonePayload as { suggestedActions?: unknown } | undefined)?.suggestedActions,
+    },
+  };
 }
 
 // ============================================================
@@ -915,7 +968,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, or p18_first_turn (streaming/thinking verification for Sarah/Alex/Nick fresh sessions). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn (streaming/thinking verification for Sarah/Alex/Nick fresh sessions), or p18_action_trace (end-to-end suggestedActions trace: raw SSE done payload for Sarah/Alex). No browser needed.' },
   ];
 }
 
