@@ -539,6 +539,16 @@ export interface ChatRequest {
   files?: AttachedFile[];
   audioDataUrl?: string;
   audioMimeType?: string;
+  // P17 Defect 1 — was already sent by the frontend (use-beta-page.ts) and
+  // already handled correctly by the legacy /api/audio endpoint's grounded
+  // evaluatePronunciation() (compares actual transcript vs target text —
+  // does not hallucinate). But ChatRequest (the current /api/chat route)
+  // never carried this field, so pronunciation-practice turns silently fell
+  // through to ordinary mentor conversation, which treats the STT
+  // transcript as certain fact and can appear to "invent" errors that are
+  // really transcription noise. Wiring this through reconnects the
+  // already-correct grounded pathway — no new evaluation logic.
+  pronunciationTarget?: string;
   clientHint?: string;
 }
 

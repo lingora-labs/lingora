@@ -93,6 +93,24 @@ export function executePlanStream(
 
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        // P17 Defect 4 — TOPIC CONTINUITY.
+        // Root cause: lastConcept was only ever written in execution-engine.ts
+        // (the blocking/non-streaming path), at the line that does
+        // `statePatch.lastConcept = resolvedTopic`. Mentor-first plans — the
+        // path for nearly all free-text teaching turns — are blocking:false
+        // and always run through THIS file instead, which never wrote
+        // lastConcept at all. The orchestrator already computes the correct
+        // resolvedTopic for every plan type (including mentor-first, via
+        // resolveCurrentTopic()); this file just never persisted it. Once a
+        // conversation ran through even one streaming turn, lastConcept
+        // stayed stale/null, so a later short follow-up ("quiero tabla")
+        // fell through to a generic default instead of the active subject.
+        // Mirrors execution-engine.ts's exact logic — same guard against the
+        // 'Spanish grammar' placeholder default, same field, same semantics.
+        const resolvedTopic = plan.resolvedTopic?.trim()
+        if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
+          patch.lastConcept = resolvedTopic
+        }
         if (artifacts.length > 0) {
           const existing = (state as { artifactRegistry?: ArtifactRegistryEntry[] }).artifactRegistry ?? []
           patch.artifactRegistry = [
