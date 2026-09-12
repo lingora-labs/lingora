@@ -59,12 +59,12 @@ import {
   StatePatch,
   ChatRequest,
   SuggestedAction,
-  SuggestedActionType,
   ArtifactRegistryEntry,
 } from '../../lib/contracts';
 
 import { advanceTutorPhase } from './state-manager';
 import { buildModelParams } from '../mentors/mentor-engine';
+import { buildContextualActions } from './suggested-actions';
 
 // Single model source of truth — change via OPENAI_MAIN_MODEL env var.
 // Supports: gpt-4o-mini, gpt-5.4-nano, gpt-5.4-mini (no code changes needed).
@@ -248,7 +248,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       return { text };
     }
 
-    // ── Schema generator ─────────────────────────────────────────────────────
+    // ── Schema generator ──────────────────────────────────────────────────
     case 'tool_schema': {
       const { generateSchemaContent } = await import('../tools/schema-generator');
       const { adaptSchemaToArtifact }  = await import('../tools/schema-adapter');
@@ -871,7 +871,7 @@ Return ONLY this JSON:
       };
     }
 
-    // ── Attachment processor ─────────────────────────────────────────────────
+    // ── Attachment processor ──────────────────────────────────────────────
     case 'tool_attachment': {
       const { processAttachment } = await import('../tools/attachment-processor');
       const filesToProcess = (ctx.request.files ?? []).map(f => ({
@@ -1008,55 +1008,24 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
   // SEEK 3.9 — F3 FINAL: use explicit isUserVisibleError flag, not !o.success.
   // success:false means the step threw internally — different from an honest error message.
   const hasErrorText = outputs.some(o => o.isUserVisibleError === true && o.text);
-  const suggestedActions = buildSuggestedActions(plan, artifact, ctx.state, hasErrorText);
+  const suggestedActions = buildContextualActions({
+    pedagogicalAction: plan.pedagogicalAction,
+    artifactType: artifact?.type,
+    mentorProfile: ctx.state.mentorProfile,
+    interfaceLanguage: ctx.state.interfaceLanguage,
+    hasErrorText,
+    activeMode: ctx.state.activeMode,
+  });
   return { message, artifact, suggestedActions, statePatch };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SUGGESTED ACTIONS
+// P18 (continuation) — moved to server/core/suggested-actions.ts, shared with
+// execution-engine-stream.ts. See that file for the root-cause note: this
+// used to unconditionally push export_chat_pdf on every turn and never
+// offered table/practice/pronunciation/correction actions at all.
 // ─────────────────────────────────────────────────────────────────────────────
-
-function buildSuggestedActions(
-  plan: ExecutionPlan,
-  artifact: ArtifactPayload | undefined,
-  state: SessionState,
-  hasErrorText = false,
-): SuggestedAction[] {
-  const actions: SuggestedAction[] = [];
-
-  // SEEK 3.9 — F3: when the response is an honest error (no artifact, error text present),
-  // only offer a retry action. Do not suggest export, schema, or quiz — they are not
-  // contextually valid when the requested operation failed.
-  // SEEK 3.9 — F3 FINAL: honest error with no artifact → no suggested actions.
-  // Offering export_chat_pdf after a course generation failure is semantically wrong.
-  // The user received an error message, not content worth exporting or acting on.
-  if (hasErrorText && !artifact) {
-    return [];
-  }
-
-  if (artifact) {
-    if (artifact.type === 'quiz')                                      actions.push({ type: 'start_quiz',      label: getLabel('start_quiz',      state.interfaceLanguage) });
-    if (artifact.type === 'schema' || artifact.type === 'schema_pro') actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-    if (artifact.type === 'roadmap')                                   actions.push({ type: 'start_course',    label: getLabel('start_course',    state.interfaceLanguage) });
-  }
-  if (plan.pedagogicalAction === 'feedback' && state.activeMode === 'structured') actions.push({ type: 'next_module', label: getLabel('next_module', state.interfaceLanguage) });
-  if (plan.pedagogicalAction === 'lesson')                             actions.push({ type: 'show_schema',     label: getLabel('show_schema',     state.interfaceLanguage) });
-  actions.push({ type: 'export_chat_pdf', label: getLabel('export_chat_pdf', state.interfaceLanguage) });
-  return actions.filter((a, i, arr) => arr.findIndex(b => b.type === a.type) === i);
-}
-
-const LABELS: Record<string, Record<string, string>> = {
-  start_quiz:      { en: 'Start quiz',      es: 'Empezar quiz',       no: 'Start quiz' },
-  export_chat_pdf: { en: 'Export as PDF',   es: 'Exportar a PDF',     no: 'Eksporter som PDF' },
-  next_module:     { en: 'Next module',     es: 'Siguiente modulo',   no: 'Neste modul' },
-  start_course:    { en: 'Start course',    es: 'Empezar curso',      no: 'Start kurs' },
-  show_schema:     { en: 'Show schema',     es: 'Ver esquema',        no: 'Vis skjema' },
-  retry_quiz:      { en: 'Try again',       es: 'Intentar de nuevo',  no: 'Proev igjen' },
-};
-
-function getLabel(type: SuggestedActionType, lang: string): string {
-  return LABELS[type]?.[lang] ?? LABELS[type]?.['en'] ?? type;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS

@@ -13,6 +13,7 @@ import {
 } from '../../lib/contracts'
 import { mergeStatePatch } from './state-manager'
 import { evaluateCommercial } from './commercial-engine-adapter'
+import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import type { ArtifactFailure } from './artifact-side-effect'
 
@@ -93,20 +94,13 @@ export function executePlanStream(
 
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
-        // P17 Defect 4 — TOPIC CONTINUITY.
-        // Root cause: lastConcept was only ever written in execution-engine.ts
-        // (the blocking/non-streaming path), at the line that does
-        // `statePatch.lastConcept = resolvedTopic`. Mentor-first plans — the
-        // path for nearly all free-text teaching turns — are blocking:false
-        // and always run through THIS file instead, which never wrote
-        // lastConcept at all. The orchestrator already computes the correct
-        // resolvedTopic for every plan type (including mentor-first, via
-        // resolveCurrentTopic()); this file just never persisted it. Once a
-        // conversation ran through even one streaming turn, lastConcept
-        // stayed stale/null, so a later short follow-up ("quiero tabla")
-        // fell through to a generic default instead of the active subject.
-        // Mirrors execution-engine.ts's exact logic — same guard against the
-        // 'Spanish grammar' placeholder default, same field, same semantics.
+        // P17 Defect 4 — TOPIC CONTINUITY. Root cause: lastConcept was only
+        // ever written in execution-engine.ts (the blocking path). Mentor-
+        // first plans — the path for nearly all free-text teaching turns —
+        // are blocking:false and always run through THIS file instead,
+        // which never wrote lastConcept at all, so a later short follow-up
+        // ("quiero tabla") fell through to a generic default instead of the
+        // active subject. Mirrors execution-engine.ts's exact logic.
         const resolvedTopic = plan.resolvedTopic?.trim()
         if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
           patch.lastConcept = resolvedTopic
@@ -136,7 +130,22 @@ export function executePlanStream(
           ...(artifacts.length ? { artifacts } : {}),
           ...(artifactFailures.length ? { artifactFailures } : {}),
           ...(signals.length ? { artifactSignals: signals } : {}),
-          ...(artifact ? { suggestedActions: [{ type: 'export_chat_pdf', label: 'Export as PDF' } as SuggestedAction] } : {}),
+          // P18 (continuation) — ROOT GAP: this used to be
+          // `artifact ? [export_chat_pdf] : undefined` — no artifact meant
+          // NO suggested actions at all from the backend, and the frontend's
+          // own fallback then silently defaulted to a single "Export PDF"
+          // button on almost every ordinary conversational turn (this is the
+          // dominant path for conversation after the P18 first-turn fix).
+          // Now shares the same contextual builder as the blocking path —
+          // same trigger conditions, same 2-4 relevant actions per mentor
+          // specialty, for every transport.
+          suggestedActions: buildContextualActions({
+            pedagogicalAction: plan.pedagogicalAction,
+            artifactType: artifact?.type,
+            mentorProfile: (state as unknown as { mentorProfile?: string }).mentorProfile,
+            interfaceLanguage: (state as unknown as { interfaceLanguage?: string }).interfaceLanguage,
+            activeMode: (state as unknown as { activeMode?: string }).activeMode,
+          }),
         })
         controller.close()
       } catch (err) {
