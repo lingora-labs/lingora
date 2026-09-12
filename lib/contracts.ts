@@ -545,6 +545,12 @@ export interface ChatRequest {
 export interface ChatResponse {
   message: string;
   artifact?: ArtifactPayload;
+  // P16 — blocking-path failure truth parity with the streaming path's
+  // artifactFailures (execution-engine-stream.ts, P14-C). Reuses the exact
+  // same shape/consumer: use-beta-page.ts's non-streaming JSON handler
+  // already reads response.artifactFailures — this field was simply never
+  // populated by the blocking path. No new error architecture.
+  artifactFailures?: { subject: string }[];
   state: SessionState;
   suggestedActions?: SuggestedAction[];
   executionTrace?: ExecutionTrace;

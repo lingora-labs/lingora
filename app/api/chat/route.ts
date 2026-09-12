@@ -362,6 +362,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     // brain, no new capability — same generateSpeech already relied on
     // elsewhere.
     let resultArtifact = result.artifact;
+    let blockingArtifactFailures: { subject: string }[] | undefined;
     if (hasAudio && audioDataUrl && result.message.trim().length > 0 && !resultArtifact) {
       try {
         const { generateSpeech } = await import('../../../server/tools/audio-toolkit');
@@ -373,9 +374,11 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
           resultArtifact = { type: 'audio', dataUrl: tts.url } as typeof result.artifact;
         } else {
           console.error('[P16] blocking-path voice TTS failed', tts.message);
+          blockingArtifactFailures = [{ subject: 'Respuesta hablada' }];
         }
       } catch (e) {
         console.error('[P16] blocking-path voice TTS exception', e instanceof Error ? e.message : e);
+        blockingArtifactFailures = [{ subject: 'Respuesta hablada' }];
       }
     }
 
@@ -392,6 +395,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         ? `${result.message}\n\n${commercialSuffix}`
         : result.message,
       artifact:         resultArtifact,
+      ...(blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
       state:            updatedState,
       suggestedActions: result.suggestedActions,
       ...(!IS_PRODUCTION && DEBUG_TRACE && {
