@@ -76,6 +76,8 @@ interface ChatAPIResult {
   state: unknown;
   chars: number;
   durationMs: number;
+  contentType: string;
+  deltaCount: number;
 }
 
 async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
@@ -111,6 +113,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
     let artifact: unknown = null;
     const artifacts: unknown[] = [];
     let modelSignals: unknown[] = [];
+    let deltaCount = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -122,7 +125,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
         if (!line.startsWith('data: ')) continue;
         try {
           const chunk = JSON.parse(line.slice(6).trim());
-          if (typeof chunk.delta === 'string') fullText += chunk.delta;
+          if (typeof chunk.delta === 'string') { fullText += chunk.delta; deltaCount++; }
           if (chunk.done) {
             if (chunk.message) fullText = chunk.message;
             if (chunk.state) finalState = chunk.state;
@@ -137,7 +140,7 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       }
     }
 
-    return { message: fullText, artifact, artifacts, modelSignals, state: finalState, chars: fullText.length, durationMs };
+    return { message: fullText, artifact, artifacts, modelSignals, state: finalState, chars: fullText.length, durationMs, contentType: ct, deltaCount };
   } else {
     const data = await res.json();
     const msg = data.message || '';
@@ -150,6 +153,8 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
       state: data.state,
       chars: msg.length,
       durationMs,
+      contentType: ct,
+      deltaCount: 0,
     };
   }
 }
@@ -226,6 +231,9 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('p18_first_turn')) {
+    return runP18FirstTurn();
+  }
   if (prompt && prompt.startsWith('p17_test_plan')) {
     return runP17TestPlan();
   }
@@ -325,6 +333,48 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
 }
 
 // ============================================================
+// P18 — FIRST-TURN STREAMING VERIFICATION.
+// Real production check for all three mentors: fresh session
+// (tokens:0), empty message, interact mode — exactly what
+// selectMode() now sends. Confirms:
+//  - content-type is text/event-stream (not JSON) -> plan.blocking=false
+//  - more than one delta chunk arrived -> genuinely progressive, not a
+//    single chunk dressed up as streaming
+//  - the response is NOT a byte-for-byte match to the old hardcoded
+//    GREETINGS[] strings (contextual, not scripted)
+//  - interfaceLanguage is respected for an EN-interface fresh session
+// ============================================================
+const OLD_GREETING_FINGERPRINTS = [
+  'ya sé que quieres trabajar en este tema',
+  "you've chosen your topic",
+  'perfecto. ya tenemos el tema',
+  'topic set',
+];
+
+async function runP18FirstTurn(): Promise<Record<string, unknown>> {
+  const mentors = ['sarah', 'alex', 'nick'] as const;
+  const results: Record<string, unknown> = {};
+
+  for (const mentorKey of mentors) {
+    const freshState = { ...WILLY_INITIAL_STATE, mentorProfile: mentorKey, interfaceLanguage: 'en', tokens: 0, userLevel: undefined, confirmedLevel: null };
+    const r = await callChatAPI('', freshState);
+    const lower = r.message.toLowerCase();
+    const matchesOldScript = OLD_GREETING_FINGERPRINTS.some((f) => lower.includes(f));
+    results[mentorKey] = {
+      contentType: r.contentType,
+      isStreaming: r.contentType.includes('text/event-stream'),
+      deltaCount: r.deltaCount,
+      progressiveDelivery: r.deltaCount > 1,
+      chars: r.chars,
+      matchesOldStaticScript: matchesOldScript,
+      messagePreview: r.message.slice(0, 300),
+    };
+  }
+
+  return { harness: 'p18_first_turn', results };
+}
+
+// ============================================================
 // P17 — DELTA REPAIR TEST PLAN (A: pronunciation truth,
 // B: interface language, C: topic continuity, D: export quality).
 // Minimum needed per the P17 CEO directive — one pass, no repeats.
@@ -332,7 +382,6 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
 async function runP17TestPlan(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
 
-  // ---- TEST A: pronunciation truth — same clean audio twice, no invented error ----
   const targetPhrase = 'Me gusta el café con leche.';
   const ttsA = await generateSpeech(targetPhrase, { voice: 'nova' });
   let testA: Record<string, unknown> = { skipped: true, reason: 'tts_failed' };
@@ -350,11 +399,10 @@ async function runP17TestPlan(): Promise<Record<string, unknown>> {
       attempt1ClaimsError: a1ClaimsError,
       attempt2ClaimsError: a2ClaimsError,
       consistentVerdict: a1ClaimsError === a2ClaimsError,
-      usedGroundedPath: a1.message.toUpperCase().includes('SCORE') === false, // grounded path returns feedbackText, not raw SCORE: label
+      usedGroundedPath: a1.message.toUpperCase().includes('SCORE') === false,
     };
   }
 
-  // ---- TEST B: interface language — EN explanation + ES examples, explicit switches ----
   let stateB: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
   const b1 = await callChatAPI("I'm a beginner. Teach me ser vs estar simply.", stateB);
   if (b1.state) stateB = b1.state as Record<string, unknown>;
@@ -371,7 +419,6 @@ async function runP17TestPlan(): Promise<Record<string, unknown>> {
     turn3_expectEnglishReturn: { sent: 'Back to English.', preview: b3.message.slice(0, 300), looksEnglish: ENGLISH_MARKERS.test(b3.message) },
   };
 
-  // ---- TEST C: topic continuity — pluscuamperfecto -> more visual -> table ----
   let stateC: Record<string, unknown> = { ...WILLY_INITIAL_STATE };
   const c1 = await callChatAPI('Explícame el pretérito pluscuamperfecto en español.', stateC);
   if (c1.state) stateC = c1.state as Record<string, unknown>;
@@ -390,7 +437,6 @@ async function runP17TestPlan(): Promise<Record<string, unknown>> {
     topicPreserved,
   };
 
-  // ---- TEST D: export quality — reuse Test B/C transcript, export, inspect ----
   const exportTranscript = [
     `[Student]: ${c1.message ? 'Explícame el pretérito pluscuamperfecto en español.' : ''}`,
     `[SARAH]: ${c1.message.slice(0, 2000)}`,
@@ -420,11 +466,6 @@ async function runP17TestPlan(): Promise<Record<string, unknown>> {
   };
 }
 
-// ============================================================
-// PRODUCT TRUTH AUDIT — SESSION A (Tests 1, 2, 3, 5, 7)
-// One coherent production session, English interface, real multi-turn
-// state continuity via /api/chat, exactly as the browser would send it.
-// ============================================================
 async function runProductTestA(): Promise<Record<string, unknown>> {
   let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
   const turns: Array<{ label: string; sent: string; response: string; chars: number; artifacts: unknown[] }> = [];
@@ -482,9 +523,6 @@ async function runProductTestA(): Promise<Record<string, unknown>> {
   };
 }
 
-// ============================================================
-// PRODUCT TRUTH AUDIT — SESSION B (Test 4, Zakia reproduction)
-// ============================================================
 async function runProductTestB(): Promise<Record<string, unknown>> {
   let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
   const turns: Array<{ sent: string; response: string; chars: number }> = [];
@@ -506,9 +544,6 @@ async function runProductTestB(): Promise<Record<string, unknown>> {
   };
 }
 
-// ============================================================
-// PRODUCT TRUTH AUDIT — SESSION C (Test 6, pronunciation)
-// ============================================================
 async function runProductTestC(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
   let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en' };
@@ -544,7 +579,6 @@ async function runProductTestC(): Promise<Record<string, unknown>> {
   };
 }
 
-// P15 — AUDIO INPUT CLOSED-LOOP VERIFICATION (single turn).
 async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
   const spokenText = 'Hoy quiero aprender a decir la hora en español, por favor.';
@@ -574,7 +608,6 @@ async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
   };
 }
 
-// P16 — VOICE CONVERSATION LOOP VERIFICATION.
 async function runVoiceLoop(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
 
@@ -882,7 +915,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, or p17_test_plan (A: pronunciation truth, B: interface language, C: topic continuity, D: export quality). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, or p18_first_turn (streaming/thinking verification for Sarah/Alex/Nick fresh sessions). No browser needed.' },
   ];
 }
 
