@@ -286,15 +286,25 @@ export function useBetaPage() {
     setActiveMode(mode)
     setSession(s => { const n = { ...s, activeMode: mode }; sessionRef.current = n; return n })
     setPhase('chat')
-    const m = mentorRef.current
     const modeLabels: Record<ActiveMode, string> = {
       interact: 'Interacción inteligente', structured: 'Curso estructurado', pdf_course: 'Curso PDF', free: 'Conversación libre',
     }
     if (mode === 'structured' || mode === 'pdf_course') {
-      setMsgs([{ id:'init', sender:m, text: modeLabels[mode] + ' activado. Preparando tu ruta...' }])
-      setTimeout(() => {
-        callAPI({ message: 'Modo seleccionado: ' + modeLabels[mode] + '. Tema: ' + topicRef.current + '. Nivel: ' + (sessionRef.current.level ?? 'A1') + '. Por favor muestra la hoja de ruta.', activeMode: mode })
-      }, 400)
+      // P18 (continuation) — same "no static bubble before thinking" fix
+      // as interact/free, applied here too. This branch stays on the
+      // blocking JSON path deliberately (not switched to streaming): its
+      // executionOrder includes a generateTTS step for a spoken welcome
+      // that only the blocking execution-engine.ts path executes —
+      // switching to streaming would silently drop that audio welcome.
+      // But there is no reason the response needs to appear instantly:
+      // the Typing indicator (loading && <Typing/>) already covers the
+      // wait, so the synthetic static placeholder — and the artificial
+      // 400ms delay that existed only to let it render before the real
+      // call — are removed. Same synthetic trigger message is kept: it
+      // is what seeds roadmap/course generation via intent classification,
+      // not just a first-turn greeting; only the visible bypass is gone.
+      setMsgs([])
+      void callAPI({ message: 'Modo seleccionado: ' + modeLabels[mode] + '. Tema: ' + topicRef.current + '. Nivel: ' + (sessionRef.current.level ?? 'A1') + '. Por favor muestra la hoja de ruta.', activeMode: mode })
     } else {
       // P18 — FIRST-TURN STREAMING. Root gap: this branch inserted a
       // hardcoded, fully-formed GREETINGS[mentor][lang] string with zero
