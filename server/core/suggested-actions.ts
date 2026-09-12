@@ -82,10 +82,27 @@ export function buildContextualActions(params: ContextualActionsParams): Suggest
     actions.push(push('next_module'));
   }
 
-  // Substantive teaching/conversation turn with no artifact of its own —
-  // this is the case that used to fall through to nothing (streaming) or
-  // an unconditional export_chat_pdf (blocking).
-  const isSubstantive = !artifactType
+  // Substantive teaching/conversation turn — offer the mentor-specialty
+  // action set unless the artifact THIS turn produced already comes with
+  // its own dedicated action above (quiz/roadmap/schema/table).
+  //
+  // ROOT CAUSE (found via production SSE trace, P18 continuation):
+  // this previously read `!artifactType`, treating the mere PRESENCE of
+  // any artifact as "already resolved, no further actions needed." But
+  // nearly every substantive mentor-first answer also emits a generic
+  // 'pdf' artifact via signal_artifact (the model documenting what it
+  // just taught) — a type not in ARTIFACT_TYPES_WITH_OWN_ACTION and not
+  // matched by any push() above either. So `artifactType` was truthy
+  // ('pdf') → isSubstantive was false → the mentor-specialty branch never
+  // ran → zero actions, matching what both execution paths' SSE payload
+  // showed (`suggestedActions: []`) on Sarah and Alex's real replies. Not
+  // a transport or frontend bug — the backend was genuinely sending an
+  // empty array. Fix: only artifact types that already have a specific
+  // action pushed above should suppress the generic set; a plain 'pdf'
+  // (or any other side artifact) does not preclude offering practice/
+  // table/schema/correction on the SAME turn.
+  const ARTIFACT_TYPES_WITH_OWN_ACTION = new Set<ArtifactType>(['quiz', 'roadmap', 'schema', 'schema_pro', 'table', 'table_matrix']);
+  const isSubstantive = (!artifactType || !ARTIFACT_TYPES_WITH_OWN_ACTION.has(artifactType))
     && (pedagogicalAction === 'lesson' || pedagogicalAction === 'conversation' || pedagogicalAction === 'guide');
   if (isSubstantive) {
     const mentor = (mentorProfile ?? 'Alex').toLowerCase();
