@@ -155,19 +155,6 @@ async function callChatAPI(message: string, state: Record<string, unknown> = WIL
 }
 
 // P11 — ARTIFACT BINARY DELIVERY (QA escrow).
-// Manual base64 reproduction (DAE retyping a 10K+ char string into bash) was
-// demonstrated to corrupt bytes: a single-character substitution
-// (WinAnsiEncoding -> RinAnsiEncoding) and, separately, a wrong byte length
-// entirely. That is a transcription-fidelity problem, not a product defect.
-// Fix: the base64 already sitting in the artifact's data: URL — produced by
-// the server, never touched by DAE — is written AS-IS (no decode/re-encode)
-// to a QA-only path in this repo via the GitHub Contents API, whose base64
-// handling is done by code, not by DAE retyping text. DAE then retrieves the
-// exact bytes via raw.githubusercontent.com, which IS reachable from the
-// sandbox (unlike lingora-labs.vercel.app), using curl — zero manual copy at
-// any step. No new secrets: reuses the GitHub App credentials this MCP
-// already holds. Does not touch artifactRegistry, mentor-engine, or any
-// product runtime file.
 async function putBinaryFile(path: string, base64Content: string, message: string, branch: string) {
   const existing = await readFile(path, branch);
   const { status, data } = await gh<{
@@ -222,7 +209,32 @@ async function escrowPdfArtifacts(registryEntries: Array<{ id?: string; title?: 
   return out;
 }
 
+// Escrow a single raw data:application/pdf;base64 URL (for a direct
+// ChatResponse.artifact, not necessarily in artifactRegistry yet).
+async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<EscrowedArtifact | null> {
+  if (!dataUrl?.startsWith('data:application/pdf;base64,')) return null;
+  const b64 = dataUrl.slice('data:application/pdf;base64,'.length);
+  const b = resolveBranch('main');
+  const path = `qa-artifacts/${Date.now()}-${label}.pdf`;
+  const written = await putBinaryFile(path, b64, `lingora(qa): escrow ${label} for product truth audit`, b);
+  return {
+    title: label,
+    path,
+    commitSha: written.commitSha,
+    rawUrl: `https://raw.githubusercontent.com/${ALLOWED_OWNER}/${ALLOWED_REPO}/${written.commitSha}/${path}`,
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('product_test_a')) {
+    return runProductTestA();
+  }
+  if (prompt && prompt.startsWith('product_test_b')) {
+    return runProductTestB();
+  }
+  if (prompt && prompt.startsWith('product_test_c')) {
+    return runProductTestC();
+  }
   if (prompt && prompt.startsWith('voice_loop')) {
     return runVoiceLoop();
   }
@@ -309,6 +321,144 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   return out;
 }
 
+// ============================================================
+// PRODUCT TRUTH AUDIT — SESSION A (Tests 1, 2, 3, 5, 7)
+// One coherent production session, English interface, real multi-turn
+// state continuity via /api/chat, exactly as the browser would send it.
+// ============================================================
+async function runProductTestA(): Promise<Record<string, unknown>> {
+  let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
+  const turns: Array<{ label: string; sent: string; response: string; chars: number; artifacts: unknown[] }> = [];
+  const transcriptLines: string[] = [];
+
+  async function turn(label: string, message: string) {
+    const r = await callChatAPI(message, state);
+    if (r.state) state = r.state as Record<string, unknown>;
+    turns.push({ label, sent: message, response: r.message, chars: r.chars, artifacts: r.artifacts });
+    transcriptLines.push(`[Student]: ${message}`);
+    transcriptLines.push(`[SARAH]: ${r.message.replace(/\s+/g, ' ').trim()}`);
+    return r;
+  }
+
+  // TEST 1
+  await turn('T1a_basic_request', "I'm a beginner. I want to learn when to use ser and estar. Please keep it simple.");
+  await turn('T1b_reasoned_mistake', "I think 'soy cansado' is correct because tired is a state of being.");
+
+  // TEST 2
+  await turn('T2_depth_shift', "Now explain ser vs estar as if I were a linguistics student. I want the semantic distinction, edge cases, and examples where both are possible but the meaning changes.");
+
+  // TEST 3
+  await turn('T3a_topic_switch', "Forget Spanish for a moment. Explain why acupuncture uses the concept of meridians, separating traditional Chinese theory from modern scientific evidence.");
+  await turn('T3b_return_to_spanish', "Now use what you just explained to teach me three useful Spanish sentences for discussing acupuncture with a doctor.");
+
+  // TEST 5
+  await turn('T5a_best_format', "Show me this in the best visual format for understanding it.");
+  const t5b = await turn('T5b_more_visual', "Make it more visual.");
+  await turn('T5c_why_format', "Why did you choose this format?");
+
+  // TEST 7 — export this exact session
+  const exportTranscript = transcriptLines.join('\n\n');
+  const exportR = await callChatAPI('Exporta esta conversación a PDF', state, { exportTranscript });
+  if (exportR.state) state = exportR.state as Record<string, unknown>;
+
+  let exportEscrow: EscrowedArtifact | null = null;
+  const exportArtifact = exportR.artifact as { url?: string; type?: string } | undefined;
+  if (exportArtifact?.url) {
+    try { exportEscrow = await escrowSingleDataUrl(exportArtifact.url, 'session-export'); }
+    catch (e) { exportEscrow = null; }
+  }
+
+  return {
+    harness: 'product_test_a',
+    turns: turns.map(t => ({ label: t.label, sent: t.sent, chars: t.chars, hasArtifact: t.artifacts.length > 0, responsePreview: t.response.slice(0, 900) })),
+    test5_placeholderCheck: {
+      containsEllipsisPattern: /\|\s*\.\.\.\s*\|/.test(t5b.message) || /\n\s*\.\.\.\s*\n/.test(t5b.message),
+      responseFull: t5b.message,
+    },
+    export: {
+      messagePreview: exportR.message.slice(0, 300),
+      artifactPresent: !!exportArtifact,
+      artifactType: exportArtifact?.type,
+      escrow: exportEscrow,
+    },
+    finalStateSnapshot: {
+      lastConcept: (state as any).lastConcept,
+      lastUserGoal: (state as any).lastUserGoal,
+      confirmedLevel: (state as any).confirmedLevel,
+      userLevel: (state as any).userLevel,
+      interfaceLanguage: (state as any).interfaceLanguage,
+    },
+  };
+}
+
+// ============================================================
+// PRODUCT TRUTH AUDIT — SESSION B (Test 4, Zakia reproduction)
+// Natural new-learner sequence, no coaching, no mention of Zakia.
+// ============================================================
+async function runProductTestB(): Promise<Record<string, unknown>> {
+  let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en', userLevel: undefined, confirmedLevel: null };
+  const turns: Array<{ sent: string; response: string; chars: number }> = [];
+
+  async function turn(message: string) {
+    const r = await callChatAPI(message, state);
+    if (r.state) state = r.state as Record<string, unknown>;
+    turns.push({ sent: message, response: r.message, chars: r.chars });
+    return r;
+  }
+
+  await turn("Hi, I'd like to learn some Spanish.");
+  await turn("I'm Maria, I want to learn Spanish for a trip to Mexico next month.");
+  await turn("Hola, me llamo Maria.");
+
+  return {
+    harness: 'product_test_b',
+    turns: turns.map(t => ({ sent: t.sent, chars: t.chars, responseFull: t.response })),
+  };
+}
+
+// ============================================================
+// PRODUCT TRUTH AUDIT — SESSION C (Test 6, pronunciation)
+// Honest limitation disclosed inline: synthetic TTS input is phonetically
+// clean, so this can only test whether feedback is ATTEMPT-SPECIFIC
+// (references the actual words/target), not whether real human
+// mispronunciation is detected.
+// ============================================================
+async function runProductTestC(): Promise<Record<string, unknown>> {
+  const { generateSpeech } = await import('../../server/tools/audio-toolkit');
+  let state: Record<string, unknown> = { ...WILLY_INITIAL_STATE, interfaceLanguage: 'en' };
+
+  const r1 = await callChatAPI('Can you give me a short Spanish phrase to practice pronunciation?', state);
+  if (r1.state) state = r1.state as Record<string, unknown>;
+
+  // Extract a plausible target phrase heuristically: look for quoted text.
+  const quoteMatch = r1.message.match(/[«"“]([^»"”]{3,60})[»"”]/) || r1.message.match(/\*\*([^*]{3,60})\*\*/);
+  const targetPhrase = quoteMatch ? quoteMatch[1] : 'Buenos días, ¿cómo está usted?';
+
+  const tts1 = await generateSpeech(targetPhrase, { voice: 'nova' });
+  if (!tts1.success || !tts1.url) {
+    return { harness: 'product_test_c', stage: 'attempt1_tts_failed', error: tts1.message, sarahPhrase: r1.message.slice(0, 300) };
+  }
+  const r2 = await callChatAPI('', state, { audioDataUrl: tts1.url, audioMimeType: 'audio/mpeg', pronunciationTarget: targetPhrase });
+  if (r2.state) state = r2.state as Record<string, unknown>;
+
+  const tts2 = await generateSpeech(targetPhrase, { voice: 'nova' });
+  let r3Preview = null;
+  if (tts2.success && tts2.url) {
+    const r3 = await callChatAPI('', state, { audioDataUrl: tts2.url, audioMimeType: 'audio/mpeg', pronunciationTarget: targetPhrase });
+    r3Preview = r3.message.slice(0, 500);
+  }
+
+  return {
+    harness: 'product_test_c',
+    LIMITATION: 'Synthetic TTS input is phonetically clean (no real human mispronunciation). This can only verify whether feedback is attempt-specific, not whether flaw-detection works on genuine errors.',
+    sarahOfferedPhrase: r1.message.slice(0, 300),
+    targetPhraseUsed: targetPhrase,
+    attempt1_feedback: r2.message.slice(0, 600),
+    attempt1_artifacts: r2.artifacts,
+    attempt2_feedback: r3Preview,
+  };
+}
+
 // P15 — AUDIO INPUT CLOSED-LOOP VERIFICATION (single turn).
 async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
@@ -340,18 +490,6 @@ async function runAudioRoundtrip(): Promise<Record<string, unknown>> {
 }
 
 // P16 — VOICE CONVERSATION LOOP VERIFICATION.
-// Real multi-turn production check covering P16-T1/T2/T3/T7 in one pass:
-//  Turn 1 (voice): "Sarah, quiero aprender a decir la hora en español."
-//    -> expects: Sarah's text response + an automatic 'audio' artifact
-//       (proves P16 auto-speak-on-voice-turn, not just PDF/emit_audio signal).
-//  Turn 2 (voice, same session/state): "¿Y cómo digo ocho y media?"
-//    -> expects: context continuity (references time/hour topic) + audio
-//       artifact again, proving the SAME Sarah/session continues.
-//  Turn 3 (text, same session): "Ahora dame otro ejemplo."
-//    -> expects: NO audio artifact (text-in -> text-out, no forced speech)
-//       AND topical continuity, proving text<->voice share one conversation.
-// Uses real generated speech (generateSpeech) as input for turns 1-2 —
-// same mechanism production already relies on, no new capability.
 async function runVoiceLoop(): Promise<Record<string, unknown>> {
   const { generateSpeech } = await import('../../server/tools/audio-toolkit');
 
@@ -386,32 +524,10 @@ async function runVoiceLoop(): Promise<Record<string, unknown>> {
 
   return {
     harness: 'voice_loop',
-    turn1_voice: {
-      spoken: turn1Text,
-      chars: r1.chars,
-      hasAudioArtifact: r1HasAudio,
-      reflectsSpokenContent: r1ReflectsContent,
-      messagePreview: r1.message.slice(0, 300),
-    },
-    turn2_voice_continuity: {
-      spoken: turn2Text,
-      chars: r2.chars,
-      hasAudioArtifact: r2HasAudio,
-      showsContinuity: r2ShowsContinuity,
-      messagePreview: r2.message.slice(0, 300),
-    },
-    turn3_voice_to_text: {
-      typed: turn3Text,
-      chars: r3.chars,
-      hasAudioArtifact_shouldBeFalse: r3HasAudio,
-      showsContinuity: r3ShowsContinuity,
-      messagePreview: r3.message.slice(0, 300),
-    },
-    verdict: {
-      T1_PASS: r1HasAudio && r1ReflectsContent,
-      T2_PASS: r2HasAudio && r2ShowsContinuity,
-      T3_PASS: r3ShowsContinuity && !r3HasAudio,
-    },
+    turn1_voice: { spoken: turn1Text, chars: r1.chars, hasAudioArtifact: r1HasAudio, reflectsSpokenContent: r1ReflectsContent, messagePreview: r1.message.slice(0, 300) },
+    turn2_voice_continuity: { spoken: turn2Text, chars: r2.chars, hasAudioArtifact: r2HasAudio, showsContinuity: r2ShowsContinuity, messagePreview: r2.message.slice(0, 300) },
+    turn3_voice_to_text: { typed: turn3Text, chars: r3.chars, hasAudioArtifact_shouldBeFalse: r3HasAudio, showsContinuity: r3ShowsContinuity, messagePreview: r3.message.slice(0, 300) },
+    verdict: { T1_PASS: r1HasAudio && r1ReflectsContent, T2_PASS: r2HasAudio && r2ShowsContinuity, T3_PASS: r3ShowsContinuity && !r3HasAudio },
   };
 }
 
@@ -432,9 +548,6 @@ async function captureTaught(openai: any, harnessModelParamsFn: typeof harnessMo
   return (teachCompletion.choices?.[0]?.message?.content ?? '').trim();
 }
 
-// P10 — baseline harness: replicates production's tool-calling decision exactly
-// (mentor-engine.ts getMentorResponseStream), N times against ONE captured
-// taught text. No production file touched.
 async function runDecisionHarness(runs: number): Promise<Record<string, unknown>> {
   const { SIGNAL_ARTIFACT_TOOL, parseArtifactSignal, ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
   const OpenAI = (await import('openai')).default;
@@ -472,42 +585,18 @@ async function runDecisionHarness(runs: number): Promise<Record<string, unknown>
           if (parsed) subjects.push(parsed.subject);
         } catch { /* drop */ }
       }
-      outcomes.push({
-        count: subjects.length,
-        subjects,
-        finishReason: decision.choices?.[0]?.finish_reason,
-        rawToolCallCount: rawToolCalls.length,
-      });
+      outcomes.push({ count: subjects.length, subjects, finishReason: decision.choices?.[0]?.finish_reason, rawToolCallCount: rawToolCalls.length });
     } catch (e) {
       outcomes.push({ count: -1, subjects: [`ERROR: ${e instanceof Error ? e.message : String(e)}`] });
     }
   }
 
   const distribution: Record<string, number> = {};
-  for (const o of outcomes) {
-    const k = String(o.count);
-    distribution[k] = (distribution[k] ?? 0) + 1;
-  }
+  for (const o of outcomes) { const k = String(o.count); distribution[k] = (distribution[k] ?? 0) + 1; }
 
-  return {
-    harness: 'decision_harness (tool_calls baseline)',
-    taughtChars: taught.length,
-    taughtPreview: taught.slice(0, 300),
-    runs,
-    distribution,
-    outcomes,
-  };
+  return { harness: 'decision_harness (tool_calls baseline)', taughtChars: taught.length, taughtPreview: taught.slice(0, 300), runs, distribution, outcomes };
 }
 
-// P10 — alternative design: instead of relying on the model to emit MULTIPLE
-// tool_calls in a single completion (probabilistic — baseline harness shows
-// 16-20/20 depending on the specific taught text), ask for a single JSON
-// object listing every subject that warrants materialization, then let CODE
-// deterministically construct one ArtifactSignal per listed subject. The
-// MODEL still decides what/whether to materialize (untouched authority);
-// the CODE deterministically executes that decision instead of hoping the
-// API returns N tool_calls in one turn. Same taught-capture, same subjects,
-// only the decision mechanism differs. No production file touched.
 async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unknown>> {
   const { parseArtifactSignal, ARTIFACT_CHANNEL_INSTRUCTION } = await import('../artifact-signal');
   const OpenAI = (await import('openai')).default;
@@ -538,40 +627,19 @@ async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unkn
       });
       const raw = decision.choices?.[0]?.message?.content ?? '{}';
       let rawEntries: unknown[] = [];
-      try {
-        const parsed = JSON.parse(raw);
-        rawEntries = Array.isArray(parsed.artifacts) ? parsed.artifacts : [];
-      } catch { /* leave empty */ }
+      try { const parsed = JSON.parse(raw); rawEntries = Array.isArray(parsed.artifacts) ? parsed.artifacts : []; } catch { /* leave empty */ }
       const subjects: string[] = [];
-      for (const entry of rawEntries) {
-        const parsed = parseArtifactSignal(entry);
-        if (parsed) subjects.push(parsed.subject);
-      }
-      outcomes.push({
-        count: subjects.length,
-        subjects,
-        finishReason: decision.choices?.[0]?.finish_reason,
-        rawEntryCount: rawEntries.length,
-      });
+      for (const entry of rawEntries) { const parsed = parseArtifactSignal(entry); if (parsed) subjects.push(parsed.subject); }
+      outcomes.push({ count: subjects.length, subjects, finishReason: decision.choices?.[0]?.finish_reason, rawEntryCount: rawEntries.length });
     } catch (e) {
       outcomes.push({ count: -1, subjects: [`ERROR: ${e instanceof Error ? e.message : String(e)}`] });
     }
   }
 
   const distribution: Record<string, number> = {};
-  for (const o of outcomes) {
-    const k = String(o.count);
-    distribution[k] = (distribution[k] ?? 0) + 1;
-  }
+  for (const o of outcomes) { const k = String(o.count); distribution[k] = (distribution[k] ?? 0) + 1; }
 
-  return {
-    harness: 'decision_harness_json (structured list alternative)',
-    taughtChars: taught.length,
-    taughtPreview: taught.slice(0, 300),
-    runs,
-    distribution,
-    outcomes,
-  };
+  return { harness: 'decision_harness_json (structured list alternative)', taughtChars: taught.length, taughtPreview: taught.slice(0, 300), runs, distribution, outcomes };
 }
 
 // ─── GitHub tools (unchanged) ─────────────────────────────────────────────────
@@ -579,41 +647,23 @@ async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unkn
 export async function repoStatus() {
   const { data: repo } = await gh<{ default_branch: string; html_url: string }>('GET', repoPath());
   const { data: ref } = await gh<GhRef>('GET', `${repoPath()}/git/ref/heads/main`);
-  return {
-    owner: ALLOWED_OWNER,
-    repo: ALLOWED_REPO,
-    defaultBranch: repo.default_branch,
-    mainHead: ref.object.sha,
-    htmlUrl: repo.html_url,
-    policy: POLICY,
-  };
+  return { owner: ALLOWED_OWNER, repo: ALLOWED_REPO, defaultBranch: repo.default_branch, mainHead: ref.object.sha, htmlUrl: repo.html_url, policy: POLICY };
 }
 
 export async function listBranches() {
-  const { data } = await gh<Array<{ name: string; commit: { sha: string }; protected: boolean }>>(
-    'GET',
-    `${repoPath()}/branches?per_page=100`,
-  );
+  const { data } = await gh<Array<{ name: string; commit: { sha: string }; protected: boolean }>>('GET', `${repoPath()}/branches?per_page=100`);
   return data.map((b) => ({ name: b.name, sha: b.commit.sha, protected: b.protected }));
 }
 
 export async function listTree(ref = 'main') {
-  const { data } = await gh<{ truncated: boolean; tree: Array<{ path: string; type: string; sha: string }> }>(
-    'GET',
-    `${repoPath()}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
-  );
+  const { data } = await gh<{ truncated: boolean; tree: Array<{ path: string; type: string; sha: string }> }>('GET', `${repoPath()}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
   return { truncated: data.truncated, tree: data.tree };
 }
 
 export async function readFile(path: string, ref = 'main') {
-  const { status, data } = await gh<GhContent>(
-    'GET',
-    `${repoPath()}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(ref)}`,
-  );
+  const { status, data } = await gh<GhContent>('GET', `${repoPath()}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(ref)}`);
   if (status === 404) return { found: false, path, ref };
-  const raw = data.encoding === 'base64' && data.content
-    ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8')
-    : data.content || '';
+  const raw = data.encoding === 'base64' && data.content ? Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8') : data.content || '';
   return { found: true, path, ref, sha: data.sha, content: raw };
 }
 
@@ -623,10 +673,7 @@ export async function getCommit(sha: string) {
 }
 
 export async function compareRefs(base: string, head: string) {
-  const { data } = await gh(
-    'GET',
-    `${repoPath()}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
-  );
+  const { data } = await gh('GET', `${repoPath()}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`);
   return data;
 }
 
@@ -638,255 +685,97 @@ async function getHeadSha(branch: string): Promise<string> {
 
 export async function createBranch(name: string, from = 'main') {
   const sha = await getHeadSha(resolveBranch(from));
-  const { status, data } = await gh<{ ref: string; object: { sha: string } }>(
-    'POST',
-    `${repoPath()}/git/refs`,
-    {
-      ref: `refs/heads/${name}`,
-      sha,
-    },
-  );
+  const { status, data } = await gh<{ ref: string; object: { sha: string } }>('POST', `${repoPath()}/git/refs`, { ref: `refs/heads/${name}`, sha });
   if (status >= 400) throw new Error(`create_branch failed: ${status} ${JSON.stringify(data)}`);
   return { branch: name, sha: data.object.sha };
 }
 
 async function putFile(path: string, content: string, message: string, branch: string) {
   const existing = await readFile(path, branch);
-  const { status, data } = await gh<{
-    commit: { sha: string; html_url: string };
-    content: { sha: string };
-  }>(
-    'PUT',
-    `${repoPath()}/contents/${encodeURIComponent(path)}`,
-    {
-      message,
-      content: Buffer.from(content, 'utf8').toString('base64'),
-      branch,
-      ...(existing.found && existing.sha ? { sha: existing.sha } : {}),
-    },
+  const { status, data } = await gh<{ commit: { sha: string; html_url: string }; content: { sha: string } }>(
+    'PUT', `${repoPath()}/contents/${encodeURIComponent(path)}`,
+    { message, content: Buffer.from(content, 'utf8').toString('base64'), branch, ...(existing.found && existing.sha ? { sha: existing.sha } : {}) },
   );
   if (status >= 400) throw new Error(`write_file failed: ${status} ${JSON.stringify(data)}`);
   return { path, commitSha: data.commit.sha, url: data.commit.html_url };
 }
 
-export async function writeFile(
-  path: string,
-  content: string,
-  message: string,
-  branch = 'main',
-) {
+export async function writeFile(path: string, content: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
   return putFile(path, content, message, b);
 }
 
-export async function writeFiles(
-  files: Array<{ path: string; content: string }>,
-  message: string,
-  branch = 'main',
-) {
+export async function writeFiles(files: Array<{ path: string; content: string }>, message: string, branch = 'main') {
   const b = resolveBranch(branch);
   if (files.length === 1) return writeFile(files[0].path, files[0].content, message, b);
 
   const head = await getHeadSha(b);
-  const { data: headCommit } = await gh<{ tree: { sha: string }; sha: string }>(
-    'GET',
-    `${repoPath()}/git/commits/${head}`,
-  );
+  const { data: headCommit } = await gh<{ tree: { sha: string }; sha: string }>('GET', `${repoPath()}/git/commits/${head}`);
 
   const blobs: Array<{ path: string; sha: string; mode: string; type: string }> = [];
-
   for (const f of files) {
-    const { status, data } = await gh<{ sha: string }>(
-      'POST',
-      `${repoPath()}/git/blobs`,
-      {
-        content: Buffer.from(f.content, 'utf8').toString('base64'),
-        encoding: 'base64',
-      },
-    );
+    const { status, data } = await gh<{ sha: string }>('POST', `${repoPath()}/git/blobs`, { content: Buffer.from(f.content, 'utf8').toString('base64'), encoding: 'base64' });
     if (status >= 400) throw new Error(`blob failed: ${JSON.stringify(data)}`);
     blobs.push({ path: f.path, sha: data.sha, mode: '100644', type: 'blob' });
   }
 
-  const { status: ts, data: tree } = await gh<{ sha: string }>(
-    'POST',
-    `${repoPath()}/git/trees`,
-    {
-      base_tree: headCommit.tree.sha,
-      tree: blobs,
-    },
-  );
+  const { status: ts, data: tree } = await gh<{ sha: string }>('POST', `${repoPath()}/git/trees`, { base_tree: headCommit.tree.sha, tree: blobs });
   if (ts >= 400) throw new Error(`tree failed: ${JSON.stringify(tree)}`);
 
-  const { status: cs, data: commit } = await gh<{ sha: string; html_url?: string }>(
-    'POST',
-    `${repoPath()}/git/commits`,
-    {
-      message,
-      tree: tree.sha,
-      parents: [head],
-    },
-  );
+  const { status: cs, data: commit } = await gh<{ sha: string; html_url?: string }>('POST', `${repoPath()}/git/commits`, { message, tree: tree.sha, parents: [head] });
   if (cs >= 400) throw new Error(`commit failed: ${JSON.stringify(commit)}`);
 
-  const { status: rs, data: ref } = await gh(
-    'PATCH',
-    `${repoPath()}/git/refs/heads/${b}`,
-    {
-      sha: commit.sha,
-      force: false,
-    },
-  );
+  const { status: rs, data: ref } = await gh('PATCH', `${repoPath()}/git/refs/heads/${b}`, { sha: commit.sha, force: false });
   if (rs >= 400) throw new Error(`update ref failed: ${JSON.stringify(ref)}`);
 
-  return {
-    commitSha: commit.sha,
-    branch: b,
-    files: files.map((f) => f.path),
-  };
+  return { commitSha: commit.sha, branch: b, files: files.map((f) => f.path) };
 }
 
 export async function deleteFile(path: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
   const existing = await readFile(path, b);
-
-  if (!existing.found || !existing.sha) {
-    throw new Error(`File not found: ${path}`);
-  }
-
-  const { status, data } = await gh<{ commit: { sha: string } }>(
-    'DELETE',
-    `${repoPath()}/contents/${encodeURIComponent(path)}`,
-    {
-      message,
-      sha: existing.sha,
-      branch: b,
-    },
-  );
-
+  if (!existing.found || !existing.sha) throw new Error(`File not found: ${path}`);
+  const { status, data } = await gh<{ commit: { sha: string } }>('DELETE', `${repoPath()}/contents/${encodeURIComponent(path)}`, { message, sha: existing.sha, branch: b });
   if (status >= 400) throw new Error(`delete_file failed: ${JSON.stringify(data)}`);
   return { path, commitSha: data.commit.sha };
 }
 
 export async function rollbackCommit(sha?: string, branch = 'main') {
   forbidDestructive('force_push', branch);
-
   const b = resolveBranch(branch);
   const head = await getHeadSha(b);
   const target = sha || head;
-
-  const { data: commit } = await gh<{
-    parents: Array<{ sha: string }>;
-    sha: string;
-    commit: { message: string };
-  }>(
-    'GET',
-    `${repoPath()}/commits/${target}`,
-  );
-
+  const { data: commit } = await gh<{ parents: Array<{ sha: string }>; sha: string; commit: { message: string } }>('GET', `${repoPath()}/commits/${target}`);
   const parent = commit.parents?.[0]?.sha;
   if (!parent) throw new Error('Cannot revert: no parent');
-
-  if (target !== head) {
-    throw new Error('rollback_commit currently reverts only HEAD (no history rewrite)');
-  }
-
-  const { data: parentCommit } = await gh<{
-    commit: { tree: { sha: string } };
-  }>(
-    'GET',
-    `${repoPath()}/commits/${parent}`,
-  );
-
-  const { status, data: newCommit } = await gh<{ sha: string }>(
-    'POST',
-    `${repoPath()}/git/commits`,
-    {
-      message: `lingora(mcp): revert ${target.slice(0, 7)}`,
-      tree: parentCommit.commit.tree.sha,
-      parents: [head],
-    },
-  );
-
-  if (status >= 400) {
-    throw new Error(`revert commit failed: ${JSON.stringify(newCommit)}`);
-  }
-
-  const { status: rs, data: ref } = await gh(
-    'PATCH',
-    `${repoPath()}/git/refs/heads/${b}`,
-    {
-      sha: newCommit.sha,
-      force: false,
-    },
-  );
-
-  if (rs >= 400) {
-    throw new Error(`revert ref failed: ${JSON.stringify(ref)}`);
-  }
-
-  return {
-    reverted: target,
-    newHead: newCommit.sha,
-    branch: b,
-  };
+  if (target !== head) throw new Error('rollback_commit currently reverts only HEAD (no history rewrite)');
+  const { data: parentCommit } = await gh<{ commit: { tree: { sha: string } } }>('GET', `${repoPath()}/commits/${parent}`);
+  const { status, data: newCommit } = await gh<{ sha: string }>('POST', `${repoPath()}/git/commits`, { message: `lingora(mcp): revert ${target.slice(0, 7)}`, tree: parentCommit.commit.tree.sha, parents: [head] });
+  if (status >= 400) throw new Error(`revert commit failed: ${JSON.stringify(newCommit)}`);
+  const { status: rs, data: ref } = await gh('PATCH', `${repoPath()}/git/refs/heads/${b}`, { sha: newCommit.sha, force: false });
+  if (rs >= 400) throw new Error(`revert ref failed: ${JSON.stringify(ref)}`);
+  return { reverted: target, newHead: newCommit.sha, branch: b };
 }
 
-export async function createPullRequest(
-  title: string,
-  head: string,
-  base = 'main',
-  body = '',
-) {
-  const { status, data } = await gh<{ number: number; html_url: string }>(
-    'POST',
-    `${repoPath()}/pulls`,
-    {
-      title,
-      head,
-      base,
-      body,
-    },
-  );
-
-  if (status >= 400) {
-    throw new Error(`create_pull_request failed: ${JSON.stringify(data)}`);
-  }
-
+export async function createPullRequest(title: string, head: string, base = 'main', body = '') {
+  const { status, data } = await gh<{ number: number; html_url: string }>('POST', `${repoPath()}/pulls`, { title, head, base, body });
+  if (status >= 400) throw new Error(`create_pull_request failed: ${JSON.stringify(data)}`);
   return data;
 }
 
-export async function listPullRequests(
-  state: 'open' | 'closed' | 'all' = 'open',
-) {
-  const { data } = await gh(
-    'GET',
-    `${repoPath()}/pulls?state=${state}&per_page=20`,
-  );
+export async function listPullRequests(state: 'open' | 'closed' | 'all' = 'open') {
+  const { data } = await gh('GET', `${repoPath()}/pulls?state=${state}&per_page=20`);
   return data;
 }
 
 export async function getPullRequest(number: number) {
-  const { data } = await gh(
-    'GET',
-    `${repoPath()}/pulls/${number}`,
-  );
+  const { data } = await gh('GET', `${repoPath()}/pulls/${number}`);
   return data;
 }
 
 export async function mergePullRequest(number: number) {
-  const { status, data } = await gh<{ merged: boolean; sha: string }>(
-    'PUT',
-    `${repoPath()}/pulls/${number}/merge`,
-    {
-      merge_method: 'squash',
-    },
-  );
-
-  if (status >= 400) {
-    throw new Error(`merge failed: ${JSON.stringify(data)}`);
-  }
-
+  const { status, data } = await gh<{ merged: boolean; sha: string }>('PUT', `${repoPath()}/pulls/${number}/merge`, { merge_method: 'squash' });
+  if (status >= 400) throw new Error(`merge failed: ${JSON.stringify(data)}`);
   return data;
 }
 
@@ -908,104 +797,36 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, or voice_loop (multi-turn voice conversation check). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a (multi-turn: basic diagnosis, depth shift, topic switch, visual decision, session export), product_test_b (Zakia reproduction check), or product_test_c (pronunciation feedback check). No browser needed.' },
   ];
 }
 
-export async function dispatchTool(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<unknown> {
+export async function dispatchTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   assertRepo(ALLOWED_OWNER, ALLOWED_REPO);
 
   switch (name) {
-    case 'repo_status':
-      return repoStatus();
-
-    case 'list_tree':
-      return listTree(String(args.ref || 'main'));
-
-    case 'list_branches':
-      return listBranches();
-
-    case 'read_file':
-      return readFile(String(args.path), String(args.ref || 'main'));
-
+    case 'repo_status': return repoStatus();
+    case 'list_tree': return listTree(String(args.ref || 'main'));
+    case 'list_branches': return listBranches();
+    case 'read_file': return readFile(String(args.path), String(args.ref || 'main'));
     case 'read_files': {
       const paths = args.paths as string[];
       const out = [];
-      for (const p of paths || []) {
-        out.push(await readFile(p, String(args.ref || 'main')));
-      }
+      for (const p of paths || []) out.push(await readFile(p, String(args.ref || 'main')));
       return out;
     }
-
-    case 'get_commit':
-      return getCommit(String(args.sha || 'main'));
-
-    case 'compare_refs':
-      return compareRefs(
-        String(args.base || 'main'),
-        String(args.head),
-      );
-
-    case 'write_file':
-      return writeFile(
-        String(args.path),
-        String(args.content),
-        String(args.message || `lingora(mcp): update ${args.path}`),
-        String(args.branch || 'main'),
-      );
-
-    case 'write_files':
-      return writeFiles(
-        (args.files as Array<{ path: string; content: string }>) || [],
-        String(args.message || 'lingora(mcp): update files'),
-        String(args.branch || 'main'),
-      );
-
-    case 'delete_file':
-      return deleteFile(
-        String(args.path),
-        String(args.message || `lingora(mcp): delete ${args.path}`),
-        String(args.branch || 'main'),
-      );
-
-    case 'create_branch':
-      return createBranch(
-        String(args.branch),
-        String(args.from_branch || 'main'),
-      );
-
-    case 'rollback_commit':
-      return rollbackCommit(
-        args.sha ? String(args.sha) : undefined,
-        String(args.branch || 'main'),
-      );
-
-    case 'create_pull_request':
-      return createPullRequest(
-        String(args.title),
-        String(args.head),
-        String(args.base || 'main'),
-        String(args.body || ''),
-      );
-
-    case 'get_pull_request':
-      return getPullRequest(Number(args.number));
-
-    case 'list_pull_requests':
-      return listPullRequests(
-        (args.state as 'open' | 'closed' | 'all') || 'open',
-      );
-
-    case 'merge_pull_request':
-      return mergePullRequest(Number(args.number));
-
-    case 'run_diagnostic':
-      return runDiagnostic(args.prompt ? String(args.prompt) : undefined);
-
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+    case 'get_commit': return getCommit(String(args.sha || 'main'));
+    case 'compare_refs': return compareRefs(String(args.base || 'main'), String(args.head));
+    case 'write_file': return writeFile(String(args.path), String(args.content), String(args.message || `lingora(mcp): update ${args.path}`), String(args.branch || 'main'));
+    case 'write_files': return writeFiles((args.files as Array<{ path: string; content: string }>) || [], String(args.message || 'lingora(mcp): update files'), String(args.branch || 'main'));
+    case 'delete_file': return deleteFile(String(args.path), String(args.message || `lingora(mcp): delete ${args.path}`), String(args.branch || 'main'));
+    case 'create_branch': return createBranch(String(args.branch), String(args.from_branch || 'main'));
+    case 'rollback_commit': return rollbackCommit(args.sha ? String(args.sha) : undefined, String(args.branch || 'main'));
+    case 'create_pull_request': return createPullRequest(String(args.title), String(args.head), String(args.base || 'main'), String(args.body || ''));
+    case 'get_pull_request': return getPullRequest(Number(args.number));
+    case 'list_pull_requests': return listPullRequests((args.state as 'open' | 'closed' | 'all') || 'open');
+    case 'merge_pull_request': return mergePullRequest(Number(args.number));
+    case 'run_diagnostic': return runDiagnostic(args.prompt ? String(args.prompt) : undefined);
+    default: throw new Error(`Unknown tool: ${name}`);
   }
 }
