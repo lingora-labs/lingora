@@ -239,6 +239,61 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
 }
 
 // ============================================================
+// BASE-MODEL-PARITY v2 — CORRECTED MEMORY TEST.
+// The v1 test's turn 4 ("how soon will I manage") was answerable without
+// citing turn-1 specifics — a design flaw, not evidence against the fix.
+// This version forces literal recall (turn 4 explicitly asks for the
+// company/month/city) and then contextual use (turn 5 asks for material
+// built FROM those recalled facts). Two independent verdicts, not one.
+// ============================================================
+async function runBaseModelParityTestV2(): Promise<Record<string, unknown>> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  let history: HistTurn[] = [];
+  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+  const turns: Array<{ sent: string; response: string }> = [];
+
+  async function turn(message: string) {
+    const r = await callChatAPI(message, state, { conversationHistory: history });
+    if (r.state) state = r.state as typeof state;
+    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
+    turns.push({ sent: message, response: r.message });
+    return r;
+  }
+
+  await turn('Soy Erik. Trabajo en NordFrakt, una empresa noruega de logística. En marzo tengo una reunión en Ciudad de México con un proveedor.');
+  await turn('Nunca he estudiado español formalmente.');
+  await turn('Quiero practicar negociación de contratos.');
+  const t4 = await turn('Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la reunión y en qué ciudad será.');
+  const t5 = await turn('Ahora prepara dos frases que me servirían específicamente en ESA reunión, usando lo que sabes de mi trabajo.');
+
+  const t4Lower = t4.message.toLowerCase();
+  const recall = {
+    company_NordFrakt: t4Lower.includes('nordfrakt'),
+    month_marzo: t4Lower.includes('marzo'),
+    city_CiudadDeMexico: t4Lower.includes('méxico') || t4Lower.includes('mexico'),
+  };
+  const HISTORY_RECALL = (recall.company_NordFrakt && recall.month_marzo && recall.city_CiudadDeMexico) ? 'PASS' : 'FAIL';
+
+  const t5Lower = t5.message.toLowerCase();
+  // Contextual use: sentences that reference the actual work situation
+  // (logistics/proveedor/reunión/negociación), not generic Spanish phrases
+  // unrelated to Erik's stated context.
+  const contextualSignals = {
+    mentionsLogisticsOrSupplier: /log[ií]stica|proveedor|nordfrakt/i.test(t5Lower),
+    mentionsMeetingOrNegotiation: /reuni[oó]n|negociaci[oó]n|contrato/i.test(t5Lower),
+    producedConcreteSentences: (t5.message.match(/["“«].{5,80}?["”»]/g) || []).length >= 1 || (t5.message.match(/\*\*.{5,80}?\*\*/g) || []).length >= 1,
+  };
+  const CONTEXTUAL_USE = (contextualSignals.mentionsLogisticsOrSupplier && contextualSignals.mentionsMeetingOrNegotiation && contextualSignals.producedConcreteSentences) ? 'PASS' : 'FAIL';
+
+  return {
+    harness: 'base_model_parity_test_v2',
+    turns,
+    turn4_recall_check: { sent: turns[3].sent, response: t4.message, recall, HISTORY_RECALL },
+    turn5_contextual_use_check: { sent: turns[4].sent, response: t5.message, contextualSignals, CONTEXTUAL_USE },
+  };
+}
+
+// ============================================================
 // BASE-MODEL-PARITY — CONVERSATION HISTORY VERIFICATION.
 // Confirms the fix actually reaches the model: a detail stated ONLY in
 // turn 1 (a specific company name and month — never a candidate for
@@ -288,6 +343,9 @@ async function runBaseModelParityTest(): Promise<Record<string, unknown>> {
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('base_model_parity_test_v2')) {
+    return runBaseModelParityTestV2();
+  }
   if (prompt && prompt.startsWith('base_model_parity_test')) {
     return runBaseModelParityTest();
   }
@@ -1095,7 +1153,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, or base_model_parity_test (4-turn conversation verifying real dialogue history reaches the model, not just derived state scalars). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, or base_model_parity_test_v2 (5-turn conversation forcing literal recall + contextual use of turn-1 facts). No browser needed.' },
   ];
 }
 
