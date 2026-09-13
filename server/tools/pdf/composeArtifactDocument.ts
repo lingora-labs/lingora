@@ -60,6 +60,27 @@
 // comparison matrix label) so the composition difference is visible, not
 // just requested. Still no new block types — same vocabulary, different
 // order and render treatment.
+//
+// SEEK 5.0 P19-E — ANTI-FALSE-KPI + CLASSIFICATION RELIABILITY.
+// Root gap 1 (confirmed in production): when the user asked for an
+// executive brief without supplying real figures, the composer put metric
+// NAMES ("hay que medir retención") into a key_value block anyway, using
+// a placeholder word ("medir") as the value. Because a key_value block
+// under executive intent renders as a KPI strip (generateCoursePdf.ts /
+// renderArtifactHtml.ts — large headline value + label underneath), this
+// visually presented an unmeasured metric as if it were an observed one —
+// a direct anti-placebo violation. Fix: explicit hard rule forbidding
+// placeholder values in the KPI-triggering key_value block; unmeasured
+// metrics must render as a "Métricas a monitorear" bullets list instead,
+// which carries no observed-value visual claim.
+// Root gap 2 (confirmed in production): a genuinely long, deep AUTHOR-mode
+// document (17k+ chars, 10 real sections on acupuncture — history,
+// mechanisms, evidence, risk, methodology, glossary) was classified
+// documentIntent: 'learning' / 'lesson' despite being explanatory content
+// about a domain, not a practiced skill. The classifier appears biased
+// toward 'learning' by context (this is a Spanish-learning platform) or by
+// length (many sections read as a "course"). Fix: explicit instruction that
+// classification follows content TYPE, not platform context or length.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 import type { DocumentIntent } from './brand'
@@ -177,12 +198,15 @@ If documentIntent is "comparative", documentType is "comparative_brief".
 If documentIntent is "reference" (non-learning), documentType is "reference".
 Your title MUST agree with both intent and type: never use words like "Curso"/"Course" unless documentType is "course"; never call something a "Guía"/"Guide" unless it is guide-shaped; a scientific dossier's title should read like a dossier, not a lesson. When in doubt within "learning", choose "lesson" — it is always truthful for single-turn output.
 
-COMPOSITION BY INTENT (P19-C) — this is not just a label. The block ORDER and CHOICE must make the document look and function differently depending on intent, using the SAME block vocabulary:
-- "executive": open with 1-2 sentences of situación/mandato (paragraph). Then, if the content has 2-5 genuinely quantifiable facts (numbers, percentages, counts, statuses), put them in ONE key_value block IMMEDIATELY after — each item as "Short label: short value" (the value should be short enough to read as a headline, e.g. "3 semanas", "68%", "Alto riesgo" — this block renders as a KPI strip, so keep it to real quantifiable facts, not prose). Then a diagnóstico paragraph. Then a callout with style "tip" for the recommendation. If there is real risk/uncertainty, a callout with style "warning". Close with a heading "Decisión solicitada" or "Próxima acción" plus a short paragraph naming exactly what the reader must decide or do next — do not simply repeat nextStep.
+COMPOSITION BY INTENT (P19-C/P19-E) — this is not just a label. The block ORDER and CHOICE must make the document look and function differently depending on intent, using the SAME block vocabulary:
+- "executive": open with 1-2 sentences of situación/mandato (paragraph). Then, ONLY IF the source content contains 2-5 genuinely quantifiable facts THAT WERE ACTUALLY STATED (real numbers, percentages, counts, named statuses — e.g. "240 usuarios", "34%", "18 dólares"), put them in ONE key_value block IMMEDIATELY after — each item as "Short label: short value" (the value should be short enough to read as a headline — this block renders as a literal KPI strip with the value shown large, so it visually claims to be an observed metric). Then a diagnóstico paragraph. Then a callout with style "tip" for the recommendation. If there is real risk/uncertainty, a callout with style "warning". Close with a heading "Decisión solicitada" or "Próxima acción" plus a short paragraph naming exactly what the reader must decide or do next — do not simply repeat nextStep.
+  ANTI-FALSE-KPI RULE (P19-E, hard constraint): if the source content does NOT contain real stated figures — only the NAMES of metrics that should eventually be tracked (e.g. "hay que medir retención", "seguir el CAC") — do NOT put those into a key_value block. A key_value block under executive intent is rendered as a KPI strip showing each value as a large headline number; putting a placeholder word like "medir" or "pendiente" as that value visually claims it as an observed metric, which is false. Instead, list those as a bullets block under a heading like "Métricas a monitorear" or "Plan de medición" — clearly framed as a future measurement plan, never as a current KPI strip.
 - "comparative": open with 1 short paragraph naming the two (or more) things being compared and why it matters. Then bullets or a short paragraph listing the criteria used. Then put the actual contrast in ONE table block (this renders as a labeled comparison matrix — make headers and rows genuinely comparative, e.g. headers ["Criterio", "Opción A", "Opción B"], not a generic fact table). Then a paragraph on trade-offs. Then a callout style "tip" with the recommendation. Close with a short conclusion paragraph.
-- "scientific": headings + paragraphs carrying the actual explanatory weight; use callout only for a genuinely notable caveat or open question, not as decoration.
+- "scientific": open with a short abstract/executive-summary paragraph (what this document covers and its overall conclusion in a few sentences). Use heading level 1 per major chapter (history, mechanisms, evidence, risks, etc.) with paragraphs carrying the explanatory weight. Use a table for evidence-by-area or comparative-framework content when the source has several parallel items (this is exactly the kind of content that suits a table). Use key_value for a glossary when terms are defined. Use callout style "warning" for genuine risk/safety content and style "tip" only for a genuinely notable caveat or open methodological question — never as decoration. Close with a real concluding paragraph, not a generic summary.
 - "learning": the existing pattern — explanation, table/bullets for structured contrast, one exercise block.
 Do not force a KPI strip or comparison matrix where the content doesn't genuinely have quantifiable facts or a real two-way contrast — an honest shorter document beats a padded one.
+
+CLASSIFICATION RELIABILITY (P19-E): classify documentIntent from what the content teaches ABOUT, never from the fact that this is a language-learning platform or from document length. A long, deep explanatory document about a domain (history, mechanisms, evidence, risk) is "scientific" even if it has 10 sections and reads like a course — length alone does not make something "learning". Reserve "learning" specifically for content that teaches a skill THE READER practices (a language point, a professional communication skill) — if the content is about a domain the reader is learning ABOUT rather than a skill they are practicing, it is "scientific", "reference", or another non-learning intent.
 
 Respond with valid JSON only — no markdown, no preamble.`
 
