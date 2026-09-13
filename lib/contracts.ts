@@ -233,6 +233,14 @@ export interface PdfArtifact {
   url?: string;
   dataUrl?: string;
   description?: string;
+  // P19-D — DUAL DELIVERY. Same semantic document plan (DocumentContent),
+  // rendered a second time by renderArtifactHtml.ts. Not a separate
+  // artifact and not reconstructed from the PDF bytes — both surfaces read
+  // the same composeArtifactDocument.ts output. Optional and additive: a
+  // pdf artifact with no webUrl (e.g. the plain-text fallback path, which
+  // has no structured DocumentContent to render as HTML) still works
+  // exactly as before.
+  webUrl?: string;
 }
 
 export interface PdfAssignment {
