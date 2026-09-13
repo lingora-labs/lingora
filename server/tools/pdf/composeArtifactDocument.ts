@@ -47,6 +47,19 @@
 // comparative_brief) for the others. This is still organization, not new
 // pedagogical content — WILLY already decided what kind of content this is
 // when it taught; this only lets the composer say so truthfully.
+//
+// SEEK 5.0 P19-C — COMPOSITION BY INTENT (GENERAL ARTIFACT SYSTEM,
+// increment 2). Root gap: documentIntent changed the cover kicker/badge/
+// title but not the actual block ORDER or CHOICE inside the document —
+// an executive brief and a lesson used the same block sequence, just with
+// a different label on the outside. Fix: explicit composition guidance per
+// intent (executive: situación → KPI strip → diagnóstico → recomendación
+// → riesgo → decisión solicitada; comparative: contexto → criterios →
+// matriz comparativa → trade-offs → recomendación → conclusión), paired
+// with real render-layer treatment in generateCoursePdf.ts (KPI strip,
+// comparison matrix label) so the composition difference is visible, not
+// just requested. Still no new block types — same vocabulary, different
+// order and render treatment.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 import type { DocumentIntent } from './brand'
@@ -163,6 +176,13 @@ If documentIntent is "executive", documentType is "executive_brief".
 If documentIntent is "comparative", documentType is "comparative_brief".
 If documentIntent is "reference" (non-learning), documentType is "reference".
 Your title MUST agree with both intent and type: never use words like "Curso"/"Course" unless documentType is "course"; never call something a "Guía"/"Guide" unless it is guide-shaped; a scientific dossier's title should read like a dossier, not a lesson. When in doubt within "learning", choose "lesson" — it is always truthful for single-turn output.
+
+COMPOSITION BY INTENT (P19-C) — this is not just a label. The block ORDER and CHOICE must make the document look and function differently depending on intent, using the SAME block vocabulary:
+- "executive": open with 1-2 sentences of situación/mandato (paragraph). Then, if the content has 2-5 genuinely quantifiable facts (numbers, percentages, counts, statuses), put them in ONE key_value block IMMEDIATELY after — each item as "Short label: short value" (the value should be short enough to read as a headline, e.g. "3 semanas", "68%", "Alto riesgo" — this block renders as a KPI strip, so keep it to real quantifiable facts, not prose). Then a diagnóstico paragraph. Then a callout with style "tip" for the recommendation. If there is real risk/uncertainty, a callout with style "warning". Close with a heading "Decisión solicitada" or "Próxima acción" plus a short paragraph naming exactly what the reader must decide or do next — do not simply repeat nextStep.
+- "comparative": open with 1 short paragraph naming the two (or more) things being compared and why it matters. Then bullets or a short paragraph listing the criteria used. Then put the actual contrast in ONE table block (this renders as a labeled comparison matrix — make headers and rows genuinely comparative, e.g. headers ["Criterio", "Opción A", "Opción B"], not a generic fact table). Then a paragraph on trade-offs. Then a callout style "tip" with the recommendation. Close with a short conclusion paragraph.
+- "scientific": headings + paragraphs carrying the actual explanatory weight; use callout only for a genuinely notable caveat or open question, not as decoration.
+- "learning": the existing pattern — explanation, table/bullets for structured contrast, one exercise block.
+Do not force a KPI strip or comparison matrix where the content doesn't genuinely have quantifiable facts or a real two-way contrast — an honest shorter document beats a padded one.
 
 Respond with valid JSON only — no markdown, no preamble.`
 

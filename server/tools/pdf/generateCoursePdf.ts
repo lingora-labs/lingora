@@ -199,7 +199,12 @@ function footer(ps: PS, content: DocumentContent): void {
   ps.page.drawText(safe(content.generatedAt, 40), { x: W - MR - 90, y, size: 7, font: ps.reg, color: C_MUTED });
 }
 
-async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentContent): Promise<PS> {
+interface RenderHints {
+  isKpiStrip?: boolean;
+  isComparisonMatrix?: boolean;
+}
+
+async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentContent, hints: RenderHints = {}): Promise<PS> {
   const text = block.content ?? '';
 
   switch (block.type) {
@@ -302,6 +307,49 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
 
     case 'key_value': {
       const items = block.items ?? [];
+
+      // P19-C — KPI STRIP. Root gap: an executive brief's KPIs were rendered
+      // as the same two-column key:value rows used for a glossary entry —
+      // visually identical to any other list, regardless of what kind of
+      // document it lived in. This is a real compositional difference, not
+      // a label change: 2-4 KPIs render as horizontal stat cards (same
+      // visual language as the cover's meta cards, reused here inside the
+      // page body) instead of stacked rows. Only fires once per document,
+      // for the FIRST key_value block, and only when documentIntent is
+      // 'executive' — every other key_value block (glossaries, terminology
+      // in a learning document, etc.) renders exactly as before.
+      if (hints.isKpiStrip && items.length >= 2 && items.length <= 5) {
+        const n = items.length;
+        const gapW = 6;
+        const cardW = (CW - gapW * (n - 1)) / n;
+        const cardH = 54;
+        if (!ensureSpace(ps, cardH + 10)) {
+          footer(ps, content);
+          ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+        }
+        gap(ps, 4);
+        items.forEach((raw, i) => {
+          const [k, ...rest] = raw.split(':');
+          const v = rest.join(':').trim();
+          const x = ML + i * (cardW + gapW);
+          ps.page.drawRectangle({ x, y: ps.y - cardH, width: cardW, height: cardH, color: C_DARK });
+          ps.page.drawRectangle({ x, y: ps.y - 3, width: cardW, height: 3, color: C_TEAL });
+          const valLines = wrapLines(v || raw, ps.bold, 15, cardW - 12).slice(0, 2);
+          let vy = ps.y - 22;
+          for (const line of valLines) {
+            ps.page.drawText(safe(line), { x: x + 8, y: vy, size: 15, font: ps.bold, color: C_WHITE });
+            vy -= 17;
+          }
+          const keyLines = wrapLines(k ?? '', ps.reg, 7, cardW - 12).slice(0, 2);
+          keyLines.forEach((line, li) => {
+            ps.page.drawText(safe(line), { x: x + 8, y: ps.y - cardH + 10 - li * 9 + (keyLines.length - 1) * 9, size: 7, font: ps.reg, color: C_TEAL });
+          });
+        });
+        ps.y -= cardH;
+        gap(ps, 10);
+        break;
+      }
+
       const colW = CW * 0.30;
       const cellPad = 4;
       const keyLineH = 9 * 1.3;
@@ -344,6 +392,24 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
       const headerLineH = 8 * 1.3;
       const rowLineH = 8.5 * 1.3;
       const rowVPad = 6;
+
+      // P19-C — COMPARISON MATRIX LABEL. Root gap: a comparative brief's
+      // core table (the actual decision instrument) rendered identically
+      // to any incidental table in a lesson. A real compositional signal —
+      // not just a badge — for the FIRST table in a comparative-intent
+      // document: a labeled accent band directly above it, naming it as
+      // the matrix it functionally is.
+      if (hints.isComparisonMatrix) {
+        const labelH = 18;
+        if (!ensureSpace(ps, labelH + 20)) {
+          footer(ps, content);
+          ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+        }
+        gap(ps, 4);
+        ps.page.drawRectangle({ x: ML, y: ps.y - labelH, width: CW, height: labelH, color: C_ACCENT });
+        ps.page.drawText('MATRIZ COMPARATIVA', { x: ML + 8, y: ps.y - 13, size: 8, font: ps.bold, color: C_WHITE });
+        ps.y -= labelH;
+      }
 
       const drawHeaderRow = (): void => {
         if (headers.length === 0) return;
@@ -634,8 +700,21 @@ export async function renderCoursePdf(content: DocumentContent): Promise<Uint8Ar
     ps = await newPage(doc, bold, reg, content);
   }
 
-  for (const block of (content.blocks ?? [])) {
-    ps = await renderBlock(ps, block, content);
+  const blocks = content.blocks ?? [];
+  // P19-C — computed ONCE before the render loop (not tracked as mutable PS
+  // state) so the hint survives page breaks correctly: PS is replaced
+  // wholesale on every page break (newPage() returns a fresh object), so
+  // any flag stored on PS itself would silently reset mid-document.
+  const firstKvIndex = content.documentIntent === 'executive'
+    ? blocks.findIndex((b) => b.type === 'key_value') : -1;
+  const firstTableIndex = content.documentIntent === 'comparative'
+    ? blocks.findIndex((b) => b.type === 'table') : -1;
+
+  for (let i = 0; i < blocks.length; i++) {
+    ps = await renderBlock(ps, blocks[i], content, {
+      isKpiStrip: i === firstKvIndex,
+      isComparisonMatrix: i === firstTableIndex,
+    });
   }
 
   await renderClosing(ps, content);
