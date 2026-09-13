@@ -33,6 +33,7 @@ export function useBetaPage() {
   const mentorRef = useRef<MK>(mentor)
   const langRef = useRef<Lang>(lang)
   const topicRef = useRef<TK>(topic)
+  const msgsRef = useRef<Msg[]>(msgs)
   const msgsEndRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const mrRef = useRef<MediaRecorder|null>(null)
@@ -43,6 +44,7 @@ export function useBetaPage() {
   useEffect(() => { mentorRef.current = mentor }, [mentor])
   useEffect(() => { langRef.current = lang }, [lang])
   useEffect(() => { topicRef.current = topic }, [topic])
+  useEffect(() => { msgsRef.current = msgs }, [msgs])
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
   useEffect(() => {
     try {
@@ -76,11 +78,21 @@ export function useBetaPage() {
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     setLoading(true)
     try {
+      // BASE-MODEL-PARITY — recent real turns (not a code-derived summary),
+      // capped to keep the request bounded. 'ln' bubbles are system/UI
+      // messages, not dialogue — excluded. Text only: artifacts/audio are
+      // materializations of what was already said in the text, not
+      // additional dialogue content.
+      const conversationHistory = msgsRef.current
+        .filter(m => m.sender !== 'ln' && (m.text || '').trim().length > 0)
+        .slice(-16)
+        .map(m => ({ role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }))
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
+          conversationHistory,
           state: {
             ...trimStateForPayload(sessionRef.current as unknown as Record<string, unknown>),
             mentor: mentorRef.current,

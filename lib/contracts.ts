@@ -558,6 +558,20 @@ export interface ChatRequest {
   // already-correct grounded pathway — no new evaluation logic.
   pronunciationTarget?: string;
   clientHint?: string;
+  // BASE-MODEL-PARITY — root gap confirmed by direct code inspection: every
+  // OpenAI call in mentor-engine.ts sent exactly two messages — system and
+  // the current user turn. No prior turn ever reached the model as real
+  // conversation; only a handful of derived SessionState scalars
+  // (lastConcept, lastUserGoal, confirmedLevel) survived across turns. A
+  // multi-turn session where profile, hesitation, and goal emerge gradually
+  // across several turns (the shape of the Zakia benchmark) is exactly the
+  // case this bottleneck destroys — the model literally cannot see turn 3
+  // when answering turn 6, only whatever a regex happened to extract into
+  // lastConcept/lastUserGoal. This restores the actual dialogue: recent
+  // turns, sent as real conversation history, not a code-compressed
+  // summary standing in for it. Additive and optional — omitting it
+  // preserves prior behavior exactly.
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface ChatResponse {

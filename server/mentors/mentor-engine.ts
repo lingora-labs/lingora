@@ -48,6 +48,25 @@
 //    the guard was close to a coin flip rather than a reliable filter.
 //    Raised to 350 (see inline comment) as a deterministic backstop
 //    alongside the instruction-level fix, not a replacement for it.
+//
+// SEEK 5.0 BASE-MODEL-PARITY — CONVERSATION HISTORY RESTORED.
+// Root gap confirmed by direct code inspection (not theory): every OpenAI
+// call below sent exactly [{system}, {user: current turn}] — two messages,
+// always. No prior turn ever reached the model as real dialogue; only a
+// handful of derived SessionState scalars (lastConcept, lastUserGoal,
+// confirmedLevel) survived across turns, extracted by regex
+// (context-pack.ts's extractDomain). This is a materially different, far
+// poorer signal than an actual multi-turn conversation: the Zakia
+// benchmark's class of intelligence (profile, hesitation, and goal
+// surfacing gradually across 8 real turns) is exactly what this bottleneck
+// prevents — the model answering turn 6 could never see what was actually
+// said in turn 3, only whatever a regex happened to extract. Fix: recent
+// real turns now flow through end to end — ChatRequest.conversationHistory
+// (contracts.ts) -> NormalizedMentorCall.history -> spliced into the actual
+// `messages` array sent to OpenAI, between system and the current turn, in
+// both getMentorResponse and getMentorResponseStream. Additive: any caller
+// that doesn't supply history (legacy normalizeLegacyCall, existing
+// harnesses) gets an empty array and behaves exactly as before.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -118,6 +137,10 @@ type NormalizedMentorCall = {
   plan?: ExecutionPlan
   action?: string
   priorContext?: string
+  // BASE-MODEL-PARITY — see ChatRequest.conversationHistory (contracts.ts)
+  // for the root-gap rationale. Empty/undefined for any caller that hasn't
+  // opted in (legacy path, harnesses) — behavior there is unchanged.
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
 export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[] }
@@ -264,12 +287,16 @@ export function buildMentorPrompt(params: {
 }
 
 function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
-  return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined }
+  return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined, history: [] }
 }
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
   const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Audio input]'
-  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext }
+  const rawHistory = params.request?.conversationHistory
+  const history = Array.isArray(rawHistory)
+    ? rawHistory.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim().length > 0)
+    : []
+  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history }
 }
 
 export interface ModelParams {
@@ -298,7 +325,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const completion = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }],
     })
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
@@ -363,7 +390,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     const stream = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
       stream: true,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }],
     })
     const gen = (async function* () {
       let taught = ''
