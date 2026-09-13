@@ -29,6 +29,25 @@
 // two independent captured taught texts, versus the tool-calling baseline's
 // measured 80%. Teaching/streaming untouched; only the decision mechanism
 // after teaching changed.
+//
+// SEEK 5.0 P19-F — SPONTANEOUS ARTIFACT ON TRIVIAL TURNS.
+// Root cause confirmed in production (reproduced ~1 in 3-4 tries, so
+// non-deterministic — an LLM decision at temperature > 0, not a fixed
+// routing bug): a bare first-turn greeting + opening question ("¡Hola!
+// ... escribe 2 frases sobre ti") sometimes triggered emit_pdf and
+// materialized the greeting itself as a downloadable PDF titled "Saludo
+// inicial...". Two contributing factors, both fixed together:
+// 1) FIRST_TURN_DIRECTIVE / DIAGNOSTIC_FIRST_TURN_DIRECTIVE and
+//    ARTIFACT_CHANNEL_INSTRUCTION (lib/artifact-signal.ts) never told the
+//    model that a greeting/opening-question/diagnostic-prompt turn does
+//    NOT constitute "pedagogical completion" worth materializing — both
+//    now say so explicitly.
+// 2) The `taught.trim().length < 200` guard below decided whether
+//    decideArtifactSignals ran at all. A real first-turn greeting response
+//    naturally lands at 150-270 characters — straddling that threshold, so
+//    the guard was close to a coin flip rather than a reliable filter.
+//    Raised to 350 (see inline comment) as a deterministic backstop
+//    alongside the instruction-level fix, not a replacement for it.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -188,13 +207,13 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
   PDF_COURSE_DIRECTIVE: 'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained.',
   CORRECTION_ONLY_DIRECTIVE: 'The student asked for a correction. Correct exactly what they wrote. Do not teach a full lesson.',
   TRANSLATION_ONLY_DIRECTIVE: 'The student asked for a translation. Provide ONLY the translation.',
-  FIRST_TURN_DIRECTIVE: 'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet.',
+  FIRST_TURN_DIRECTIVE: 'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet. Do not call signal_artifact on this turn — a greeting plus an opening question is not taught content, so there is nothing yet worth materializing as a document.',
   CURRICULUM_PRESENTER_DIRECTIVE: 'Present a full, structured curriculum for the requested topic.',
   EXERCISE_FEEDBACK_DIRECTIVE: 'The student just responded to an active exercise. Evaluate that specific response only.',
   SCHEMA_DIRECTIVE: 'You are generating a LINGORA study schema. Use only plain text and standard markdown.',
   TABLE_DIRECTIVE: 'You are generating a comparison table. Columns: CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE.',
   PRONUNCIATION_EVAL_DIRECTIVE: 'Evaluate pronunciation. Respond with JSON only.',
-  DIAGNOSTIC_FIRST_TURN_DIRECTIVE: 'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson.',
+  DIAGNOSTIC_FIRST_TURN_DIRECTIVE: 'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson. Do not call signal_artifact on this turn — a diagnostic prompt with no taught content yet is not worth materializing.',
 }
 
 function buildExecutionDirective(params: {
@@ -355,7 +374,22 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           yield delta
         }
       }
-      if (taught.trim().length < 200) return
+      // P19-F — this guard was 200, chosen with no empirical basis against
+      // what a real first-turn response looks like. Confirmed in
+      // production: a bare greeting + opening question ("¡Hola! ... escribe
+      // 2 frases...") naturally lands at 150-270 characters — squarely
+      // straddling the old threshold, so whether decideArtifactSignals even
+      // ran was close to a coin flip. Every genuine teaching turn observed
+      // in testing (a real grammar point, a short table, a full lesson) was
+      // consistently 1000+ characters. 350 cleanly separates "turn barely
+      // finished" from "something was actually taught", without risking
+      // suppressing real short artifacts (the shortest legitimate one
+      // observed, a fast-path comparison table, was already 1400+ chars).
+      // This is a backstop alongside the content-level instruction fix
+      // (ARTIFACT_CHANNEL_INSTRUCTION / FIRST_TURN_DIRECTIVE) — not a
+      // replacement for it, since a long-but-still-trivial response could
+      // otherwise slip through on instruction-following alone.
+      if (taught.trim().length < 350) return
       try {
         const decided = await decideArtifactSignals(RUNTIME_MODEL, system, user, taught)
         signals.push(...decided)

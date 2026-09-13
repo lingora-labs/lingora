@@ -89,6 +89,15 @@ export const SIGNAL_ARTIFACT_TOOL = {
 // underlying mechanism is actually wired, the line is flipped to match,
 // mirroring the emit_pdf pattern exactly: availability, not a promise that
 // audio already exists.
+//
+// SEEK 5.0 P19-F — TRIVIAL-TURN EXCLUSION.
+// Root gap confirmed in production: nothing here ever told the model that
+// "pedagogical completion" requires actual taught content — a bare
+// greeting or opening question could be (and, ~1 in 3-4 tries, was)
+// interpreted as complete enough to materialize. Added an explicit
+// negative example. Paired with a matching guard in mentor-engine.ts
+// (the taught-length threshold gating whether the decision call even
+// runs) — see that file's P19-F note for the full picture.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 ARTIFACT CHANNEL:
 You have a structured side-effect channel named signal_artifact.
@@ -97,6 +106,7 @@ If the act contains distinct taught parts and each part independently warrants i
 Do not emit an artifact per part by default. Decide.
 Do not print JSON, tool names, or debug to the student.
 Do not call the tool merely because the user wrote PDF or artifact; finish teaching, then decide.
+Do not call signal_artifact for a bare greeting, an opening question, or a diagnostic prompt with no substantive taught content yet — "pedagogical completion" means you actually taught something the student could study from, not that the turn is merely finished. A first-turn greeting or a request for a sample sentence is not, by itself, material worth a document.
 emit_pdf IS available in this runtime: you may truthfully offer to prepare/materialize what you taught as a downloadable PDF. This states that the mechanism exists, not that a specific file is already generated — never claim a document has been created or is ready to download before it actually has been; simply teach, then let materialization happen through the normal signal_artifact decision.
 emit_audio IS available in this runtime: you may truthfully offer to speak what you taught aloud. This states the mechanism exists, not that audio has already been generated — never claim audio is ready before it actually is. Only offer or emit audio when it genuinely serves the student (e.g. pronunciation modeling, listening practice) — not by default on every turn.
 `
