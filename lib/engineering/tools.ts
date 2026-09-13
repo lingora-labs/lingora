@@ -238,7 +238,59 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
   };
 }
 
+// ============================================================
+// BASE-MODEL-PARITY — CONVERSATION HISTORY VERIFICATION.
+// Confirms the fix actually reaches the model: a detail stated ONLY in
+// turn 1 (a specific company name and month — never a candidate for
+// lastConcept/lastUserGoal, which are single derived strings that only
+// ever capture the LATEST topic) must be recoverable in turn 4's answer.
+// This is a ZAKIA BLIND-style user — different nationality, profession,
+// goal — not the Zakia case itself, to test generalization, not memorization.
+// ============================================================
+async function runBaseModelParityTest(): Promise<Record<string, unknown>> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  let history: HistTurn[] = [];
+  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+  const turns: Array<{ sent: string; response: string; stateAfter: Record<string, unknown> }> = [];
+
+  async function turn(message: string) {
+    const r = await callChatAPI(message, state, { conversationHistory: history });
+    if (r.state) state = r.state as typeof state;
+    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
+    turns.push({ sent: message, response: r.message, stateAfter: { lastConcept: (state as any).lastConcept, lastUserGoal: (state as any).lastUserGoal } });
+    return r;
+  }
+
+  await turn('Hola, soy Erik. Trabajo en logística para una empresa noruega, NordFrakt, y en marzo tengo una reunión importante en Ciudad de México con un proveedor.');
+  await turn('Nunca he estudiado español formalmente, pero entiendo un poco por el inglés y el alemán que hablo.');
+  await turn('Quiero preparar especialmente el vocabulario de negociación de contratos y reuniones formales.');
+  const t4 = await turn('¿Qué tan pronto crees que podré manejarme bien en esa reunión que tengo?');
+
+  const t4Lower = t4.message.toLowerCase();
+  const recoveredCompany = t4Lower.includes('nordfrakt');
+  const recoveredMonth = t4Lower.includes('marzo');
+  const recoveredCity = t4Lower.includes('méxico') || t4Lower.includes('mexico');
+
+  return {
+    harness: 'base_model_parity_test',
+    NOTE: 'Turn 1 states company="NordFrakt" and month="marzo" — details that only survive if the model actually receives real turn-1 text, not just lastConcept/lastUserGoal (single derived strings that only ever hold the LATEST topic, never turn-1 specifics).',
+    turns,
+    turn4_recovery_check: {
+      sentTurn4: turns[3].sent,
+      responseTurn4: t4.message,
+      recoveredCompanyName_NordFrakt: recoveredCompany,
+      recoveredMonth_marzo: recoveredMonth,
+      recoveredCity_Mexico: recoveredCity,
+      VERDICT: (recoveredCompany || recoveredMonth || recoveredCity) ? 'HISTORY_REACHING_MODEL' : 'NO_RECOVERY_DETECTED',
+    },
+    finalStateSnapshot: { lastConcept: (state as any).lastConcept, lastUserGoal: (state as any).lastUserGoal },
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('base_model_parity_test')) {
+    return runBaseModelParityTest();
+  }
   if (prompt && prompt.startsWith('p19_validation')) {
     return runP19Validation();
   }
@@ -1043,7 +1095,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, or p19_validation (generates+escrows the 5 comparable P19 artifacts with real page counts). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, or base_model_parity_test (4-turn conversation verifying real dialogue history reaches the model, not just derived state scalars). No browser needed.' },
   ];
 }
 
