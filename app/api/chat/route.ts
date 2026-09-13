@@ -341,6 +341,18 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioDataUrl,
       audioMimeType,
       exportTranscript: body.exportTranscript,
+      // BASE-MODEL-PARITY — root cause found by direct code inspection:
+      // this object literal explicitly reconstructs ChatRequest field by
+      // field. conversationHistory arrives correctly in `body` (the parsed
+      // request JSON — confirmed present, sent by use-beta-page.ts's
+      // callAPI and by the base_model_parity_test harness) but was never
+      // copied into THIS narrower object, so it silently never reached
+      // executePlan/executePlanStream → mentor-engine.ts, no matter how
+      // correct the rest of the plumbing was. Production evidence: the
+      // v2 memory test failed with the model explicitly stating "No tengo
+      // esos datos en esta conversación todavía" — it genuinely never saw
+      // turn 1. This is the actual reason the earlier fix had no effect.
+      conversationHistory: body.conversationHistory,
     };
 
     if (STREAMING_ENABLED && !plan.blocking) {
