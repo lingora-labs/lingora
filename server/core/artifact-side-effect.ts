@@ -76,6 +76,7 @@ export function buildFulfillmentEntry(
     pdfByteLength?: number
     pdfSha256?: string
   },
+  webUrl?: string,
 ): { kind: 'artifact'; payload: ArtifactPayload } | { kind: 'failure'; failure: ArtifactFailure } {
   if (!result.success || !result.url) {
     return { kind: 'failure', failure: { subject } }
@@ -91,6 +92,10 @@ export function buildFulfillmentEntry(
       renderValidationError: result.renderValidationError,
       pdfByteLength: result.pdfByteLength,
       pdfSha256: result.pdfSha256,
+      // P19-D — additive: undefined when composition fell back to the
+      // flat-text path (no DocumentContent to render as HTML), so that
+      // path keeps its pre-existing single-download behavior unchanged.
+      ...(webUrl ? { webUrl } : {}),
     } as ArtifactPayload,
   }
 }
@@ -149,7 +154,23 @@ export async function fulfillArtifactSignals(
       console.error('[P8] generatePDF failed', signal.subject, result.error ?? result.message)
     }
 
-    const entry = buildFulfillmentEntry(signal.subject, title, composed, result)
+    // P19-D — DUAL DELIVERY. Only possible when composition succeeded
+    // (composed.content is the same DocumentContent already sent to the
+    // PDF renderer above) — the flat-text fallback path has no structured
+    // plan to render as HTML, so webUrl stays undefined there, same as
+    // before this change.
+    let webUrl: string | undefined
+    if (composed.ok && result.success && result.url) {
+      try {
+        const { renderArtifactHtml } = await import('../tools/web/renderArtifactHtml')
+        const html = renderArtifactHtml(composed.content)
+        webUrl = `data:text/html;charset=utf-8;base64,${Buffer.from(html, 'utf8').toString('base64')}`
+      } catch (e) {
+        console.error('[P19-D] renderArtifactHtml failed', signal.subject, e instanceof Error ? e.message : e)
+      }
+    }
+
+    const entry = buildFulfillmentEntry(signal.subject, title, composed, result, webUrl)
     if (entry.kind === 'artifact') artifacts.push(entry.payload)
     else failures.push(entry.failure)
   }

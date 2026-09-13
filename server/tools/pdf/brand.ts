@@ -8,24 +8,58 @@
 // engine — just the handful of tokens that actually vary across surfaces
 // today (PDF cover/header/footer). Extend here first if a future surface
 // (HTML) needs the same identity.
+//
+// P19-D — NEUTRAL CSS TOKENS. Root gap: the web surface needs the same
+// palette but pdf-lib's rgb() objects (0-1 floats packed into an opaque
+// PDFColor) aren't usable as CSS values. Rather than hand-maintain a
+// second hex palette that could drift from the PDF one, PALETTE below is
+// the single source of truth (plain 0-1 RGB triples); both BRAND.colors
+// (pdf-lib rgb()) and BRAND.cssColors (hex strings) are derived from it.
+// Changing the brand palette in one place updates both surfaces.
 // =============================================================================
 import { rgb } from 'pdf-lib';
+
+const PALETTE = {
+  dark:       [0.08, 0.09, 0.18],
+  teal:       [0.00, 0.74, 0.78],
+  accent:     [0.22, 0.32, 0.72],
+  muted:      [0.42, 0.47, 0.58],
+  white:      [1, 1, 1],
+  light:      [0.95, 0.96, 0.98],
+  tip:        [0.08, 0.12, 0.24],
+  warn:       [0.96, 0.94, 0.88],
+  metaCardBg: [0.12, 0.16, 0.28],
+} as const;
+
+function toHex([r, g, b]: readonly [number, number, number] | number[]): string {
+  const c = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
+  return `#${c(r)}${c(g)}${c(b)}`;
+}
+
+type PaletteKey = keyof typeof PALETTE;
+const cssColors = Object.fromEntries(
+  (Object.keys(PALETTE) as PaletteKey[]).map((k) => [k, toHex(PALETTE[k])]),
+) as Record<PaletteKey, string>;
 
 export const BRAND = {
   name: 'LINGORA',
   tagline: 'AI Cultural Immersion Platform for Spanish',
   footerLine: 'Learn -> Connect -> Experience',
   colors: {
-    dark:   rgb(0.08, 0.09, 0.18),
-    teal:   rgb(0.00, 0.74, 0.78),
-    accent: rgb(0.22, 0.32, 0.72),
-    muted:  rgb(0.42, 0.47, 0.58),
-    white:  rgb(1, 1, 1),
-    light:  rgb(0.95, 0.96, 0.98),
-    tip:    rgb(0.08, 0.12, 0.24),
-    warn:   rgb(0.96, 0.94, 0.88),
-    metaCardBg: rgb(0.12, 0.16, 0.28),
+    dark:       rgb(...PALETTE.dark),
+    teal:       rgb(...PALETTE.teal),
+    accent:     rgb(...PALETTE.accent),
+    muted:      rgb(...PALETTE.muted),
+    white:      rgb(...PALETTE.white),
+    light:      rgb(...PALETTE.light),
+    tip:        rgb(...PALETTE.tip),
+    warn:       rgb(...PALETTE.warn),
+    metaCardBg: rgb(...PALETTE.metaCardBg),
   },
+  // P19-D — hex equivalents for the web renderer. Same numbers as `colors`
+  // above, just expressed as CSS-usable strings instead of pdf-lib's
+  // opaque PDFColor objects.
+  cssColors,
   page: {
     width: 595.28,
     height: 841.89,

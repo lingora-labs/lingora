@@ -41,7 +41,15 @@ export function ArtifactRender({ a }: { a: Artifact }) {
   }
   if ((a.type === 'pdf' || a.type === 'pdf_chat' || a.type === 'course_pdf') && a.url) {
     const label = a.type === 'course_pdf' ? '📄 Descargar curso PDF' : a.type === 'pdf_chat' ? '📋 Descargar historial PDF' : '📄 Descargar PDF'
-    return <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>{label}</a>
+    const webUrl = (a as { webUrl?: string }).webUrl
+    return (
+      <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:6 }}>
+        {webUrl && (
+          <a href={webUrl} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.25)', color:'var(--teal)', fontSize:13, fontWeight:700 }}>🌐 Abrir versión web</a>
+        )}
+        <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>{label}</a>
+      </div>
+    )
   }
   if (a.type === 'audio' && (a.dataUrl || a.url || (a.content as Record<string, unknown> | undefined)?.dataUrl)) {
     const src = String(a.dataUrl ?? a.url ?? (a.content as Record<string, unknown>)?.dataUrl ?? '')
