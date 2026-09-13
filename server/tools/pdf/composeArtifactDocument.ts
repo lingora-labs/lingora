@@ -31,8 +31,25 @@
 // type. Code-level normalization maps common ES/EN variants to the closed
 // set and falls back to the most modest truthful label ('lesson') for
 // anything unrecognized — never inflates to 'course' by default.
+//
+// SEEK 5.0 P19-B — DOCUMENT INTENT (GENERAL ARTIFACT SYSTEM, increment 1).
+// Root gap: the documentType taxonomy above is exclusively pedagogical.
+// WILLY is free to teach acupuncture theory, compare two options, or write
+// an executive-style recommendation — but every one of those, once
+// materialized, was forced through a lesson/study_guide/course-shaped
+// label because the classification layer had no other vocabulary. A
+// scientific dossier and a Spanish lesson were visually indistinguishable
+// beyond the badge text. Fix: composer now classifies documentIntent FIRST
+// (learning/scientific/executive/comparative/reference) as a broader
+// question than documentType, then picks documentType from the taxonomy
+// that actually matches that intent — the existing 7-value pedagogical set
+// for 'learning', three new honest slugs (dossier/executive_brief/
+// comparative_brief) for the others. This is still organization, not new
+// pedagogical content — WILLY already decided what kind of content this is
+// when it taught; this only lets the composer say so truthfully.
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
+import type { DocumentIntent } from './brand'
 
 const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
   'heading', 'paragraph', 'bullets', 'numbered', 'table', 'callout', 'quote',
@@ -46,6 +63,11 @@ const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
 export type ArtifactTypeSlug =
   | 'lesson' | 'study_guide' | 'course' | 'worksheet'
   | 'reference' | 'assessment' | 'learning_plan'
+  // P19-B — non-pedagogical slugs, valid only when documentIntent is not
+  // 'learning'. Kept in the SAME enum (not a parallel type) so the
+  // renderer's existing ARTIFACT_TYPE_BADGE lookup and badge/kicker logic
+  // don't need a second dispatch path.
+  | 'dossier' | 'executive_brief' | 'comparative_brief'
 
 const ARTIFACT_TYPE_ALIASES: Record<string, ArtifactTypeSlug> = {
   lesson: 'lesson', leccion: 'lesson', 'lección': 'lesson',
@@ -56,6 +78,17 @@ const ARTIFACT_TYPE_ALIASES: Record<string, ArtifactTypeSlug> = {
   reference: 'reference', referencia: 'reference', 'material de referencia': 'reference',
   assessment: 'assessment', evaluacion: 'assessment', 'evaluación': 'assessment', examen: 'assessment',
   learning_plan: 'learning_plan', 'plan de aprendizaje': 'learning_plan', plan: 'learning_plan',
+  dossier: 'dossier', 'dossier explicativo': 'dossier', explainer: 'dossier',
+  executive_brief: 'executive_brief', 'documento ejecutivo': 'executive_brief', 'board memo': 'executive_brief', brief: 'executive_brief',
+  comparative_brief: 'comparative_brief', 'analisis comparativo': 'comparative_brief', 'análisis comparativo': 'comparative_brief', comparison: 'comparative_brief',
+}
+
+const INTENT_ALIASES: Record<string, DocumentIntent> = {
+  learning: 'learning', pedagogical: 'learning', aprendizaje: 'learning',
+  scientific: 'scientific', explanatory: 'scientific', cientifico: 'scientific', 'científico': 'scientific',
+  executive: 'executive', board: 'executive', ejecutivo: 'executive',
+  comparative: 'comparative', analytical: 'comparative', comparativo: 'comparative',
+  reference: 'reference', referencia: 'reference',
 }
 
 // Safest truthful default: an unrecognized/ambiguous type is treated as a
@@ -63,6 +96,11 @@ const ARTIFACT_TYPE_ALIASES: Record<string, ArtifactTypeSlug> = {
 function normalizeArtifactType(raw: unknown): ArtifactTypeSlug {
   const key = String(raw ?? '').trim().toLowerCase()
   return ARTIFACT_TYPE_ALIASES[key] ?? 'lesson'
+}
+
+function normalizeIntent(raw: unknown): DocumentIntent {
+  const key = String(raw ?? '').trim().toLowerCase()
+  return INTENT_ALIASES[key] ?? 'learning'
 }
 
 // Full taught text can legitimately run long for a rich compound act.
@@ -97,7 +135,7 @@ export async function composeDocumentFromTaught(params: ComposeParams): Promise<
       ? params.otherSubjects.map((s) => `"${s}"`).join(', ')
       : '(none — this was the only subject taught in this turn)'
 
-    const systemPrompt = `You structure already-taught pedagogical content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is STRUCTURING: organize that portion into clear blocks. Your third job is HONEST TYPING: classify what this document actually is.
+    const systemPrompt = `You structure already-taught content into a JSON document for PDF rendering. The text you receive is the FULL turn as taught, which may cover more than one subject. Your first job is ISOLATION: select only the portion that genuinely belongs to your assigned subject. Your second job is CLASSIFYING PURPOSE: this content is not always a lesson — decide honestly what KIND of document it actually is. Your third job is STRUCTURING and HONEST TYPING within that purpose.
 
 Isolation rules:
 - Exclude turn-level framing text (e.g. "I will do this in the order you asked", opening/closing summaries that talk ABOUT the plan rather than teaching content).
@@ -107,18 +145,24 @@ Isolation rules:
 
 Structuring rules:
 - Do not invent new content. Do not change complexity, register, or level — that was already decided correctly by the tutor when it taught. Do not simplify or infantilize.
-- Organize into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, and one exercise block if practice material specific to YOUR subject is present.
+- Organize into clear blocks: headings, paragraphs, tables where the content is naturally tabular, bullet or numbered lists where appropriate, key_value for terminology/KPI-style facts, callout for a recommendation or important note, comparison/framework for contrast-heavy content, and one exercise block if practice material specific to YOUR subject is present.
 - If almost nothing in the text belongs to your subject, it is correct to produce a shorter document rather than padding it with unrelated content.
 
-Honest typing rules — choose exactly ONE documentType from this closed list, based on what the content actually is, not what would sound impressive:
-- "lesson": a single teaching episode on one or a few closely related points. This is the correct choice for most single-turn output, including compound acts that taught more than one point in one sitting.
-- "study_guide": a reference-style overview of a topic meant for review, not first teaching.
-- "course": genuinely structured multi-module curriculum with sequenced sessions. Do NOT use this for a single turn's output, however long.
-- "worksheet": primarily practice items/exercises with little explanatory prose.
-- "reference": a lookup-style document (glossary, table of facts) with minimal narrative.
-- "assessment": a test, quiz, or evaluation instrument.
-- "learning_plan": a roadmap of what to study next, not the content itself.
-Your title MUST agree with documentType: never use words like "Curso"/"Course" in the title unless documentType is "course"; never call something a "Guía"/"Guide" unless it is guide-shaped. When in doubt between "lesson" and something grander, choose "lesson" — it is always truthful for single-turn output.
+CLASSIFYING PURPOSE — choose exactly ONE documentIntent, honestly, based on what the content actually IS:
+- "learning": teaching a skill or concept for the reader to practice/acquire (most language-learning content).
+- "scientific": explaining a domain with theory, evidence, or open questions — a dossier, not an exercise. Use this for content like "how acupuncture works" — it is explanatory, not a lesson to practice.
+- "executive": diagnosis + recommendation + decision framed for someone who needs to decide or act, not learn a skill.
+- "comparative": the content's core value is contrasting two or more things and recommending between them.
+- "reference": a lookup-style compilation of facts/terms with minimal narrative, not meant to be studied in sequence.
+Do NOT default to "learning" just because the audience is a language student — classify by what THIS content actually does.
+
+HONEST TYPING — once you know the intent, choose exactly ONE documentType:
+If documentIntent is "learning", choose from: "lesson" (a single teaching episode — correct for almost all single-turn output), "study_guide" (review-style overview), "course" (genuinely multi-module curriculum — never for single-turn output), "worksheet" (mostly exercises), "reference", "assessment", "learning_plan" (a roadmap, not the content itself).
+If documentIntent is "scientific", documentType is "dossier".
+If documentIntent is "executive", documentType is "executive_brief".
+If documentIntent is "comparative", documentType is "comparative_brief".
+If documentIntent is "reference" (non-learning), documentType is "reference".
+Your title MUST agree with both intent and type: never use words like "Curso"/"Course" unless documentType is "course"; never call something a "Guía"/"Guide" unless it is guide-shaped; a scientific dossier's title should read like a dossier, not a lesson. When in doubt within "learning", choose "lesson" — it is always truthful for single-turn output.
 
 Respond with valid JSON only — no markdown, no preamble.`
 
@@ -133,13 +177,16 @@ ${boundedContent}
 
 Return ONLY this JSON:
 {
-  "title": "string - specific to \"${params.subject}\", must agree with documentType, not generic",
+  "title": "string - specific to \"${params.subject}\", must agree with documentIntent and documentType, not generic",
   "subtitle": "string or null",
-  "documentType": "one of: lesson, study_guide, course, worksheet, reference, assessment, learning_plan",
+  "documentIntent": "one of: learning, scientific, executive, comparative, reference",
+  "documentType": "if learning: lesson, study_guide, course, worksheet, reference, assessment, learning_plan — otherwise must match documentIntent: dossier (scientific), executive_brief (executive), comparative_brief (comparative), reference (reference)",
   "blocks": [
     {"type":"heading","level":1,"content":"Section title"},
     {"type":"paragraph","content":"Prose text..."},
     {"type":"table","headers":["Col A","Col B"],"rows":[["a1","b1"]]},
+    {"type":"key_value","items":["Term: definition"]},
+    {"type":"callout","label":"Recomendación","style":"tip","content":"..."},
     {"type":"bullets","items":["item one","item two"]},
     {"type":"exercise","label":"Practica","content":"..."}
   ],
@@ -187,6 +234,7 @@ Return ONLY this JSON:
       content: {
         title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title : `LINGORA — ${params.subject}`,
         subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : undefined,
+        documentIntent: normalizeIntent(parsed.documentIntent),
         documentType: normalizeArtifactType(parsed.documentType),
         level: params.level,
         mentorName: params.mentorName,

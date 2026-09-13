@@ -23,6 +23,7 @@
 // =============================================================================
 import { PDFDocument, PDFPage, PDFFont, rgb, StandardFonts } from 'pdf-lib';
 import { CANONICAL_PRODUCT_URL } from '../../../lib/product';
+import { BRAND, INTENT_KICKER, type DocumentIntent } from './brand';
 
 export type DocumentBlockType =
   | 'heading'
@@ -81,6 +82,11 @@ export interface DocumentContent {
   nextStep?: string;
   generatedAt: string;
   epistemicNature?: EpistemicNature;
+  // P19-B — the broader classification documentType always should have sat
+  // under. See brand.ts for the rationale. Defaults to 'learning' when
+  // absent so every artifact generated before this field existed keeps
+  // rendering exactly as before — purely additive.
+  documentIntent?: DocumentIntent;
 }
 
 export type CourseContent = DocumentContent;
@@ -120,19 +126,19 @@ const EPISTEMIC_BADGE_MAP: Record<string, string> = {
   'mixed':                 'Material combinado',
 };
 
-const W = 595.28, H = 841.89;
-const ML = 48, MR = 48;
+const W = BRAND.page.width, H = BRAND.page.height;
+const ML = BRAND.page.marginLeft, MR = BRAND.page.marginRight;
 const CW = W - ML - MR;
-const MB = 52;
+const MB = BRAND.page.marginBottom;
 
-const C_DARK   = rgb(0.08, 0.09, 0.18);
-const C_TEAL   = rgb(0.00, 0.74, 0.78);
-const C_ACCENT = rgb(0.22, 0.32, 0.72);
-const C_MUTED  = rgb(0.42, 0.47, 0.58);
-const C_WHITE  = rgb(1, 1, 1);
-const C_LIGHT  = rgb(0.95, 0.96, 0.98);
-const C_TIP    = rgb(0.08, 0.12, 0.24);
-const C_WARN   = rgb(0.96, 0.94, 0.88);
+const C_DARK   = BRAND.colors.dark;
+const C_TEAL   = BRAND.colors.teal;
+const C_ACCENT = BRAND.colors.accent;
+const C_MUTED  = BRAND.colors.muted;
+const C_WHITE  = BRAND.colors.white;
+const C_LIGHT  = BRAND.colors.light;
+const C_TIP    = BRAND.colors.tip;
+const C_WARN   = BRAND.colors.warn;
 
 interface PS {
   doc: PDFDocument;
@@ -145,7 +151,7 @@ interface PS {
 async function newPage(doc: PDFDocument, bold: PDFFont, reg: PDFFont, doc_content: DocumentContent): Promise<PS> {
   const page = doc.addPage([W, H]);
   page.drawRectangle({ x: 0, y: H - 38, width: W, height: 38, color: C_DARK });
-  page.drawText('LINGORA', { x: ML, y: H - 24, size: 11, font: bold, color: C_WHITE });
+  page.drawText(BRAND.name, { x: ML, y: H - 24, size: 11, font: bold, color: C_WHITE });
   const sub = safe(`${capitalizeMentor(doc_content.mentorName)} - ${doc_content.level ?? ''} - ${doc_content.title}`, 90);
   page.drawText(sub, { x: ML, y: H - 34, size: 7, font: reg, color: C_TEAL });
   return { doc, page, bold, reg, y: H - 52 };
@@ -189,7 +195,7 @@ function hRule(ps: PS, color = C_LIGHT, thickness = 0.5): void {
 function footer(ps: PS, content: DocumentContent): void {
   const y = MB - 14;
   ps.page.drawLine({ start: { x: ML, y: y + 14 }, end: { x: W - MR, y: y + 14 }, thickness: 0.3, color: C_MUTED });
-  ps.page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - Learn -> Connect -> Experience`, { x: ML, y, size: 7, font: ps.reg, color: C_MUTED });
+  ps.page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - ${BRAND.footerLine}`, { x: ML, y, size: 7, font: ps.reg, color: C_MUTED });
   ps.page.drawText(safe(content.generatedAt, 40), { x: W - MR - 90, y, size: 7, font: ps.reg, color: C_MUTED });
 }
 
@@ -463,25 +469,38 @@ const ARTIFACT_TYPE_BADGE: Record<string, string> = {
   reference: 'MATERIAL DE REFERENCIA',
   assessment: 'EVALUACIÓN',
   learning_plan: 'PLAN DE APRENDIZAJE',
+  // P19-B — non-pedagogical slugs (see composeArtifactDocument.ts)
+  dossier: 'DOSSIER',
+  executive_brief: 'DOCUMENTO EJECUTIVO',
+  comparative_brief: 'ANÁLISIS COMPARATIVO',
 };
 
 async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, content: DocumentContent): Promise<void> {
   const cover = doc.addPage([W, H]);
+  const intent = content.documentIntent ?? 'learning';
 
   cover.drawRectangle({ x: 0, y: 0, width: W, height: H, color: C_DARK });
-  cover.drawText('LINGORA', { x: ML, y: H - 80, size: 40, font: bold, color: C_WHITE });
-  cover.drawText('AI Cultural Immersion Platform for Spanish', { x: ML, y: H - 102, size: 10, font: reg, color: C_TEAL });
+  cover.drawText(BRAND.name, { x: ML, y: H - 80, size: 40, font: bold, color: C_WHITE });
+  cover.drawText(BRAND.tagline, { x: ML, y: H - 102, size: 10, font: reg, color: C_TEAL });
   cover.drawRectangle({ x: ML, y: H - 116, width: CW, height: 1.5, color: C_TEAL });
+
+  // P19-B — INTENT KICKER. Root gap: every artifact, regardless of subject
+  // or purpose, opened with the exact same cover treatment — a scientific
+  // dossier and a Spanish lesson were visually indistinguishable beyond the
+  // badge text. This one line, drawn from the same brand palette (no new
+  // colors), is the minimum honest signal that the document knows what
+  // kind of document it is before the reader reaches the title.
+  cover.drawText(safe(INTENT_KICKER[intent], 40), { x: ML, y: H - 130, size: 8, font: bold, color: C_MUTED });
 
   const badgeText = content.epistemicNature
     ? (EPISTEMIC_BADGE_MAP[content.epistemicNature] ?? content.documentType)
     : (ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType);
   if (badgeText) {
     const badge = safe(badgeText.toUpperCase(), 30);
-    cover.drawText(badge, { x: ML, y: H - 144, size: 9, font: bold, color: C_TEAL });
+    cover.drawText(badge, { x: ML, y: H - 148, size: 9, font: bold, color: C_TEAL });
   }
 
-  let y = H - 172;
+  let y = H - 176;
   const titleLines = wrapLines(content.title, bold, 22, CW);
   for (const line of titleLines) {
     cover.drawText(safe(line), { x: ML, y, size: 22, font: bold, color: C_WHITE });
@@ -511,12 +530,12 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
   const colW = CW / Math.max(1, Math.min(meta.length, 4));
   meta.slice(0, 4).forEach(([k, v], i) => {
     const x = ML + i * colW;
-    cover.drawRectangle({ x, y: y - 36, width: colW - 4, height: 36, color: rgb(0.12, 0.16, 0.28) });
+    cover.drawRectangle({ x, y: y - 36, width: colW - 4, height: 36, color: BRAND.colors.metaCardBg });
     cover.drawText(safe(k), { x: x + 6, y: y - 16, size: 7.5, font: reg, color: C_TEAL });
     cover.drawText(safe(v, 18), { x: x + 6, y: y - 30, size: 12, font: bold, color: C_WHITE });
   });
 
-  cover.drawText('Learn -> Connect -> Experience', { x: ML, y: 36, size: 9, font: reg, color: C_TEAL });
+  cover.drawText(BRAND.footerLine, { x: ML, y: 36, size: 9, font: reg, color: C_TEAL });
   cover.drawText(safe(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - ${content.generatedAt}`, 60), { x: ML, y: 20, size: 8, font: reg, color: C_MUTED });
 }
 
@@ -531,18 +550,20 @@ async function renderCover(doc: PDFDocument, bold: PDFFont, reg: PDFFont, conten
 // language, no new renderer, just a condensed placement for short docs.
 async function newPageWithCompactHeader(doc: PDFDocument, bold: PDFFont, reg: PDFFont, content: DocumentContent): Promise<PS> {
   const page = doc.addPage([W, H]);
+  const intent = content.documentIntent ?? 'learning';
   const headerH = 116;
   page.drawRectangle({ x: 0, y: H - headerH, width: W, height: headerH, color: C_DARK });
-  page.drawText('LINGORA', { x: ML, y: H - 26, size: 13, font: bold, color: C_WHITE });
+  page.drawText(BRAND.name, { x: ML, y: H - 26, size: 13, font: bold, color: C_WHITE });
+  page.drawText(safe(INTENT_KICKER[intent], 40), { x: ML, y: H - 38, size: 6.5, font: reg, color: C_MUTED });
 
   const badgeText = content.epistemicNature
     ? (EPISTEMIC_BADGE_MAP[content.epistemicNature] ?? content.documentType)
     : (ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType);
   if (badgeText) {
-    page.drawText(safe(badgeText.toUpperCase(), 30), { x: ML, y: H - 46, size: 8, font: bold, color: C_TEAL });
+    page.drawText(safe(badgeText.toUpperCase(), 30), { x: ML, y: H - 50, size: 8, font: bold, color: C_TEAL });
   }
 
-  let y = H - 64;
+  let y = H - 68;
   const titleLines = wrapLines(content.title, bold, 16, CW).slice(0, 2);
   for (const line of titleLines) {
     page.drawText(safe(line), { x: ML, y, size: 16, font: bold, color: C_WHITE });
