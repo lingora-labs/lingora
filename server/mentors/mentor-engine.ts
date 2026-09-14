@@ -67,6 +67,27 @@
 // both getMentorResponse and getMentorResponseStream. Additive: any caller
 // that doesn't supply history (legacy normalizeLegacyCall, existing
 // harnesses) gets an empty array and behaves exactly as before.
+//
+// SEEK 5.0 BASE-MODEL-PARITY — GENERAL-QUESTION OVERSTRUCTURING.
+// Root cause confirmed via same-model harness (general_control_comparison):
+// the SAME model, asked "Explícame brevemente por qué el cielo es azul"
+// with only a minimal purpose statement, answered in 252 chars with no
+// table. Through the normal runtime (RICH_CONTENT_DIRECTIVE — the DEFAULT
+// mentor directive for 'interact' mode, i.e. most ordinary conversation;
+// see orchestrator.ts line ~635), the same question produced 770 chars
+// with a markdown table, an added "matiz importante" aside, and a closing
+// menu of follow-up offers. The directive's own wording — "Use tables,
+// structured explanations... when they serve the student" — was being
+// read as a standing default for ANY substantive answer, not a condition
+// tied to whether THIS content actually benefits from that structure.
+// Fix: reworded RICH_CONTENT_DIRECTIVE to make depth explicitly
+// proportional to the question, reserving tables/structure for content
+// that genuinely needs it (comparisons, vocab sets, grammar contrasts,
+// explicit step-by-step requests) and stating plainly that a simple
+// factual aside gets a direct, ordinary-conversation-length answer unless
+// the student's own wording asks for depth. This is a single directive's
+// text, not a new mechanism — routing, artifact authority and memory are
+// untouched.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -222,7 +243,8 @@ function buildContext(state: LegacyMentorState): string {
 
 const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
   RICH_CONTENT_DIRECTIVE:
-    'Respond with full pedagogical depth. Use tables, structured explanations, and examples when they serve the student. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.' +
+    'Respond with depth PROPORTIONAL to what the question actually needs — not maximal depth by default. Use tables, structured headings, and multi-section breakdowns only for content that genuinely benefits from that structure: comparisons, vocabulary sets, grammar contrasts, step-by-step processes the student will practice, or anything explicitly sequenced in the student\'s message. ' +
+    'For a simple factual or general-knowledge question — including one unrelated to Spanish, asked in passing — answer directly and concisely, the way you would in an ordinary conversation, UNLESS the student\'s own wording asks for depth, a table, a lesson, or step-by-step teaching. A short aside does not need a table, a "further nuance" paragraph, or a closing menu of follow-up options. Do not pad. Do not repeat. If the student sequenced several requests in this message, cover that sequence in this turn instead of deferring parts.' +
     '\n\nCRITICAL: NEVER refuse a task by citing your Spanish-teaching function. If the task is in Spanish or serves learning — execute it with expert depth.',
   STRUCTURED_COURSE_DIRECTIVE:
     'You are in structured course mode. Follow the pedagogical sequence: guide -> lesson -> schema -> quiz -> feedback. Do not skip steps. Do not blend phases unless the student explicitly sequenced several requests in this message — then fulfill that sequence now.',
