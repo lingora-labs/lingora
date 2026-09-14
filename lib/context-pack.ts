@@ -99,6 +99,24 @@ function classifyArtifactAction(message: string): { action: ArtifactAction; dept
   return { action, depth };
 }
 
+// P19-F2 — ARTIFACT AUTHORITY GATE (see server/core/artifact-side-effect.ts
+// for the full rationale). Broader than AUTHOR_PATTERNS/MATERIALIZE_PATTERNS
+// above (those classify WHICH kind of artifact request this is, assuming
+// one exists) — this answers whether an artifact request exists AT ALL.
+// Creation verb + artifact noun, close together (same clause), OR one of
+// the existing materialize/author phrasings. A message with neither is not
+// an artifact request, regardless of how pedagogically substantial the
+// mentor's answer to it ends up being.
+const ARTIFACT_NOUNS = 'pdf|tabla|esquema|dossier|informe|gu[ií]a|manual|brief|reporte|documento|material( imprimible)?|hoja(?: de ejercicios)?|ficha|resumen|curso|matriz|comparaci[oó]n|glosario|schema|worksheet|workbook|table|chart|handout';
+const CREATION_VERBS = '(?:crea(?:me)?|dame|hazme|genera(?:me)?|prepara(?:me)?|escribe(?:me)?|dise[ñn]a(?:me)?|desarrolla(?:me)?|quiero|necesito|make me|give me|create|generate|prepare)';
+const EXPLICIT_ARTIFACT_REQUEST = new RegExp(`\\b${CREATION_VERBS}\\b[^.!?\\n]{0,40}\\b(?:${ARTIFACT_NOUNS})\\b`, 'i');
+
+export function hasExplicitArtifactRequest(message: string): boolean {
+  const t = (message || '').trim();
+  if (!t) return false;
+  return EXPLICIT_ARTIFACT_REQUEST.test(t) || MATERIALIZE_PATTERNS.test(t) || AUTHOR_PATTERNS.test(t);
+}
+
 function extractDomain(message: string, lastConcept?: string): string | null {
   const text = message.trim();
   if (!text) return lastConcept?.trim() || null;

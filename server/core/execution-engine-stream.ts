@@ -57,7 +57,7 @@ export function executePlanStream(
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
           const { fulfillArtifactSignals } = await import('./artifact-side-effect')
-          const fulfilled = await fulfillArtifactSignals(signals, fullText, state)
+          const fulfilled = await fulfillArtifactSignals(signals, fullText, state, request.message)
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
         }

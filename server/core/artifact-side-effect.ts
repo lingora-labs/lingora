@@ -41,6 +41,7 @@
 // never both, never neither, never a partial success masked as a full one.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
+import { hasExplicitArtifactRequest } from '../../lib/context-pack'
 
 function excerptForSubject(content: string, subject: string): string {
   const text = content.trim()
@@ -51,6 +52,29 @@ function excerptForSubject(content: string, subject: string): string {
   const start = Math.max(0, idx - 400)
   return text.slice(start, start + 6000)
 }
+
+// P19-F2 — ARTIFACT EXECUTION AUTHORITY GATE.
+// Root gap confirmed by reproduction (Zakia Replay, production): turn 1
+// ("Hi, I work in a hotel kitchen...") and turn 2 ("Can you explain some
+// basic kitchen vocabulary?") — neither containing any request for a
+// document — both produced a materialized PDF artifact. Trace: the model
+// decides signal_artifact via ARTIFACT_CHANNEL_INSTRUCTION's "after the
+// pedagogical act is complete, you may call signal_artifact if
+// materialization is warranted" — that instruction conflates PEDAGOGICAL
+// COMPLETION (a real, substantive answer was given) with USER AUTHORITY
+// TO MATERIALIZE (the user actually wants a document). A turn can be
+// pedagogically complete and simultaneously have zero user intent for a
+// downloadable artifact — that was exactly turns 1-2.
+// Fix: a deterministic authorization gate, not another prompt asking the
+// model to behave — this message either contains a real request for a
+// document (explicit noun: pdf/tabla/esquema/dossier/guía/etc., paired
+// with a creation verb, or a materialize-this-conversation phrase, or an
+// author-a-document phrase) or it doesn't. Model cognitive initiative is
+// untouched — it can still say "I could prepare a printable sheet for
+// you" in the response text; that is prose, not a side effect. Only the
+// SIDE EFFECT (actual PDF generation) requires this authority. Silently
+// dropped (not reported as a failure) when unauthorized — this is a
+// choice not to attempt, not an attempt that failed.
 
 export interface ArtifactFailure {
   subject: string
@@ -104,9 +128,15 @@ export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
+  userMessage: string = '',
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
-  const pdfs = deduped.filter((s) => s.type === 'emit_pdf');
+  // P19-F2 — see file header. Only emit_pdf signals whose triggering user
+  // turn actually requested a document pass through; the rest are
+  // silently dropped before any composer/renderer work is attempted.
+  // emit_audio is left untouched here — different trigger surface (P16
+  // voice conversation), out of scope for this reproduced bug.
+  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && hasExplicitArtifactRequest(userMessage));
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio');
   if (pdfs.length === 0 && audioSignals.length === 0) return { artifacts: [], failures: [] };
 
