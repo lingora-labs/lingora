@@ -316,110 +316,91 @@ async function runSimpleProportionalityTest(): Promise<Record<string, unknown>> 
 }
 
 // ============================================================
-// BASE-MODEL-PARITY v2 — CORRECTED MEMORY TEST.
-// The v1 test's turn 4 ("how soon will I manage") was answerable without
-// citing turn-1 specifics — a design flaw, not evidence against the fix.
-// This version forces literal recall (turn 4 explicitly asks for the
-// company/month/city) and then contextual use (turn 5 asks for material
-// built FROM those recalled facts). Two independent verdicts, not one.
+// GENERAL_CONTROL vs CURRENT_LINGORA — final same-model comparison.
+// GENERAL_CONTROL calls the SAME production model directly (no
+// LINGORA architecture whatsoever: no directives, no ContextPack, no
+// artifact machinery, no tools) with only a minimal purpose statement
+// and the real conversation history. CURRENT_LINGORA goes through the
+// normal /api/chat pipeline (callChatAPI). Both run the identical
+// message sequence so the only variable is the architecture layer.
 // ============================================================
-async function runBaseModelParityTestV2(): Promise<Record<string, unknown>> {
-  type HistTurn = { role: 'user' | 'assistant'; content: string };
-  let history: HistTurn[] = [];
-  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
-  const turns: Array<{ sent: string; response: string }> = [];
-
-  async function turn(message: string) {
-    const r = await callChatAPI(message, state, { conversationHistory: history });
-    if (r.state) state = r.state as typeof state;
-    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
-    turns.push({ sent: message, response: r.message });
-    return r;
-  }
-
-  await turn('Soy Erik. Trabajo en NordFrakt, una empresa noruega de logística. En marzo tengo una reunión en Ciudad de México con un proveedor.');
-  await turn('Nunca he estudiado español formalmente.');
-  await turn('Quiero practicar negociación de contratos.');
-  const t4 = await turn('Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la reunión y en qué ciudad será.');
-  const t5 = await turn('Ahora prepara dos frases que me servirían específicamente en ESA reunión, usando lo que sabes de mi trabajo.');
-
-  const t4Lower = t4.message.toLowerCase();
-  const recall = {
-    company_NordFrakt: t4Lower.includes('nordfrakt'),
-    month_marzo: t4Lower.includes('marzo'),
-    city_CiudadDeMexico: t4Lower.includes('méxico') || t4Lower.includes('mexico'),
-  };
-  const HISTORY_RECALL = (recall.company_NordFrakt && recall.month_marzo && recall.city_CiudadDeMexico) ? 'PASS' : 'FAIL';
-
-  const t5Lower = t5.message.toLowerCase();
-  // Contextual use: sentences that reference the actual work situation
-  // (logistics/proveedor/reunión/negociación), not generic Spanish phrases
-  // unrelated to Erik's stated context.
-  const contextualSignals = {
-    mentionsLogisticsOrSupplier: /log[ií]stica|proveedor|nordfrakt/i.test(t5Lower),
-    mentionsMeetingOrNegotiation: /reuni[oó]n|negociaci[oó]n|contrato/i.test(t5Lower),
-    producedConcreteSentences: (t5.message.match(/["“«].{5,80}?["”»]/g) || []).length >= 1 || (t5.message.match(/\*\*.{5,80}?\*\*/g) || []).length >= 1,
-  };
-  const CONTEXTUAL_USE = (contextualSignals.mentionsLogisticsOrSupplier && contextualSignals.mentionsMeetingOrNegotiation && contextualSignals.producedConcreteSentences) ? 'PASS' : 'FAIL';
-
-  return {
-    harness: 'base_model_parity_test_v2',
-    turns,
-    turn4_recall_check: { sent: turns[3].sent, response: t4.message, recall, HISTORY_RECALL },
-    turn5_contextual_use_check: { sent: turns[4].sent, response: t5.message, contextualSignals, CONTEXTUAL_USE },
-  };
+async function callGeneralControl(history: Array<{ role: 'user' | 'assistant'; content: string }>, message: string): Promise<{ message: string }> {
+  const OpenAI = (await import('openai')).default;
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+  const system = 'You are LINGORA. Preserve your full general intelligence. Help this person learn and progress. Use the full conversation and relevant user context. Act with proportionate initiative when useful.';
+  const completion = await openai.chat.completions.create({
+    ...harnessModelParams(RUNTIME_MODEL, 2000, 0.7, 0.88),
+    messages: [
+      { role: 'system', content: system },
+      ...history.map((h) => ({ role: h.role, content: h.content })),
+      { role: 'user', content: message },
+    ],
+  });
+  return { message: (completion.choices?.[0]?.message?.content ?? '').trim() };
 }
 
-// ============================================================
-// BASE-MODEL-PARITY — CONVERSATION HISTORY VERIFICATION.
-// Confirms the fix actually reaches the model: a detail stated ONLY in
-// turn 1 (a specific company name and month — never a candidate for
-// lastConcept/lastUserGoal, which are single derived strings that only
-// ever capture the LATEST topic) must be recoverable in turn 4's answer.
-// This is a ZAKIA BLIND-style user — different nationality, profession,
-// goal — not the Zakia case itself, to test generalization, not memorization.
-// ============================================================
-async function runBaseModelParityTest(): Promise<Record<string, unknown>> {
-  type HistTurn = { role: 'user' | 'assistant'; content: string };
-  let history: HistTurn[] = [];
-  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
-  const turns: Array<{ sent: string; response: string; stateAfter: Record<string, unknown> }> = [];
+async function runGeneralControlComparison(): Promise<Record<string, unknown>> {
+  // A. ZAKIA REPLAY — identical 4-turn sequence on both paths.
+  const zakiaMessages = [
+    "Hi, I work in a hotel kitchen. I'd like to prepare for the DELE A2 exam.",
+    'Can you explain some basic kitchen vocabulary?',
+    'Ahora prefiero seguir en español, no en inglés.',
+    '¿Puedes seguir explicando el vocabulario de cocina?',
+  ];
 
-  async function turn(message: string) {
-    const r = await callChatAPI(message, state, { conversationHistory: history });
-    if (r.state) state = r.state as typeof state;
-    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
-    turns.push({ sent: message, response: r.message, stateAfter: { lastConcept: (state as any).lastConcept, lastUserGoal: (state as any).lastUserGoal } });
-    return r;
+  let controlHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const controlZakia: Array<{ sent: string; response: string }> = [];
+  for (const m of zakiaMessages) {
+    const r = await callGeneralControl(controlHistory, m);
+    controlHistory = [...controlHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    controlZakia.push({ sent: m, response: r.message });
   }
 
-  await turn('Hola, soy Erik. Trabajo en logística para una empresa noruega, NordFrakt, y en marzo tengo una reunión importante en Ciudad de México con un proveedor.');
-  await turn('Nunca he estudiado español formalmente, pero entiendo un poco por el inglés y el alemán que hablo.');
-  await turn('Quiero preparar especialmente el vocabulario de negociación de contratos y reuniones formales.');
-  const t4 = await turn('¿Qué tan pronto crees que podré manejarme bien en esa reunión que tengo?');
+  let lingoraHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let lingoraState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 0 };
+  const lingoraZakia: Array<{ sent: string; response: string; hadArtifact: boolean }> = [];
+  for (const m of zakiaMessages) {
+    const r = await callChatAPI(m, lingoraState, { conversationHistory: lingoraHistory });
+    if (r.state) lingoraState = r.state as typeof lingoraState;
+    lingoraHistory = [...lingoraHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    lingoraZakia.push({ sent: m, response: r.message, hadArtifact: !!r.artifact });
+  }
 
-  const t4Lower = t4.message.toLowerCase();
-  const recoveredCompany = t4Lower.includes('nordfrakt');
-  const recoveredMonth = t4Lower.includes('marzo');
-  const recoveredCity = t4Lower.includes('méxico') || t4Lower.includes('mexico');
+  // B. SIMPLE PROPORTIONALITY — identical single turn on both paths.
+  const propMsg = "¿Cómo se dice 'thank you' en español?";
+  const controlProp = await callGeneralControl([], propMsg);
+  const lingoraProp = await callChatAPI(propMsg, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 3 });
+
+  // C. GENERAL INTELLIGENCE — off-topic domain question, identical on both.
+  const giMsg = 'Explícame brevemente por qué el cielo es azul.';
+  const controlGI = await callGeneralControl([], giMsg);
+  const lingoraGI = await callChatAPI(giMsg, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 2 });
 
   return {
-    harness: 'base_model_parity_test',
-    NOTE: 'Turn 1 states company="NordFrakt" and month="marzo" — details that only survive if the model actually receives real turn-1 text, not just lastConcept/lastUserGoal (single derived strings that only ever hold the LATEST topic, never turn-1 specifics).',
-    turns,
-    turn4_recovery_check: {
-      sentTurn4: turns[3].sent,
-      responseTurn4: t4.message,
-      recoveredCompanyName_NordFrakt: recoveredCompany,
-      recoveredMonth_marzo: recoveredMonth,
-      recoveredCity_Mexico: recoveredCity,
-      VERDICT: (recoveredCompany || recoveredMonth || recoveredCity) ? 'HISTORY_REACHING_MODEL' : 'NO_RECOVERY_DETECTED',
+    harness: 'general_control_comparison',
+    NOTE: 'GENERAL_CONTROL = same production model, minimal system prompt, no LINGORA architecture (no directives, no ContextPack, no tools). CURRENT_LINGORA = normal /api/chat pipeline. Identical message sequences on both.',
+    ZAKIA_REPLAY: {
+      GENERAL_CONTROL: controlZakia,
+      CURRENT_LINGORA: lingoraZakia,
     },
-    finalStateSnapshot: { lastConcept: (state as any).lastConcept, lastUserGoal: (state as any).lastUserGoal },
+    SIMPLE_PROPORTIONALITY: {
+      sent: propMsg,
+      GENERAL_CONTROL: { response: controlProp.message, chars: controlProp.message.length },
+      CURRENT_LINGORA: { response: lingoraProp.message, chars: lingoraProp.chars, hadArtifact: !!lingoraProp.artifact },
+    },
+    GENERAL_INTELLIGENCE: {
+      sent: giMsg,
+      GENERAL_CONTROL: { response: controlGI.message, chars: controlGI.message.length },
+      CURRENT_LINGORA: { response: lingoraGI.message, chars: lingoraGI.chars },
+    },
   };
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('general_control_comparison')) {
+    return runGeneralControlComparison();
+  }
   if (prompt && prompt.startsWith('zakia_replay_test')) {
     return runZakiaReplayTest();
   }
@@ -1236,7 +1217,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, base_model_parity_test_v2, zakia_replay_test (language-switch + premature-artifact check), or simple_proportionality_test. No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, base_model_parity_test_v2, zakia_replay_test, simple_proportionality_test, or general_control_comparison (same-model raw control vs current LINGORA on Zakia Replay + proportionality + general intelligence). No browser needed.' },
   ];
 }
 
