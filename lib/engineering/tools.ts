@@ -407,12 +407,6 @@ export async function runDiagnostic(prompt?: string): Promise<Record<string, unk
   if (prompt && prompt.startsWith('simple_proportionality_test')) {
     return runSimpleProportionalityTest();
   }
-  if (prompt && prompt.startsWith('base_model_parity_test_v2')) {
-    return runBaseModelParityTestV2();
-  }
-  if (prompt && prompt.startsWith('base_model_parity_test')) {
-    return runBaseModelParityTest();
-  }
   if (prompt && prompt.startsWith('p19_validation')) {
     return runP19Validation();
   }
@@ -1217,7 +1211,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, base_model_parity_test_v2, zakia_replay_test, simple_proportionality_test, or general_control_comparison (same-model raw control vs current LINGORA on Zakia Replay + proportionality + general intelligence). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, or general_control_comparison (same-model raw control vs current LINGORA on Zakia Replay + proportionality + general intelligence). No browser needed.' },
   ];
 }
 
