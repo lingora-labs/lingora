@@ -239,6 +239,83 @@ async function escrowSingleDataUrl(dataUrl: string, label: string): Promise<Escr
 }
 
 // ============================================================
+// ZAKIA REPLAY + SIMPLE PROPORTIONALITY — the two remaining
+// BASE-MODEL-PARITY closure tests.
+//
+// ZAKIA REPLAY: interface-language switch mid-conversation (explicit
+// request, not inferred) must actually take effect, and no artifact
+// should fire on a short, non-substantive early turn — only once real
+// teaching content exists (mirrors P19-F's trivial-turn guard, checked
+// here end-to-end with a real multi-turn profile instead of a bare
+// greeting).
+//
+// SIMPLE PROPORTIONALITY: a trivial factual question must get a short,
+// proportional answer — not inflated into a full lesson with tables to
+// "prove capability". Length and structure should match the question,
+// not the model's maximum output budget.
+// ============================================================
+async function runZakiaReplayTest(): Promise<Record<string, unknown>> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  let history: HistTurn[] = [];
+  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 0 };
+  const turns: Array<{ sent: string; response: string; hadArtifact: boolean; interfaceLanguageAfter: unknown }> = [];
+
+  async function turn(message: string) {
+    const r = await callChatAPI(message, state, { conversationHistory: history });
+    if (r.state) state = r.state as typeof state;
+    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
+    turns.push({ sent: message, response: r.message, hadArtifact: !!r.artifact, interfaceLanguageAfter: (state as any).interfaceLanguage });
+    return r;
+  }
+
+  const t1 = await turn("Hi, I work in a hotel kitchen. I'd like to prepare for the DELE A2 exam.");
+  const t2 = await turn('Can you explain some basic kitchen vocabulary?');
+  const t3 = await turn('Ahora prefiero seguir en español, no en inglés.');
+  const t4 = await turn('¿Puedes seguir explicando el vocabulario de cocina?');
+
+  const premature = { turn1_hadArtifact: t1.artifact != null, turn2_hadArtifact: t2.artifact != null };
+  const t3Lower = t3.message.toLowerCase();
+  const SPANISH_MARKERS = /\b(claro|perfecto|vale|de acuerdo|seguimos|continuemos|bien)\b/i;
+  const languageSwitchHonored = SPANISH_MARKERS.test(t3Lower) || /[áéíóúñ]/.test(t3.message);
+  const t4Lower = t4.message.toLowerCase();
+  const ENGLISH_MARKERS = /\b(the|kitchen|ingredient|let's|here are)\b/i;
+  const t4StayedSpanish = !ENGLISH_MARKERS.test(t4Lower) || /[áéíóúñ]/.test(t4.message);
+
+  return {
+    harness: 'zakia_replay_test',
+    turns: turns.map(t => ({ sent: t.sent, hadArtifact: t.hadArtifact, responsePreview: t.response.slice(0, 300) })),
+    PREMATURE_ARTIFACTS_CHECK: { ...premature, VERDICT: (!premature.turn1_hadArtifact && !premature.turn2_hadArtifact) ? 'PASS_NO_PREMATURE_ARTIFACT' : 'FAIL_PREMATURE_ARTIFACT' },
+    LANGUAGE_SWITCH_CHECK: {
+      turn3_response: t3.message,
+      turn4_response: t4.message,
+      languageSwitchHonoredInTurn3: languageSwitchHonored,
+      turn4StayedInSpanish: t4StayedSpanish,
+      VERDICT: (languageSwitchHonored && t4StayedSpanish) ? 'PASS' : 'FAIL',
+    },
+  };
+}
+
+async function runSimpleProportionalityTest(): Promise<Record<string, unknown>> {
+  const state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 3 };
+  const r = await callChatAPI("¿Cómo se dice 'thank you' en español?", state);
+  const chars = r.chars;
+  const hasTable = (r.message.match(/\|/g) || []).length > 4;
+  const hasMultipleHeadings = (r.message.match(/^#{1,3}\s/gm) || []).length >= 2;
+  const PROPORTIONAL = (chars < 400 && !hasTable && !hasMultipleHeadings) ? 'PASS' : 'FAIL';
+  return {
+    harness: 'simple_proportionality_test',
+    sent: "¿Cómo se dice 'thank you' en español?",
+    response: r.message,
+    chars,
+    hasTable,
+    hasMultipleHeadings,
+    hadArtifact: !!r.artifact,
+    VERDICT: PROPORTIONAL,
+    NOTE: 'A trivial factual question should get a short, proportional answer — inflation (tables, multiple headings, 400+ chars) for a one-word-answer question is a real defect, not thoroughness.',
+  };
+}
+
+// ============================================================
 // BASE-MODEL-PARITY v2 — CORRECTED MEMORY TEST.
 // The v1 test's turn 4 ("how soon will I manage") was answerable without
 // citing turn-1 specifics — a design flaw, not evidence against the fix.
@@ -343,6 +420,12 @@ async function runBaseModelParityTest(): Promise<Record<string, unknown>> {
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('zakia_replay_test')) {
+    return runZakiaReplayTest();
+  }
+  if (prompt && prompt.startsWith('simple_proportionality_test')) {
+    return runSimpleProportionalityTest();
+  }
   if (prompt && prompt.startsWith('base_model_parity_test_v2')) {
     return runBaseModelParityTestV2();
   }
@@ -1153,7 +1236,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, or base_model_parity_test_v2 (5-turn conversation forcing literal recall + contextual use of turn-1 facts). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, base_model_parity_test, base_model_parity_test_v2, zakia_replay_test (language-switch + premature-artifact check), or simple_proportionality_test. No browser needed.' },
   ];
 }
 
