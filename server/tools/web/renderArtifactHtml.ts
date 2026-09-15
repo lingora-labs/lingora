@@ -15,6 +15,28 @@
 // code. There is no path from LLM output to <script>, event handlers, or
 // unescaped tags. This mirrors the same closed-grammar guarantee the PDF
 // renderer already relies on (VALID_BLOCK_TYPES in composeArtifactDocument.ts).
+//
+// P19-G3 — PURPOSE-AWARE VISUAL AUTHORSHIP (increment 1: scientific chapter
+// rhythm). Root gap: documentIntent already changed the cover kicker/badge
+// and (for executive/comparative) triggered a KPI strip / matrix band, but
+// every level-1 heading and every paragraph rendered identically regardless
+// of purpose — a scientific dossier's chapters looked exactly like a
+// learning lesson's section headers. This is the specific capability named
+// by product review as the visible gap: "abstract" and "chapter rhythm" for
+// scientific intent. Reuses the EXISTING heading/paragraph block types (no
+// composer schema change, no new block grammar) — only the RENDER TREATMENT
+// changes, computed from documentIntent + block position, the same pattern
+// P19-C already established for the KPI strip and comparison matrix.
+// Two real, visible differences for documentIntent === 'scientific':
+//   1. The first paragraph block (the composer's own "abstract/summary"
+//      paragraph per its system prompt) renders as a distinct bordered
+//      abstract panel — light background, left accent bar, italic —
+//      instead of a plain paragraph indistinguishable from body text.
+//   2. Level-1 headings render as numbered chapter openers ("Capítulo N")
+//      with larger type and more vertical rhythm, instead of the compact
+//      accent-underline treatment learning/comparative/executive keep.
+// Learning, executive and comparative are visually unchanged by this
+// commit — their existing treatments (P19-B/C) are untouched.
 // =============================================================================
 import type { DocumentContent, DocumentBlock } from '../pdf/generateCoursePdf';
 import { BRAND, INTENT_KICKER, type DocumentIntent } from '../pdf/brand';
@@ -51,7 +73,10 @@ function capitalizeMentor(name: string | undefined): string {
   return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : n;
 }
 
-function renderBlock(block: DocumentBlock, hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean }): string {
+function renderBlock(
+  block: DocumentBlock,
+  hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean; isAbstract?: boolean; chapterNumber?: number },
+): string {
   switch (block.type) {
     case 'timeline':
     case 'comparison':
@@ -85,12 +110,27 @@ function renderBlock(block: DocumentBlock, hints: { isKpiStrip?: boolean; isComp
 
     case 'heading': {
       const lvl = block.level ?? 1;
+      // P19-G3 — scientific chapter rhythm: a level-1 heading gets a
+      // numbered "Capítulo N" opener instead of the compact accent-
+      // underline treatment. Only applies when the caller supplied a
+      // chapterNumber (i.e. documentIntent === 'scientific' AND lvl === 1);
+      // every other intent/level keeps the existing P19-B/C markup exactly.
+      if (lvl === 1 && hints.chapterNumber) {
+        return `<div class="ln-chapter"><div class="ln-chapter-num">Capítulo ${hints.chapterNumber}</div><h2 class="ln-chapter-title">${inline(block.content)}</h2></div>`;
+      }
       const tag = lvl === 1 ? 'h2' : lvl === 2 ? 'h3' : 'h4';
       const cls = lvl === 1 ? 'ln-h1' : lvl === 2 ? 'ln-h2' : 'ln-h3';
       return `<${tag} class="${cls}">${inline(block.content)}</${tag}>`;
     }
 
     case 'paragraph':
+      // P19-G3 — scientific abstract: the composer's own opening summary
+      // paragraph (per its system prompt) rendered as a distinct bordered
+      // panel instead of plain body text — the reader can tell "this is
+      // the abstract" without reading a label.
+      if (hints.isAbstract) {
+        return `<div class="ln-abstract"><div class="ln-abstract-label">Resumen</div><p class="ln-abstract-body">${inline(block.content)}</p></div>`;
+      }
       return `<p class="ln-p">${inline(block.content)}</p>`;
 
     case 'bullets': {
@@ -159,14 +199,27 @@ export function renderArtifactHtml(content: DocumentContent): string {
   const blocks = content.blocks ?? [];
   const firstKvIndex = intent === 'executive' ? blocks.findIndex((b) => b.type === 'key_value') : -1;
   const firstTableIndex = intent === 'comparative' ? blocks.findIndex((b) => b.type === 'table') : -1;
+  // P19-G3 — scientific chapter rhythm/abstract are opt-in by index, same
+  // pattern as the KPI strip / matrix band above: computed once before the
+  // render loop, index-based (not mutable state), survives fine across the
+  // single-pass render. First paragraph in a scientific doc = abstract;
+  // every level-1 heading after it gets a sequential chapter number.
+  const firstParagraphIndex = intent === 'scientific' ? blocks.findIndex((b) => b.type === 'paragraph') : -1;
+  let chapterCounter = 0;
 
   const badgeText = ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType;
   const kicker = INTENT_KICKER[intent];
 
-  const bodyHtml = blocks.map((b, i) => renderBlock(b, {
-    isKpiStrip: i === firstKvIndex,
-    isComparisonMatrix: i === firstTableIndex,
-  })).join('\n');
+  const bodyHtml = blocks.map((b, i) => {
+    const isChapterHeading = intent === 'scientific' && b.type === 'heading' && (b.level ?? 1) === 1;
+    if (isChapterHeading) chapterCounter += 1;
+    return renderBlock(b, {
+      isKpiStrip: i === firstKvIndex,
+      isComparisonMatrix: i === firstTableIndex,
+      isAbstract: i === firstParagraphIndex,
+      chapterNumber: isChapterHeading ? chapterCounter : undefined,
+    });
+  }).join('\n');
 
   const metaLine = [
     content.level ? `Nivel de español: ${esc(content.level)}` : null,
@@ -213,6 +266,12 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-p { font-size: 15px; margin: 0 0 12px; color: #2a2e3d; }
   .ln-list { margin: 0 0 14px; padding-left: 22px; font-size: 15px; color: #2a2e3d; }
   .ln-list li { margin-bottom: 6px; }
+  .ln-abstract { background: var(--ln-light); border-left: 4px solid var(--ln-accent); border-radius: 4px; padding: 14px 18px; margin: 4px 0 24px; }
+  .ln-abstract-label { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ln-accent); margin-bottom: 6px; }
+  .ln-abstract-body { font-size: 15px; font-style: italic; color: #2a2e3d; margin: 0; }
+  .ln-chapter { margin: 36px 0 14px; padding-top: 10px; border-top: 1px solid #e4e6ed; }
+  .ln-chapter-num { font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--ln-teal); margin-bottom: 4px; }
+  .ln-chapter-title { font-size: 22px; font-weight: 800; color: var(--ln-dark); margin: 0; line-height: 1.3; }
   .ln-kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 16px 0; }
   .ln-kpi-card { background: var(--ln-dark); border-radius: 10px; padding: 14px 12px; }
   .ln-kpi-card::before { content: ''; display: block; width: 24px; height: 3px; background: var(--ln-teal); border-radius: 2px; margin-bottom: 10px; }
