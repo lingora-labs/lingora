@@ -555,7 +555,37 @@ async function runZakiaRealReplay(): Promise<Record<string, unknown>> {
   };
 }
 
+// ============================================================
+// LANGUAGE CONTINUITY TEST — the real Zakia scenario: interfaceLanguage
+// set to a REALISTIC default (English — Arabic isn't in the picker's
+// option set, InterfaceLanguage type has no 'ar'), Arabic message sent.
+// The earlier isolated test used interfaceLanguage='es', which the
+// ORIGINAL P17 rule already treats as a "permitted" response language
+// regardless of the P19-F3 addition — an ambiguous, unrepresentative
+// case. This isolates the realistic default.
+// ============================================================
+async function runLanguageContinuityTest(): Promise<Record<string, unknown>> {
+  const arabicMsg = 'مرحبا، اسمي زكية. أريد أن أتعلم الإسبانية لأني أعمل في مطعم وأريد الحصول على الجنسية الإسبانية.';
+  const state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 0 };
+  const r = await callChatAPI(arabicMsg, state);
+  const hasArabicChars = /[\u0600-\u06FF]/.test(r.message);
+  const hasLatinProse = /\b(the|is|a|to|you|el|la|es|de|que)\b/i.test(r.message.replace(/\*\*.*?\*\*/g, ''));
+  return {
+    harness: 'language_continuity_test',
+    sent: arabicMsg,
+    interfaceLanguageSet: 'en',
+    response: r.message,
+    chars: r.chars,
+    hasArabicChars,
+    hasLatinProseOutsideExamples: hasLatinProse,
+    VERDICT: hasArabicChars ? 'PASS_ARABIC_RESPONSE' : 'FAIL_NOT_ARABIC',
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('language_continuity_test')) {
+    return runLanguageContinuityTest();
+  }
   if (prompt && prompt.startsWith('zakia_real_replay')) {
     return runZakiaRealReplay();
   }
@@ -1375,7 +1405,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, or zakia_real_replay (full multi-turn Zakia scenario ending with the natural printable-material request, testing the artifact intent gate in context). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language). No browser needed.' },
   ];
 }
 
