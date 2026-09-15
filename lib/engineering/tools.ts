@@ -397,7 +397,124 @@ async function runGeneralControlComparison(): Promise<Record<string, unknown>> {
   };
 }
 
+// ============================================================
+// FINAL CERTIFICATION SWEEP — the 3 remaining same-model gates:
+// Zakia Blind (different user, generalization not memorization), Document
+// Initiative (material conceived without being asked, but NOT
+// materialized without authority on the LINGORA side), and Multi-turn
+// Contextual Use (turn-1 facts required for turn-4 recall + turn-5
+// application). Reuses the same callGeneralControl/callChatAPI plumbing
+// as general_control_comparison — same principle, new message sets.
+// ============================================================
+async function runFinalCertificationSweep(): Promise<Record<string, unknown>> {
+  // 1) ZAKIA BLIND — different nationality, profession, goal, level
+  // revealed progressively. Not a copy of the Zakia Replay messages.
+  const blindMessages = [
+    'Hei, jeg heter Kari. Jeg jobber med logistikk i Norge og trenger spansk for forhandlinger i Mexico.',
+    'No he estudiado español antes, pero hablo inglés y noruego con fluidez.',
+    'Quiero enfocarme en vocabulario de contratos y reuniones formales.',
+  ];
+  let blindControlHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const blindControl: Array<{ sent: string; response: string }> = [];
+  for (const m of blindMessages) {
+    const r = await callGeneralControl(blindControlHistory, m);
+    blindControlHistory = [...blindControlHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    blindControl.push({ sent: m, response: r.message });
+  }
+  let blindLingoraHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let blindLingoraState = { ...WILLY_INITIAL_STATE, mentorProfile: 'nick', interfaceLanguage: 'en', tokens: 0 };
+  const blindLingora: Array<{ sent: string; response: string; hadArtifact: boolean }> = [];
+  for (const m of blindMessages) {
+    const r = await callChatAPI(m, blindLingoraState, { conversationHistory: blindLingoraHistory });
+    if (r.state) blindLingoraState = r.state as typeof blindLingoraState;
+    blindLingoraHistory = [...blindLingoraHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    blindLingora.push({ sent: m, response: r.message, hadArtifact: !!r.artifact });
+  }
+
+  // 2) DOCUMENT INITIATIVE — material would clearly help, never asked
+  // for a PDF explicitly. Checks: does the mentor PROPOSE material in
+  // prose, and — critically for LINGORA — does it NOT materialize an
+  // artifact without authorization (P19-F2 gate).
+  const diMessages = [
+    'Estoy preparando una negociación de contrato importante la próxima semana y quiero llegar con vocabulario sólido.',
+    '¿Qué frases clave debería dominar para sonar profesional en esa reunión?',
+  ];
+  let diControlHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const diControl: Array<{ sent: string; response: string }> = [];
+  for (const m of diMessages) {
+    const r = await callGeneralControl(diControlHistory, m);
+    diControlHistory = [...diControlHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    diControl.push({ sent: m, response: r.message });
+  }
+  let diLingoraHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let diLingoraState = { ...WILLY_INITIAL_STATE, mentorProfile: 'nick', interfaceLanguage: 'es', tokens: 0 };
+  const diLingora: Array<{ sent: string; response: string; hadArtifact: boolean }> = [];
+  for (const m of diMessages) {
+    const r = await callChatAPI(m, diLingoraState, { conversationHistory: diLingoraHistory });
+    if (r.state) diLingoraState = r.state as typeof diLingoraState;
+    diLingoraHistory = [...diLingoraHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    diLingora.push({ sent: m, response: r.message, hadArtifact: !!r.artifact });
+  }
+  const CONCRETE_MATERIAL_OFFER = /gu[ií]a|lista|hoja|documento|material|resumen|glosario|ficha|checklist|listado/i;
+  const diControlProposes = diControl.some((t) => CONCRETE_MATERIAL_OFFER.test(t.response));
+  const diLingoraProposes = diLingora.some((t) => CONCRETE_MATERIAL_OFFER.test(t.response));
+  const diLingoraNoUnauthorizedArtifact = diLingora.every((t) => !t.hadArtifact);
+
+  // 3) MULTI-TURN CONTEXTUAL USE — turn 1 facts, turn 4 literal recall,
+  // turn 5 application. Reuses the exact litmus design already validated
+  // in base_model_parity_test_v2, run through BOTH paths this time.
+  const mtMessages = [
+    'Soy Lars. Trabajo en NordBygg, una empresa noruega de construcción. En abril tengo una reunión en Bogotá con un proveedor.',
+    'Nunca he estudiado español formalmente.',
+    'Quiero practicar vocabulario de construcción y negociación.',
+    'Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la reunión y en qué ciudad será.',
+    'Ahora prepara dos frases que me servirían específicamente en ESA reunión, usando lo que sabes de mi trabajo.',
+  ];
+  let mtControlHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const mtControl: Array<{ sent: string; response: string }> = [];
+  for (const m of mtMessages) {
+    const r = await callGeneralControl(mtControlHistory, m);
+    mtControlHistory = [...mtControlHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    mtControl.push({ sent: m, response: r.message });
+  }
+  let mtLingoraHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let mtLingoraState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+  const mtLingora: Array<{ sent: string; response: string }> = [];
+  for (const m of mtMessages) {
+    const r = await callChatAPI(m, mtLingoraState, { conversationHistory: mtLingoraHistory });
+    if (r.state) mtLingoraState = r.state as typeof mtLingoraState;
+    mtLingoraHistory = [...mtLingoraHistory, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+    mtLingora.push({ sent: m, response: r.message });
+  }
+  function recallCheck(text: string) {
+    const t = text.toLowerCase();
+    return { company: t.includes('nordbygg'), month: t.includes('abril'), city: t.includes('bogot') };
+  }
+  const controlRecall = recallCheck(mtControl[3].response);
+  const lingoraRecall = recallCheck(mtLingora[3].response);
+
+  return {
+    harness: 'final_certification_sweep',
+    ZAKIA_BLIND: { GENERAL_CONTROL: blindControl, CURRENT_LINGORA: blindLingora },
+    DOCUMENT_INITIATIVE: {
+      GENERAL_CONTROL: diControl,
+      CURRENT_LINGORA: diLingora,
+      controlProposesMaterialInProse: diControlProposes,
+      lingoraProposesMaterialInProse: diLingoraProposes,
+      lingoraDidNotMaterializeWithoutAuthorization: diLingoraNoUnauthorizedArtifact,
+    },
+    MULTI_TURN_CONTEXTUAL_USE: {
+      GENERAL_CONTROL: mtControl,
+      CURRENT_LINGORA: mtLingora,
+      turn4_recall_check: { CONTROL: controlRecall, LINGORA: lingoraRecall },
+    },
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('final_certification_sweep')) {
+    return runFinalCertificationSweep();
+  }
   if (prompt && prompt.startsWith('general_control_comparison')) {
     return runGeneralControlComparison();
   }
@@ -1211,7 +1328,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, or general_control_comparison (same-model raw control vs current LINGORA on Zakia Replay + proportionality + general intelligence). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, or final_certification_sweep (same-model Zakia Blind + Document Initiative + Multi-turn contextual recall/application). No browser needed.' },
   ];
 }
 
