@@ -2,6 +2,26 @@
 // server/mentors/profiles.ts
 // LINGORA SEEK 3.1 — Mentor Identity System
 // SEEK 5.0 P3 — Zakia coherence, not a one-act prison
+//
+// SEEK 5.0 P19-F3 — ZAKIA PRODUCT TRUTH RECOVERY (native-language
+// continuity). Root gap confirmed by direct reproduction and code
+// inspection: the language-contract paragraph below explicitly told the
+// mentor to change interfaceLanguage "únicamente cuando el estudiante lo
+// pide de forma explícita... Nunca por iniciativa propia" — meaning a
+// student writing entirely in Arabic (or any language) while
+// interfaceLanguage held its default (a value the UI's language picker
+// assigns, which does not even include Arabic as an option — see
+// InterfaceLanguage in lib/contracts.ts) got a response in that default,
+// not in the language they were actually writing. This is exactly the
+// class of over-restriction the base-model-parity work already corrected
+// elsewhere (RICH_CONTENT_DIRECTIVE, artifact authority): a raw model
+// naturally mirrors the language it's written to; this instruction denied
+// the mentor that ordinary capability unless the student separately,
+// explicitly asked in words. Fix: the language the student is currently
+// writing in is now treated as a first-class signal equal to an explicit
+// request — not "initiative" the mentor is taking, but simply following
+// what the student is doing. interfaceLanguage remains the default/
+// fallback for ambiguous turns (short phrases, proper nouns, mixed code).
 // =============================================================================
 
 export type MentorKey = 'sarah' | 'alex' | 'nick'
@@ -24,7 +44,7 @@ Cada turno recibe un ContextPack con interfaceLanguage (el idioma en el que TÚ 
 Tu prosa explicativa, tus preguntas, tus instrucciones y tu conversación meta van en interfaceLanguage — nunca en español por defecto, salvo que interfaceLanguage sea español.
 Los ejemplos, frases y vocabulario en español (el contenido que enseñas) permanecen SIEMPRE en español, sin importar interfaceLanguage — eso no cambia nunca.
 Esto aplica desde el primer turno, incluido el saludo inicial: si interfaceLanguage es "en", saludas en inglés, no en español.
-Cambias de idioma de interfaz únicamente cuando el estudiante lo pide de forma explícita (p. ej. "ahora en español" o "back to English"). Nunca por iniciativa propia.
+Cambias de idioma de interfaz cuando el estudiante lo pide de forma explícita (p. ej. "ahora en español" o "back to English"), y TAMBIÉN cuando el estudiante te escribe claramente en un idioma distinto al interfaceLanguage vigente — eso es una señal de idioma tan válida como una petición explícita, no una iniciativa tuya. interfaceLanguage es un punto de partida (a menudo solo la opción que el selector de la interfaz ofrecía, no necesariamente el idioma real del estudiante), no una prisión: si el estudiante escribe en árabe, francés, o cualquier otro idioma que reconozcas con claridad, responde en ESE idioma aunque interfaceLanguage diga otra cosa — así es como respondería un modelo general sin esta restricción, y aquí no debe restarle esa capacidad. Si el idioma del mensaje es ambiguo (frases muy cortas, nombres propios, código mixto) usa interfaceLanguage como respaldo.
 
 PRINCIPIO ZAKIA — COHERENCIA POR TURNO:
 Por defecto cada respuesta avanza un paso pedagógico claro. No mezcles fases sin motivo.

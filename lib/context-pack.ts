@@ -108,13 +108,35 @@ function classifyArtifactAction(message: string): { action: ArtifactAction; dept
 // an artifact request, regardless of how pedagogically substantial the
 // mentor's answer to it ends up being.
 const ARTIFACT_NOUNS = 'pdf|tabla|esquema|dossier|informe|gu[ií]a|manual|brief|reporte|documento|material( imprimible)?|hoja(?: de ejercicios)?|ficha|resumen|curso|matriz|comparaci[oó]n|glosario|schema|worksheet|workbook|table|chart|handout';
-const CREATION_VERBS = '(?:crea(?:me)?|dame|hazme|genera(?:me)?|prepara(?:me)?|escribe(?:me)?|dise[ñn]a(?:me)?|desarrolla(?:me)?|quiero|necesito|make me|give me|create|generate|prepare)';
+// P19-F3 — ZAKIA PRODUCT TRUTH: "prepara(?:me)?" never matched the correctly
+// accented Spanish imperative "prepárame" (á vs a — the `i` regex flag only
+// folds case, not diacritics). Confirmed by direct reproduction: this verb
+// form simply never triggered the gate. Fixed here alongside the new
+// semantic-intent addition below.
+const CREATION_VERBS = '(?:crea(?:me)?|dame|hazme|genera(?:me)?|prep[aá]ra(?:me)?|escribe(?:me)?|dise[ñn]a(?:me)?|desarrolla(?:me)?|quiero|necesito|make me|give me|create|generate|prepare)';
 const EXPLICIT_ARTIFACT_REQUEST = new RegExp(`\\b${CREATION_VERBS}\\b[^.!?\\n]{0,40}\\b(?:${ARTIFACT_NOUNS})\\b`, 'i');
+
+// P19-F3 — ZAKIA PRODUCT TRUTH RECOVERY: the gate above requires a literal
+// artifact-type noun (pdf/tabla/esquema/...) near a creation verb. Root gap
+// confirmed by direct reproduction against the Zakia benchmark's own
+// wording: "Quiero algo que pueda imprimir y usar sola para seguir
+// preparando el DELE A2..." contains no such noun — "algo" is not
+// "material" or "hoja" — so the gate silently denied a request whose
+// MEANING is unambiguous (a printable, standalone, take-away document).
+// This pattern captures the semantic shape of that intent — a verb of
+// wanting/creating followed by a physical/standalone-use cue (imprimir,
+// para llevar, usar/estudiar sola, preparado/listo) — independent of
+// which artifact-type noun, if any, the student actually names. Distinct
+// from EXPLICIT_ARTIFACT_REQUEST (noun-based) and from a same-sentence
+// hypothetical/deferred framing ("podrías hacerme algo después" uses
+// neither a listed creation verb nor this cue set, and stays excluded).
+const SEMANTIC_MATERIAL_CUES = 'imprimir|imprimible|para llevar(?:me)?|que pueda llevar|llevarme (?:esto|esta)|usar (?:sola|solo|despu[eé]s|en casa|por mi cuenta)|estudiar (?:sola|solo|despu[eé]s|por mi cuenta)|preparad[oa]|list[oa] para (?:usar|llevar|estudiar)';
+const SEMANTIC_MATERIALIZE_INTENT = new RegExp(`\\b(?:quiero|necesito|prep[aá]ra(?:me)?|dame|hazme|d[eé]jame(?:lo)?)\\b[^.!?\\n]{0,60}\\b(?:${SEMANTIC_MATERIAL_CUES})\\b`, 'i');
 
 export function hasExplicitArtifactRequest(message: string): boolean {
   const t = (message || '').trim();
   if (!t) return false;
-  return EXPLICIT_ARTIFACT_REQUEST.test(t) || MATERIALIZE_PATTERNS.test(t) || AUTHOR_PATTERNS.test(t);
+  return EXPLICIT_ARTIFACT_REQUEST.test(t) || MATERIALIZE_PATTERNS.test(t) || AUTHOR_PATTERNS.test(t) || SEMANTIC_MATERIALIZE_INTENT.test(t);
 }
 
 function extractDomain(message: string, lastConcept?: string): string | null {
