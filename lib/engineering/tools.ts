@@ -511,7 +511,54 @@ async function runFinalCertificationSweep(): Promise<Record<string, unknown>> {
   };
 }
 
+// ============================================================
+// ZAKIA REAL REPLAY — full multi-turn scenario matching the actual
+// benchmark shape: profile reveal → level uncertainty → diagnostic
+// production → correction → DELE exercise → feedback → THEN the
+// printable-material request, in context, not isolated. This is the
+// fair test of the P19-F3 artifact-intent gate: does "quiero algo que
+// pueda imprimir y usar sola..." materialize once real teaching content
+// already exists in the conversation, the way it would for the real
+// Zakia user (turn 7, not turn 1)?
+// ============================================================
+async function runZakiaRealReplay(): Promise<Record<string, unknown>> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  let history: HistTurn[] = [];
+  let state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+  const turns: Array<{ sent: string; response: string; hadArtifact: boolean; modelSignalCount: number }> = [];
+
+  async function turn(message: string) {
+    const r = await callChatAPI(message, state, { conversationHistory: history });
+    if (r.state) state = r.state as typeof state;
+    history = [...history, { role: 'user', content: message }, { role: 'assistant', content: r.message }];
+    turns.push({ sent: message, response: r.message, hadArtifact: !!r.artifact, modelSignalCount: (r.modelSignals as unknown[])?.length ?? 0 });
+    return r;
+  }
+
+  await turn('Hola, soy Zakia. Trabajo en un restaurante y quiero aprender español para la ciudadanía española.');
+  await turn('No sé en qué nivel estoy, nunca he estudiado español formalmente.');
+  await turn('Soy Zakia soy Marruecos. Soy cocina lider en el restaurante.');
+  await turn('Quiero hacer ejercicios parecidos al examen DELE.');
+  const t5 = await turn('Aquí está mi respuesta: 1-B / 2-C / 3-B.');
+  const t6 = await turn('Quiero algo que pueda imprimir y usar sola para seguir preparando el DELE A2, con ejemplos que me sirvan también en mi trabajo en el restaurante.');
+
+  return {
+    harness: 'zakia_real_replay',
+    turns: turns.map(t => ({ sent: t.sent, hadArtifact: t.hadArtifact, modelSignalCount: t.modelSignalCount, responsePreview: t.response.slice(0, 300) })),
+    PRINTABLE_REQUEST_CHECK: {
+      sent: turns[5].sent,
+      response: turns[5].response,
+      modelSignalCount: turns[5].modelSignalCount,
+      hadArtifact: turns[5].hadArtifact,
+      VERDICT: turns[5].hadArtifact ? 'PASS_ARTIFACT_MATERIALIZED' : 'FAIL_NO_ARTIFACT',
+    },
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('zakia_real_replay')) {
+    return runZakiaRealReplay();
+  }
   if (prompt && prompt.startsWith('final_certification_sweep')) {
     return runFinalCertificationSweep();
   }
@@ -1328,7 +1375,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, or final_certification_sweep (same-model Zakia Blind + Document Initiative + Multi-turn contextual recall/application). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, or zakia_real_replay (full multi-turn Zakia scenario ending with the natural printable-material request, testing the artifact intent gate in context). No browser needed.' },
   ];
 }
 
