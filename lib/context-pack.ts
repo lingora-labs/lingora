@@ -54,6 +54,11 @@ export interface ContextPack {
   // only acted on by the mentor when the turn is actually artifact-shaped.
   artifactAction: ArtifactAction;
   artifactDepth: ArtifactDepth;
+  // P19-F4 — ZAKIA LANGUAGE AUTHORITY. See detectScriptLanguage() below for
+  // the root-gap rationale. Null when the message is Latin-script or too
+  // short/ambiguous to classify — in that case interfaceLanguage remains
+  // the only signal, unchanged from before.
+  detectedScriptLanguage: string | null;
 }
 
 export type LevelConfirmed = boolean;
@@ -139,6 +144,56 @@ export function hasExplicitArtifactRequest(message: string): boolean {
   return EXPLICIT_ARTIFACT_REQUEST.test(t) || MATERIALIZE_PATTERNS.test(t) || AUTHOR_PATTERNS.test(t) || SEMANTIC_MATERIALIZE_INTENT.test(t);
 }
 
+// P19-F4 — ZAKIA LANGUAGE AUTHORITY.
+// Root gap confirmed by direct production reproduction (language_continuity_test
+// harness): a student writing entirely in Arabic, with interfaceLanguage at
+// a realistic default ('en' — Arabic is not and cannot be an
+// InterfaceLanguage value; the picker never offers it), received an
+// ENGLISH response. The P19-F3 prompt-only fix ("follow the student's
+// actual language") was not strong enough on its own — buried in a long
+// system prompt alongside many other instructions, it lost to
+// interfaceLanguage's explicit state value.
+// Architecture: separate DETECTION (deterministic, code-level, like every
+// other ContextPack signal) from DECISION (the mentor still decides how to
+// use it — this is not a hard router). detectScriptLanguage() answers one
+// narrow, reliable question: is this message written in a NON-LATIN
+// script LINGORA can name with confidence (Arabic, Cyrillic, Hebrew, CJK,
+// Devanagari, Greek, Thai, Korean, etc.)? This deliberately does NOT
+// attempt to distinguish between Latin-script languages (Norwegian vs.
+// English vs. French) — that class of detection is unreliable by regex
+// and remains the mentor's own judgment, per the existing P19-F3
+// instruction (unchanged). But script-level detection is exactly where a
+// regex answer is both reliable and general — not an "if Arabic" special
+// case; the same ranges cover any student writing in any of these
+// scripts. When detected, formatContextPack emits an explicit,
+// structured, high-priority instruction — the same escalation pattern
+// already used for artifactAction — rather than relying on that signal
+// surviving buried in prose.
+const SCRIPT_RANGES: Array<{ name: string; pattern: RegExp }> = [
+  { name: 'Arabic', pattern: /[\u0600-\u06FF\u0750-\u077F]/ },
+  { name: 'Cyrillic (Russian/Ukrainian/etc.)', pattern: /[\u0400-\u04FF]/ },
+  { name: 'Hebrew', pattern: /[\u0590-\u05FF]/ },
+  { name: 'Chinese', pattern: /[\u4E00-\u9FFF]/ },
+  { name: 'Japanese', pattern: /[\u3040-\u30FF]/ },
+  { name: 'Korean', pattern: /[\uAC00-\uD7AF]/ },
+  { name: 'Devanagari (Hindi/etc.)', pattern: /[\u0900-\u097F]/ },
+  { name: 'Greek', pattern: /[\u0370-\u03FF]/ },
+  { name: 'Thai', pattern: /[\u0E00-\u0E7F]/ },
+];
+
+// A short greeting/proper-noun fragment in a non-Latin script is still a
+// real, unambiguous signal — no minimum-length gate here, unlike
+// artifactAction's noun-proximity requirement. Script identity doesn't
+// get more or less certain with message length the way intent does.
+export function detectScriptLanguage(message: string): string | null {
+  const t = (message || '').trim();
+  if (!t) return null;
+  for (const { name, pattern } of SCRIPT_RANGES) {
+    if (pattern.test(t)) return name;
+  }
+  return null;
+}
+
 function extractDomain(message: string, lastConcept?: string): string | null {
   const text = message.trim();
   if (!text) return lastConcept?.trim() || null;
@@ -181,6 +236,7 @@ export function buildContextPack(input: {
     compoundPedagogicalAct: isCompoundPedagogicalAct(input.message),
     artifactAction: action,
     artifactDepth: depth,
+    detectedScriptLanguage: detectScriptLanguage(input.message),
   };
 }
 
@@ -201,8 +257,23 @@ export function formatContextPack(pack: ContextPack): string {
     `compoundPedagogicalAct: ${pack.compoundPedagogicalAct ? 'true' : 'false'}`,
     `artifactAction: ${pack.artifactAction}`,
     `artifactDepth: ${pack.artifactDepth}`,
+    `detectedScriptLanguage: ${pack.detectedScriptLanguage ?? 'null'}`,
     'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
   ];
+  // P19-F4 — ZAKIA LANGUAGE AUTHORITY. Placed first among the conditional
+  // instructions and phrased as an outright override, not a suggestion
+  // weighed against interfaceLanguage — this is exactly the escalation the
+  // production reproduction showed was missing: the earlier prose-only
+  // version of this instruction (P19-F3) lost to interfaceLanguage's
+  // explicit state value once buried among many other lines.
+  if (pack.detectedScriptLanguage) {
+    lines.push(
+      `LANGUAGE OVERRIDE: the student's current message is written in ${pack.detectedScriptLanguage} script — this was detected deterministically from the actual characters typed, not inferred. `
+      + `Respond to this turn in that same language, REGARDLESS of what interfaceLanguage says above (interfaceLanguage is only ever a fallback default — a starting point the UI happened to offer, e.g. because the student's real language wasn't an option in the picker — never an instruction to answer in a language the student is not using). `
+      + 'This does not apply to the Spanish target-language content itself (vocabulary, example sentences, exercises the student is learning) — those stay in Spanish as always. It applies to your own explanatory prose, questions, and conversation. '
+      + 'If the student explicitly asks to continue in a different language, honor that request on this and subsequent turns instead.',
+    );
+  }
   if (pack.compoundPedagogicalAct) {
     lines.push('The student explicitly sequenced more than one pedagogical request in this message. That is information about the request shape, not a router.');
   }
