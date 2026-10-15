@@ -902,3 +902,186 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
 
   return report;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 9. D5 MULTIMODAL CONTINUITY — REAL FIRST CIRCUIT (AE "WILLY FAST TRACK:
+//    PRIMERA MATERIALIZACIÓN ESPONTÁNEA", 15.10.2026, §3: "D5 pasa a
+//    prioridad inmediata"). AE confirmed runWillyAudioRoundtrip() (section 6
+//    above) is implemented and exported but never invoked by PREP_V1 — so
+//    re-running PREP_V1 is NOT a D5 test. This section invokes it for the
+//    first time in this workstream, with:
+//      - a REAL, REPRODUCIBLE incoming audio file: synthesized via the
+//        production generateSpeech() TTS function itself — never a second
+//        or mocked audio system (explicitly forbidden by AE: "No
+//        corresponde... incorporar un segundo sistema de audio"). The same
+//        fixed input text is deterministically re-synthesized on every run
+//        of this function, so the input audio is reproducible, not a
+//        one-off recording.
+//      - genuine prior WILLY context, seeded via one real
+//        callWillyMotorToolAware() turn — not fabricated/injected state.
+//      - the real STT -> WILLY turn -> real TTS circuit, via
+//        runWillyAudioRoundtrip(), unmodified.
+//      - isolation verified pre-flight (before ANY audio synthesis, input
+//        or output) AND post-hoc on both the input-synthesis call and
+//        inside runWillyAudioRoundtrip itself (section 6's own checks).
+//      - a best-effort lexical continuity check, in the same disclosed,
+//        non-semantic-judge style as HONEST_ABSENCE_PATTERNS (section 8a
+//        above): a signal for human review, never a silent auto-pass/fail.
+//    AE's required evidence table (same dictamen, §3) is produced as six
+//    explicitly separated report fields: audioEntrante, stt, willy, tts,
+//    aislamiento, continuidad.
+//
+//    SCOPE: this is the first authentic circuit (n=1), per AE's own
+//    sequencing ("Después del primer circuito auténtico, ejecutar las tres
+//    repeticiones D5 del scorecard"). The three scorecard repetitions
+//    (D5_MULTIMODAL_CONTINUITY, sampleSizePerScenario: 3) are a separate,
+//    subsequent diagnostic pass, not this one.
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function runWillyD5AudioContinuityV1(): Promise<Record<string, unknown>> {
+  const report: Record<string, unknown> = {
+    harness: 'willy_d5_audio_continuity_v1',
+    authorization:
+      'AE "WILLY FAST TRACK: PRIMERA MATERIALIZACIÓN ESPONTÁNEA" (15.10.2026), §3: "D5 pasa a prioridad inmediata". First real invocation of runWillyAudioRoundtrip() (section 6) in this workstream — PREP_V1 (section 8) never called it.',
+    scope:
+      'n=1, first authentic circuit per AE\'s own sequencing. The three D5 scorecard repetitions (sampleSizePerScenario: 3, dimension D5_MULTIMODAL_CONTINUITY) are a separate, subsequent diagnostic pass.',
+  };
+
+  // Pre-flight isolation — BEFORE any audio synthesis at all (input or
+  // output). Reused unchanged from section 4; a failure here blocks the
+  // entire circuit before a single OpenAI audio call is made.
+  const preFlightIsolation = verifyStorageIsolation();
+  if (!preFlightIsolation.isolated) {
+    report.aislamiento = { preFlight: preFlightIsolation };
+    report.blockedReason = `BLOCKED_BEFORE_START: ${preFlightIsolation.reason}`;
+    return report;
+  }
+
+  // Seed turn: genuine prior WILLY context via one real conversational
+  // turn — not fabricated/injected state. Deliberately reuses the same
+  // negotiation-call narrative already exercised in PREP_V1 §8a/§8b, for
+  // continuity of evidence across this workstream's scenarios.
+  const willyHist: HistTurn[] = [];
+  const statePack = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', entitlements: { plan: 'premium', source: 'MOCK_ENTITLEMENT_AUTHORITY_V1' } };
+  const seedMessage = 'Soy Tomás. Trabajo en una cooperativa agrícola en Perú y en junio tengo una videollamada con un comprador en Madrid para negociar el precio del café.';
+  let seedTurn;
+  try {
+    seedTurn = await callWillyMotorToolAware(willyHist, seedMessage, statePack);
+  } catch (e) {
+    report.willy = { error: e instanceof Error ? e.message : String(e), stage: 'seed_turn_failed' };
+    report.aislamiento = { preFlight: preFlightIsolation };
+    return report;
+  }
+  willyHist.push({ role: 'user', content: seedMessage }, { role: 'assistant', content: seedTurn.message });
+
+  // Synthesize the REAL, REPRODUCIBLE incoming audio file: a recall
+  // question about the facts just established, rendered via the
+  // production generateSpeech() TTS function — not a second/mocked audio
+  // system. Reproducible: the same fixed input text is deterministically
+  // re-synthesized on every run of this function.
+  const recallQuestionText = 'Recuérdame, ¿en qué ciudad es mi videollamada, en qué mes es, y qué producto voy a negociar?';
+  const { generateSpeech } = await import('../../server/tools/audio-toolkit');
+  const inputTts = await generateSpeech(recallQuestionText, { voice: 'nova' });
+
+  // Post-hoc isolation re-check on the INPUT synthesis call itself — never
+  // trust the pre-flight check alone, same discipline as section 5/6.
+  if (inputTts.method === 's3') {
+    report.audioEntrante = { synthesized: false, reason: 'POST_HOC_VIOLATION: generateSpeech (input synthesis) returned method=s3 despite a passing pre-flight isolation check. Escalate to AE before repeating.' };
+    report.aislamiento = { preFlight: preFlightIsolation, inputSynthesisMethod: inputTts.method, violated: true };
+    report.blockedReason = 'INPUT_AUDIO_SYNTHESIS_ISOLATION_VIOLATION';
+    return report;
+  }
+  if (!inputTts.success || !inputTts.url) {
+    report.audioEntrante = { synthesized: false, reason: `Input audio synthesis failed: success=${inputTts.success}, hasUrl=${!!inputTts.url}`, error: inputTts.message };
+    report.aislamiento = { preFlight: preFlightIsolation };
+    report.blockedReason = 'INPUT_AUDIO_SYNTHESIS_FAILED';
+    return report;
+  }
+
+  // generateSpeech's dataUrl fallback (server/tools/audio-toolkit.ts) always
+  // produces exactly this shape when method==='dataurl': a 'audio/mpeg'
+  // base64 data URL from an mp3 response_format. Matched explicitly rather
+  // than assumed, so an unexpected third shape is never silently treated
+  // as a reproducible real audio file.
+  const dataUrlMatch = inputTts.url.match(/^data:audio\/mpeg;base64,(.+)$/);
+  if (!dataUrlMatch) {
+    report.audioEntrante = { synthesized: false, reason: `Unexpected input audio url shape (neither s3 nor the expected data:audio/mpeg;base64 form): ${inputTts.url.slice(0, 80)}`, method: inputTts.method };
+    report.aislamiento = { preFlight: preFlightIsolation, inputSynthesisMethod: inputTts.method };
+    report.blockedReason = 'INPUT_AUDIO_UNEXPECTED_URL_SHAPE';
+    return report;
+  }
+  const inputBase64 = dataUrlMatch[1];
+
+  report.audioEntrante = {
+    synthesized: true,
+    real: true,
+    reproducible: 'Deterministically regenerated from a fixed input text via the production generateSpeech() TTS function on every run of this diagnostic — not a static fixture file, not a mock audio system.',
+    sourceText: recallQuestionText,
+    method: inputTts.method,
+    format: 'mp3',
+    byteLengthApprox: Math.floor((inputBase64.length * 3) / 4),
+  };
+
+  // The real STT -> WILLY turn -> real TTS circuit, unmodified (section 6),
+  // invoked for the first time in this workstream.
+  const roundtrip = await runWillyAudioRoundtrip({ data: inputBase64, format: 'mp3' }, willyHist, statePack);
+
+  report.stt = {
+    completed: roundtrip.stage !== 'transcription',
+    transcript: roundtrip.transcript,
+    transcriptLanguage: roundtrip.transcriptLanguage,
+    note: roundtrip.stage === 'transcription' ? `STT FAILED: ${roundtrip.error}` : 'Real whisper-1 transcription of the synthesized input audio above.',
+  };
+
+  report.willy = {
+    response: roundtrip.willyResponse,
+    toolCalls: roundtrip.willyToolCalls,
+  };
+
+  report.tts = {
+    attempted: roundtrip.stage !== 'transcription',
+    stage: roundtrip.stage,
+    method: roundtrip.audio?.method,
+    hasUrl: roundtrip.audio?.hasUrl,
+  };
+
+  const roundtripAudioMethod = roundtrip.audio?.method;
+  report.aislamiento = {
+    preFlight: preFlightIsolation,
+    inputSynthesisMethod: inputTts.method,
+    roundtripIsolationCheck: roundtrip.isolation,
+    roundtripAudioMethod,
+    hardGate: 'Per scorecard D5_MULTIMODAL_CONTINUITY passThreshold: any method=s3 result anywhere in this circuit is an automatic FAIL, independent of cognitive quality, and must stop D5 until AE review.',
+    violated: inputTts.method === 's3' || roundtripAudioMethod === 's3',
+  };
+
+  // Continuidad: best-effort lexical heuristic, same disclosed,
+  // non-semantic-judge style as HONEST_ABSENCE_PATTERNS (section 8a above).
+  // A signal for human review, never a silent auto-pass/fail.
+  const willyResponseLower = (roundtrip.willyResponse ?? '').toLowerCase();
+  const recalledInWillyResponse = {
+    city: willyResponseLower.includes('madrid'),
+    month: willyResponseLower.includes('junio'),
+    product: willyResponseLower.includes('café') || willyResponseLower.includes('cafe'),
+  };
+  const transcriptLower = (roundtrip.transcript ?? '').toLowerCase();
+  report.sttAccuracyHeuristic = {
+    mentionsCiudad: transcriptLower.includes('ciudad'),
+    mentionsMes: transcriptLower.includes('mes'),
+    mentionsProducto: transcriptLower.includes('producto'),
+    note: 'Best-effort lexical check that the real STT transcript recovers the recall question\'s own wording — not a semantic judge, not a scorecard field. Human review recommended.',
+  };
+  report.continuidad = {
+    seedFactsEstablished: { city: 'Madrid', month: 'junio', product: 'café' },
+    recalledInWillyResponse,
+    heuristicVerdict:
+      recalledInWillyResponse.city && recalledInWillyResponse.month && recalledInWillyResponse.product
+        ? 'FACTS_PRESERVED (lexical heuristic)'
+        : 'INCOMPLETE_OR_ABSENT_BY_HEURISTIC — human review required; this is a lexical signal only (same disclosed-heuristic discipline as section 8a), not an automatic FAIL of the dimension.',
+  };
+
+  report.overallSuccess = roundtrip.success;
+  if (!roundtrip.success) report.blockedReason = roundtrip.blockedReason;
+
+  return report;
+}
