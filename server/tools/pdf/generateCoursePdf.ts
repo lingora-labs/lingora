@@ -91,12 +91,30 @@ export interface DocumentContent {
 
 export type CourseContent = DocumentContent;
 
-function toPdfSafeText(s: string, maxLen = 400): string {
+// DAE fix (H3) — AE resolución 16.10.2026 / ZIP de Work: character
+// sanitization and deliberate length truncation were a single step. Every
+// caller inherited the default maxLen=400, including wrapLines()'s first
+// call on a block's FULL raw text before it is split into lines — so any
+// paragraph, bullet, table cell or other document-body block longer than
+// 400 characters silently lost everything past that point before
+// pagination ever ran (reproduced: Nick's PDF cuts off mid-sentence at
+// "...me adapto bien a", while the source HTML continues "...contextos
+// cambiantes"). sanitizeText() does ONLY character replacement/filtering,
+// with no length cap, and is what wrapLines() now calls — the document
+// body is wrapped and paginated in full, never pre-truncated. toPdfSafeText
+// / safe() keep their deliberate maxLen truncation for everything that
+// still needs it: short cosmetic metadata (titles, labels, footer dates,
+// badge text) drawn as a single unwrapped line, not reflowed, where a hard
+// cap is correct instead of accidental.
+function sanitizeText(s: string): string {
   return String(s ?? '')
     .replace(/◆/g, '-').replace(/▶/g, '>').replace(/→/g, '->')
     .replace(/[–—]/g, '-').replace(/💡/g, '!').replace(/[·]/g, '.')
-    .replace(/[^ -~áéíóúüñ¿¡ÁÉÍÓÚÜÑàèìòùâêîôûçœæÀÈÌÒÙÂÊÎÔÛÇŒÆ]/g, ' ')
-    .slice(0, maxLen);
+    .replace(/[^ -~áéíóúüñ¿¡ÁÉÍÓÚÜÑàèìòùâêîôûçœæÀÈÌÒÙÂÊÎÔÛÇŒÆ]/g, ' ');
+}
+
+function toPdfSafeText(s: string, maxLen = 400): string {
+  return sanitizeText(s).slice(0, maxLen);
 }
 
 function safe(v: unknown, max = 400): string {
@@ -162,7 +180,12 @@ function ensureSpace(ps: PS, needed: number): boolean {
 }
 
 function wrapLines(text: string, font: PDFFont, size: number, maxW: number): string[] {
-  const words = safe(text).split(' ');
+  // DAE fix (H3) — sanitizeText() only, no length cap: this is where the
+  // document body (paragraphs, bullets, table cells, headings, callouts,
+  // quotes, summary) is split into lines. The previous safe(text) call
+  // here silently discarded everything past 400 characters of the RAW
+  // block before wrapping ever ran.
+  const words = sanitizeText(text).split(' ');
   const lines: string[] = [];
   let cur = '';
   for (const w of words) {
