@@ -1565,6 +1565,24 @@ async function runWillyMotorShadowBenchmarkV4(): Promise<Record<string, unknown>
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('willy_d5_audio_continuity_v1')) {
+    // AE "WILLY FAST TRACK: PRIMERA MATERIALIZACIÓN ESPONTÁNEA" (15.10.2026),
+    // §3: "D5 pasa a prioridad inmediata". AE confirmed runWillyAudioRoundtrip()
+    // (lib/engineering/willy-full-benchmark.ts, section 6) is implemented and
+    // exported but never invoked by willy_full_benchmark_prep_v1 — so that
+    // prompt does NOT constitute a D5 test. This new, narrowly-scoped prompt
+    // routes to runWillyD5AudioContinuityV1() (same file, section 9), which
+    // actually invokes it for the first time in this workstream: a real,
+    // reproducible synthesized input audio (never a second/mocked audio
+    // system, per AE's explicit prohibition), genuine seeded WILLY context,
+    // real STT -> WILLY -> real TTS, isolation verified pre- and post-hoc,
+    // and a best-effort lexical continuity check. Exposed within the Fast
+    // Track per AE's explicit authorization ("Si necesita exponer una
+    // llamada diagnóstica acotada, queda autorizada... con la misma
+    // disciplina de branch, diff, preview y verificación ya establecida").
+    const { runWillyD5AudioContinuityV1 } = await import('./willy-full-benchmark');
+    return runWillyD5AudioContinuityV1();
+  }
   if (prompt && prompt.startsWith('willy_full_benchmark_prep_v1')) {
     const { runWillyFullBenchmarkPrepV1 } = await import('./willy-full-benchmark');
     return runWillyFullBenchmarkPrepV1();
@@ -2403,7 +2421,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). Also runs willy_motor_shadow_benchmark_v4 (fourth pass, same unmodified purpose contract: AE-authorized derived-state ablation grid — single-field and paired-field combinations of lastConcept/lastUserGoal/confirmedLevel, each run 5x, history/model/turn/tool/entitlements held identical to V3 — the final isolation microtest before any full-benchmark or architecture decision). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). Also runs willy_motor_shadow_benchmark_v4 (fourth pass, same unmodified purpose contract: AE-authorized derived-state ablation grid — single-field and paired-field combinations of lastConcept/lastUserGoal/confirmedLevel, each run 5x, history/model/turn/tool/entitlements held identical to V3 — the final isolation microtest before any full-benchmark or architecture decision). Also runs willy_d5_audio_continuity_v1 (AE FAST TRACK, D5 priority directive 15.10.2026: first real audio->STT->WILLY->TTS circuit — real reproducible synthesized input audio via generateSpeech(), genuine seeded WILLY context, runWillyAudioRoundtrip() invoked for the first time in this workstream, isolation verified pre- and post-hoc, lexical continuity heuristic; n=1 first circuit, not the frozen D5 scorecard\'s 3 repetitions). No browser needed.' },
   ];
 }
 
