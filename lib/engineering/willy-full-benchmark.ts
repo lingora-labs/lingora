@@ -202,22 +202,35 @@ export interface IsolationCheck {
 }
 
 export function verifyStorageIsolation(): IsolationCheck {
+  // AE correction (15.10.2026, "DICTAMEN SOBRE WILLY FAST TRACK"): this must
+  // match storage.ts's actual getClient() behavior exactly — getClient()
+  // returns null (no S3 client constructed) unless ALL FOUR env vars are
+  // present simultaneously. Checking for ANY single key present (the
+  // original version of this function) over-blocked: a partial, already-
+  // inert configuration (e.g. AWS_REGION alone, observed in production
+  // during the PREP_V1 run) can never produce a working S3 client, so
+  // treating it as a violation risk was a false preventive block, not a
+  // safety finding. s3Configured below mirrors getClient()'s own condition
+  // exactly — all four required, not any one.
   const checkedKeys = ['AWS_REGION', 'S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'];
   const presentKeys = checkedKeys.filter((k) => !!process.env[k]);
-  if (presentKeys.length === 0) {
+  const s3Configured = checkedKeys.every((k) => !!process.env[k]);
+  if (!s3Configured) {
     return {
       isolated: true,
       checkedKeys,
       presentKeys,
       reason:
-        'No S3 credentials present in this process — storage.ts getClient() fails closed to null, so generatePDF()/generateSpeech() deterministically fall back to the dataUrl/base64 path. No production storage write is possible from this process as configured.',
+        presentKeys.length === 0
+          ? 'No S3 credentials present in this process — storage.ts getClient() fails closed to null, so generatePDF()/generateSpeech() deterministically fall back to the dataUrl/base64 path. No production storage write is possible from this process as configured.'
+          : `Partial S3 configuration present (${presentKeys.join(', ')}) but not all four required keys — storage.ts getClient() requires AWS_REGION, S3_BUCKET, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY simultaneously and otherwise fails closed to null. This configuration cannot produce a working S3 client, so generatePDF()/generateSpeech() deterministically fall back to the dataUrl/base64 path. No production storage write is possible from this process as configured.`,
     };
   }
   return {
     isolated: false,
     checkedKeys,
     presentKeys,
-    reason: `S3 credentials present (${presentKeys.join(', ')}) — cannot guarantee generatePDF()/generateSpeech() will not write to production storage. BLOCKING materialization.`,
+    reason: `All four S3 credentials present (${presentKeys.join(', ')}) — storage.ts getClient() can construct a working S3 client here. Cannot guarantee generatePDF()/generateSpeech() will not write to production storage. BLOCKING materialization.`,
   };
 }
 
