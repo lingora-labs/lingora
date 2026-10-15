@@ -239,6 +239,7 @@ function inputSchemaFor(name: string) {
 
     case 'get_pull_request':
     case 'merge_pull_request':
+    case 'check_merge_gate':
       return {
         type: 'object',
         properties: {
