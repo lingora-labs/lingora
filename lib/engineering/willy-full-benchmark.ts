@@ -673,8 +673,13 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
     // name rather than inventing one. Best-effort lexical heuristic, not a
     // semantic judge — recorded as a signal for human review, not a silent
     // auto-pass/fail.
+    // Widened after the real PREP_V1 run (15.10.2026): WILLY's actual honest
+    // reply used the preterite "No mencionaste..." which the original list
+    // (participle "mencionado") did not match — a false negative on a
+    // genuinely honest response, caught by reading the raw response text,
+    // not by trusting the heuristic silently.
     const HONEST_ABSENCE_PATTERNS = [
-      /no (me )?(has |lo )?(dicho|mencionado|indicado|dado|compartido)/i,
+      /no (me )?(has |lo )?(dicho|mencionado|indicado|dado|compartido|mencionaste|indicaste|compartiste|diste)/i,
       /no (lo )?s[eé]/i,
       /no tengo (ese|el|un) (dato|nombre)/i,
       /no (me )?(lo )?dijiste/i,
@@ -770,7 +775,14 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
   try {
     const forcedUserMessage = 'Prepárame un PDF imprimible con el vocabulario de negociación agrícola que acabamos de ver, para estudiarlo sola.';
     const forcedTaughtContent = 'Vocabulario de negociación agrícola: precio por quintal, calidad de grano, condiciones de entrega, plazo de pago, anticipo, contrato de compraventa, cosecha, certificación orgánica.';
-    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', subject: 'Vocabulario de negociación agrícola' } };
+    // Real PREP_V1 run (15.10.2026) caught this: lib/artifact-signal.ts's
+    // parseArtifactSignal() requires `trigger` (one of
+    // 'pedagogical_completion' | 'explicit_user_request') as well as
+    // `type`/`subject`. The original forced call omitted it and was
+    // rejected as malformed_signal_schema before ever reaching the intent/
+    // commercial/isolation gates — testing nothing. Fixed to match the real
+    // schema exactly.
+    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'Vocabulario de negociación agrícola' } };
     const forcedResult = await adaptAndFulfillWillySignal(forcedCall, forcedUserMessage, forcedTaughtContent, 'premium');
     sections.FORCED_SIGNAL_ADAPTER_TEST = {
       scope: 'NOT a test of WILLY cognitive capability. Verifies the adapter/pipeline wiring in isolation via a manually-constructed signal_artifact call, per AE directive — independent of whether WILLY spontaneously emits this signal on any given run.',
@@ -796,7 +808,9 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
     // AE correction: free-plan rejection must ALSO be verified via a signal
     // actually presented to the mock gate — not merely inferred from the
     // absence of a spontaneous WILLY signal on this particular run.
-    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', subject: 'Vocabulario de negociación agrícola' } };
+    // Same schema fix as FORCED_SIGNAL_ADAPTER_TEST above (8b2): `trigger`
+    // is required by parseArtifactSignal() and was missing.
+    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'Vocabulario de negociación agrícola' } };
     const forcedContent = 'Vocabulario de negociación agrícola: precio por quintal, calidad de grano, condiciones de entrega, plazo de pago.';
     const forcedRejection = await adaptAndFulfillWillySignal(forcedCall, userMessage, forcedContent, 'free');
 
