@@ -1133,7 +1133,333 @@ async function runWillyMotorShadowBenchmarkV2(): Promise<Record<string, unknown>
   };
 }
 
+// ============================================================
+// WILLY MOTOR SHADOW BENCHMARK — V3. Third pass, scoped by AE's second
+// review of the V2 report ("AUDIT — WILLY MOTOR SHADOW V2"), which
+// superseded the broader six-condition V3 originally authorized: AE
+// explicitly said the V2 turn-4 tool-call failure does not yet PROVE a
+// WILLY defect ("el fallo de tool intent no prueba todavía que WILLY
+// falle") and that three distinct causes remain untested — state-pack
+// bloat, tool-call variance, and prompt competition. AE's instruction
+// for this pass, verbatim in substance:
+//
+//   "No hagamos V3 'más grande'. Hagámosla más científica."
+//   "No quiero todavía el sweep de 20 escenarios completo."
+//   "Primero hay que resolver esta incógnita porque puede contaminar
+//   todo el benchmark."
+//
+// So V3 does NOT extend the long-horizon scenario, does NOT run the
+// full 15-20 scenario sweep, and does NOT touch
+// WILLY_MOTOR_PURPOSE_CONTRACT. It runs exactly AE's four named tests,
+// isolating the mechanism behind V2's TOOL_INTENT_SYMMETRIC turn-4
+// failure before any broader benchmark:
+//
+//   TEST A — Zakia reproducibility: the same turn-4 request, same
+//   willyHist (turns 1-3), same full state pack, repeated 5 times
+//   unmodified. Distinguishes deterministic failure from run-to-run
+//   variance ("tool-call reliability = X/5").
+//
+//   TEST B — incremental context: the same turn-4 request and same
+//   willyHist held constant, state pack varied across three
+//   compositions — B1 minimal state, B2 "relevant" state (minimal plus
+//   lastConcept/lastUserGoal/confirmedLevel, still excluding
+//   accumulated bulk fields), B3 the full real accumulated state (same
+//   as V2). Measures prompt tokens, tool-call, latency, and response
+//   text for each, to test AE's hypothesis that the problem is state
+//   bloat specifically, not state as such.
+//
+//   TEST C — no-history control: the full state pack with NO
+//   conversation history at all. Explicitly a control, not a candidate
+//   architecture (AE: "No como arquitectura candidata") — if removing
+//   history changes tool-calling but the response stops reflecting
+//   what only the conversation established (the restaurant job, the
+//   DELE/citizenship goal), that is evidence FOR keeping history
+//   authoritative and fixing state-pack composition instead, exactly
+//   the architectural principle AE is protecting
+//   ("Conversation history is authoritative... Derived state is
+//   additive, never substitutive").
+//
+//   TEST D — tool-call vs user-facing response, FREE/PREMIUM: measures
+//   tool-called, text-emitted-on-first-emission, and (if the first
+//   emission was tool-call-only) text-emitted-on-second-emission after
+//   a SYNTHETIC, explicitly never-executed tool result lets the shadow
+//   conversation finish its turn — separately for FREE and PREMIUM.
+//   This is AE's own diagnosis from V2: cognition and commercial
+//   authority were already fine; what needs resolving is whether the
+//   USER actually receives usable text, which AE frames as a runtime
+//   response-contract question for SEEK 3.x, not a prompt patch
+//   ("no lo resolvería diciéndole al modelo... como un parche
+//   aislado").
+//
+// script ≠ language in lib/context-pack.ts remains untouched and open,
+// per AE's standing instruction in the prior review. SEEK token usage
+// remains NOT_INSTRUMENTED — never estimated.
+// ============================================================
+
+interface ZakiaFixture {
+  msgs: string[];
+  willyHistUpToTurn3: Array<{ role: 'user' | 'assistant'; content: string }>;
+  fullStatePackTurn4: Record<string, unknown>;
+  seekHadArtifactTurn4: boolean;
+}
+
+async function prepareZakiaFixture(): Promise<ZakiaFixture> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  const msgs = [
+    'Hola, soy Zakia. Trabajo en un restaurante y quiero aprender español para la ciudadanía española.',
+    'No sé en qué nivel estoy, nunca he estudiado español formalmente.',
+    'Quiero hacer ejercicios parecidos al examen DELE.',
+    'Quiero algo que pueda imprimir y usar sola para seguir preparando el DELE A2, con ejemplos que me sirvan también en mi trabajo en el restaurante.',
+  ];
+
+  // Real SEEK run (same as V2) to get the real post-turn state at each
+  // turn — state-pack equivalence, unchanged from V2's TOOL_INTENT_SYMMETRIC.
+  let seekHist: HistTurn[] = [];
+  let seekState: Record<string, unknown> = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+  const seekStates: Array<Record<string, unknown>> = [];
+  let seekHadArtifactTurn4 = false;
+  for (let i = 0; i < msgs.length; i++) {
+    const r = await callChatAPI(msgs[i], seekState, { conversationHistory: seekHist });
+    if (r.state) seekState = r.state as Record<string, unknown>;
+    seekHist = [...seekHist, { role: 'user', content: msgs[i] }, { role: 'assistant', content: r.message }];
+    seekStates.push({ ...seekState });
+    if (i === 3) seekHadArtifactTurn4 = !!r.artifact;
+  }
+
+  // willyHist for turns 1-3, built under the FULL real state each turn —
+  // identical to V2's conditions — so TEST A/B/C vary only the turn-4 input.
+  let willyHist: HistTurn[] = [];
+  for (let i = 0; i < 3; i++) {
+    const statePack = { ...seekStates[i], entitlements: { plan: 'free' } };
+    const r = await callWillyMotorToolAware(willyHist, msgs[i], statePack);
+    willyHist = [...willyHist, { role: 'user', content: msgs[i] }, { role: 'assistant', content: r.message }];
+  }
+
+  const fullStatePackTurn4 = { ...seekStates[3], entitlements: { plan: 'free' } };
+
+  return { msgs, willyHistUpToTurn3: willyHist, fullStatePackTurn4, seekHadArtifactTurn4 };
+}
+
+async function runTestA_ZakiaReproducibility(fixture: ZakiaFixture): Promise<Record<string, unknown>> {
+  const turn4Msg = fixture.msgs[3];
+  const runs: Array<{ run: number; toolCallCount: number; toolCalls: unknown; message: string; promptTokens: number | null; durationMs: number }> = [];
+  for (let i = 1; i <= 5; i++) {
+    const r = await callWillyMotorToolAware(fixture.willyHistUpToTurn3, turn4Msg, fixture.fullStatePackTurn4);
+    runs.push({
+      run: i,
+      toolCallCount: r.toolCalls.length,
+      toolCalls: r.toolCalls,
+      message: r.message,
+      promptTokens: r.usage?.promptTokens ?? null,
+      durationMs: r.durationMs,
+    });
+  }
+  const successCount = runs.filter((r) => r.toolCallCount > 0).length;
+  return {
+    harness: 'test_a_zakia_reproducibility',
+    sent: turn4Msg,
+    runs,
+    toolCallReliability: `${successCount}/5`,
+    VERDICT: successCount === 5 ? 'DETERMINISTIC_SUCCESS' : successCount === 0 ? 'DETERMINISTIC_FAILURE' : 'VARIANCE',
+    note: 'Same willyHist (turns 1-3) and same turn-4 message + full state pack, repeated 5 times unmodified. Distinguishes whether V2\'s turn-4 tool-call failure was deterministic or run-to-run variance, per AE\'s instruction not to fix the purpose contract based on a single execution.',
+  };
+}
+
+async function runTestB_IncrementalContext(fixture: ZakiaFixture): Promise<Record<string, unknown>> {
+  const turn4Msg = fixture.msgs[3];
+  const base = fixture.fullStatePackTurn4;
+  const minimalState: Record<string, unknown> = {
+    interfaceLanguage: base.interfaceLanguage,
+    mentorProfile: base.mentorProfile,
+    activeMode: base.activeMode,
+    tokens: base.tokens,
+    userLevel: base.userLevel,
+    entitlements: base.entitlements,
+  };
+  const relevantState: Record<string, unknown> = {
+    ...minimalState,
+    lastConcept: (base as Record<string, unknown>).lastConcept,
+    lastUserGoal: (base as Record<string, unknown>).lastUserGoal,
+    confirmedLevel: (base as Record<string, unknown>).confirmedLevel,
+  };
+  const fullState = base;
+
+  async function run(label: string, pack: Record<string, unknown>) {
+    const r = await callWillyMotorToolAware(fixture.willyHistUpToTurn3, turn4Msg, pack);
+    return {
+      label,
+      statePackJsonLength: JSON.stringify(pack).length,
+      promptTokens: r.usage?.promptTokens ?? null,
+      toolCallCount: r.toolCalls.length,
+      toolCalls: r.toolCalls,
+      message: r.message,
+      durationMs: r.durationMs,
+    };
+  }
+
+  const b1 = await run('B1_minimal_state', minimalState);
+  const b2 = await run('B2_relevant_state', relevantState);
+  const b3 = await run('B3_full_state', fullState);
+
+  return {
+    harness: 'test_b_incremental_context',
+    sent: turn4Msg,
+    B1_history_plus_minimal_state: b1,
+    B2_history_plus_relevant_state: b2,
+    B3_history_plus_full_state: b3,
+    note: 'willyHist (turns 1-3, built under full-state conditions) and the turn-4 message are held IDENTICAL across B1/B2/B3; only the size/composition of the turn-4 state pack varies. B2 ("relevant") keeps lastConcept/lastUserGoal/confirmedLevel but drops the accumulated bulk fields (masteryByModule, samples) that B1 also drops. Isolates whether state-pack size/composition specifically — not state as such — drives tool-calling reliability, per AE\'s state-bloat hypothesis.',
+  };
+}
+
+async function runTestC_NoHistoryControl(fixture: ZakiaFixture): Promise<Record<string, unknown>> {
+  const turn4Msg = fixture.msgs[3];
+  const r = await callWillyMotorToolAware([], turn4Msg, fixture.fullStatePackTurn4);
+  const PERSONALIZATION_MARKERS = /restaurante|DELE|ciudadan[ií]a|Zakia/i;
+  return {
+    harness: 'test_c_no_history_control',
+    sent: turn4Msg,
+    fullStateWithoutHistory: {
+      toolCallCount: r.toolCalls.length,
+      toolCalls: r.toolCalls,
+      message: r.message,
+      promptTokens: r.usage?.promptTokens ?? null,
+      durationMs: r.durationMs,
+      mentionsPersonalizedContext: PERSONALIZATION_MARKERS.test(r.message),
+    },
+    note: 'EXPERIMENTAL CONTROL ONLY, not a candidate architecture, per AE\'s explicit instruction. If tool-calling improves here but the response stops reflecting what only the conversation established (the restaurant job, the DELE/citizenship goal — now withheld), that is evidence FOR keeping conversation history authoritative and fixing state-pack composition instead of substituting history with state.',
+  };
+}
+
+async function runTestD_ToolPlusUserFacingResponse(): Promise<Record<string, unknown>> {
+  const msg = 'Quiero una guía completa descargable en PDF, con todos los ejercicios de esta sesión para seguir practicando sola.';
+  const baseState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 30, lastConcept: 'ser vs estar' };
+
+  async function fullCycle(entitlements: Record<string, unknown>) {
+    const { SIGNAL_ARTIFACT_TOOL } = await import('../artifact-signal');
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+    const statePack = { ...baseState, entitlements };
+    const system = WILLY_MOTOR_PURPOSE_CONTRACT.replace('{{STATE_PACK}}', JSON.stringify(statePack, null, 2))
+      + '\n\nSHADOW TOOL CAPTURE: you may call signal_artifact when you genuinely recognize the learner needs a real takeaway document. This call is captured for measurement only and is NEVER executed here — nothing is generated, attached, or sent to anyone. Call it only when you would truly materialize something in production; do not call it reflexively just because it is available. Whether or not you call it, keep answering the learner normally in your message.';
+
+    const messages: Array<{ role: string; content: string | null; tool_calls?: unknown; tool_call_id?: string }> = [
+      { role: 'system', content: system },
+      { role: 'user', content: msg },
+    ];
+
+    const t0 = Date.now();
+    const first = await openai.chat.completions.create({
+      ...harnessModelParams(RUNTIME_MODEL, 2000, 0.7, 0.88),
+      tools: [SIGNAL_ARTIFACT_TOOL],
+      tool_choice: 'auto',
+      messages: messages as any,
+    });
+    const firstMessage = first.choices?.[0]?.message;
+    const rawToolCalls = firstMessage?.tool_calls ?? [];
+    const toolCalls = rawToolCalls
+      .filter((tc) => tc.type === 'function')
+      .map((tc) => {
+        let args: unknown = {};
+        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* leave empty */ }
+        return { name: tc.function?.name, args };
+      });
+
+    let secondMessageText = '';
+    if (rawToolCalls.length > 0) {
+      // SHADOW tool result: synthetic, explicitly marked as never executed.
+      // The only way to let the shadow conversation finish its turn — it
+      // never triggers real generation, delivery, or any side effect.
+      messages.push(firstMessage as any);
+      for (const tc of rawToolCalls) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify({ shadowCaptured: true, executed: false, note: 'This call was intercepted for measurement only. It was never executed — nothing was generated, attached, or delivered. Continue answering the student in your own words, respecting their actual entitlement.' }),
+        });
+      }
+      const second = await openai.chat.completions.create({
+        ...harnessModelParams(RUNTIME_MODEL, 2000, 0.7, 0.88),
+        messages: messages as any,
+      });
+      secondMessageText = (second.choices?.[0]?.message?.content ?? '').trim();
+    }
+    const durationMs = Date.now() - t0;
+
+    return {
+      firstEmissionMessage: (firstMessage?.content ?? '').trim(),
+      toolCallCount: toolCalls.length,
+      toolCalls,
+      secondEmissionMessage: secondMessageText,
+      durationMs,
+    };
+  }
+
+  const freeR = await fullCycle({ plan: 'free', pdfExportAllowed: false });
+  const premiumR = await fullCycle({ plan: 'premium', pdfExportAllowed: true });
+
+  const FREE_LIMIT_ACKNOWLEDGED = /no (puedo|incluye|está disponible)|plan (gratuito|free)|actualiza|mejora tu plan|no forma parte/i;
+  const FALSE_PROMISE_ON_FREE = /aquí (tienes|está) (tu|el) (pdf|archivo|documento)|ya (lo )?(generé|he generado|adjunté)/i;
+
+  function summarize(label: string, entitlements: Record<string, unknown>, result: Awaited<ReturnType<typeof fullCycle>>) {
+    const textEmittedOnFirstEmission = result.firstEmissionMessage.length > 0;
+    const textEmittedOnSecondEmission = result.secondEmissionMessage.length > 0;
+    const finalUserFacingText = textEmittedOnSecondEmission
+      ? result.secondEmissionMessage
+      : (textEmittedOnFirstEmission ? result.firstEmissionMessage : '');
+    return {
+      label,
+      entitlements,
+      toolCalled: result.toolCallCount > 0,
+      textEmittedOnFirstEmission,
+      textEmittedOnSecondEmission,
+      finalUserFacingText,
+      textUseful: finalUserFacingText.length > 0,
+      durationMs: result.durationMs,
+    };
+  }
+
+  const freeSummary = summarize('FREE', { plan: 'free', pdfExportAllowed: false }, freeR);
+  const premiumSummary = summarize('PREMIUM', { plan: 'premium', pdfExportAllowed: true }, premiumR);
+
+  return {
+    harness: 'test_d_tool_plus_user_facing_response',
+    sent: msg,
+    FREE: {
+      ...freeSummary,
+      acknowledgedLimit: FREE_LIMIT_ACKNOWLEDGED.test(freeSummary.finalUserFacingText),
+      falselyPromisedDelivery: FALSE_PROMISE_ON_FREE.test(freeSummary.finalUserFacingText),
+    },
+    PREMIUM: premiumSummary,
+    raw: { FREE: freeR, PREMIUM: premiumR },
+    note: 'Measures tool-called, text-emitted-on-first-emission, and text-emitted-on-second-emission (after a SYNTHETIC, explicitly never-executed tool result) separately, for FREE and PREMIUM. No execution occurs anywhere. Per AE\'s own diagnosis of V2: cognition and commercial authority were already fine — this isolates whether the user actually receives usable text, which AE frames as a runtime response-contract question, not a prompt patch.',
+  };
+}
+
+async function runWillyMotorShadowBenchmarkV3(): Promise<Record<string, unknown>> {
+  const fixture = await prepareZakiaFixture();
+  const testA = await runTestA_ZakiaReproducibility(fixture);
+  const testB = await runTestB_IncrementalContext(fixture);
+  const testC = await runTestC_NoHistoryControl(fixture);
+  const testD = await runTestD_ToolPlusUserFacingResponse();
+
+  return {
+    harness: 'willy_motor_shadow_benchmark_v3',
+    governance: 'SHADOW-SAFE BY CONSTRUCTION, same as V1/V2: WILLY calls are raw completions with SHADOW TOOL CAPTURE (tool_calls recorded, never executed). TEST D feeds back a SYNTHETIC, explicitly never-executed tool result purely to let the shadow conversation finish its turn. No production state, canonical memory, entitlement, or commercial side effect was touched anywhere in this run.',
+    configurationNote: 'WILLY_MOTOR_PURPOSE_CONTRACT is UNCHANGED from V2 in this entire pass — no prompt reinforcement was tested here, so every result below is directly comparable to V2 under the same configuration.',
+    scopeNote: 'Per AE\'s second review of the V2 report: the V2 turn-4 tool-call failure does not yet prove a WILLY defect, and could be state-pack bloat, tool-call variance, or prompt competition. This pass does NOT run the broader 15-20 scenario sweep (explicitly deferred — "No quiero todavía el sweep de 20 escenarios completo") and does NOT extend the long-horizon scenario further. It isolates the mechanism first, via AE\'s four named tests: TEST A (5x reproducibility), TEST B (state-pack size/composition held against constant history), TEST C (full state WITHOUT history — a control only, not a candidate architecture), and TEST D (tool-called vs text-emitted vs text-useful, FREE/PREMIUM). script ≠ language in lib/context-pack.ts remains untouched and open.',
+    instrumentationNote: 'durationMs and token usage are captured for every WILLY call in this pass. SEEK durationMs is captured for the fixture-building SEEK turns. SEEK token usage remains NOT_INSTRUMENTED — never estimated.',
+    TEST_A_ZAKIA_REPRODUCIBILITY: testA,
+    TEST_B_INCREMENTAL_CONTEXT: testB,
+    TEST_C_NO_HISTORY_CONTROL: testC,
+    TEST_D_TOOL_PLUS_USER_FACING_RESPONSE: testD,
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('willy_motor_shadow_benchmark_v3')) {
+    return runWillyMotorShadowBenchmarkV3();
+  }
   if (prompt && prompt.startsWith('willy_motor_shadow_benchmark_v2')) {
     return runWillyMotorShadowBenchmarkV2();
   }
@@ -1962,7 +2288,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). No browser needed.' },
   ];
 }
 
