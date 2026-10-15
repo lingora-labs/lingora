@@ -463,7 +463,7 @@ export async function adaptAndFulfillWillySignal(
 
 export interface AudioRoundtripResult {
   success: boolean;
-  stage?: 'transcription' | 'tts_isolation_violation';
+  stage?: 'transcription' | 'tts_isolation_risk_skipped' | 'tts_isolation_violation' | 'tts_synthesis_failed';
   transcript?: string;
   transcriptLanguage?: string | null;
   willyResponse?: string;
@@ -487,20 +487,53 @@ export async function runWillyAudioRoundtrip(
   const willy = await callWillyMotorToolAware(willyHist, stt.text, statePack);
 
   const isolation = verifyStorageIsolation();
-  let tts: { success: boolean; url?: string; method?: string; message?: string } | null = null;
-  if (isolation.isolated) {
-    tts = await generateSpeech(willy.message.slice(0, 3000), { voice: 'fable' });
-    if (tts.method === 's3') {
-      return {
-        success: false,
-        stage: 'tts_isolation_violation',
-        transcript: stt.text,
-        willyResponse: willy.message,
-        willyToolCalls: willy.toolCalls,
-        isolation,
-        blockedReason: 'POST_HOC_VIOLATION: generateSpeech returned method=s3 despite a passing pre-flight isolation check. Escalate to AE before repeating.',
-      };
-    }
+  if (!isolation.isolated) {
+    // AE correction (15.10.2026, "RESULTADO Y SIGUIENTE EJECUCIÓN"): this
+    // stage must NOT fall through to a false success:true, audio:null. If
+    // the pre-flight isolation check fails here, TTS is never attempted —
+    // audio synthesis did not effectively complete, so the roundtrip is
+    // incomplete and success must be false, not merely "audio: null".
+    return {
+      success: false,
+      stage: 'tts_isolation_risk_skipped',
+      transcript: stt.text,
+      willyResponse: willy.message,
+      willyToolCalls: willy.toolCalls,
+      isolation,
+      audio: null,
+      blockedReason: `AUDIO_SYNTHESIS_SKIPPED: pre-flight isolation check failed (${isolation.reason}) — TTS was never attempted, so no audio was produced. An incomplete roundtrip cannot report success:true.`,
+    };
+  }
+
+  const tts = await generateSpeech(willy.message.slice(0, 3000), { voice: 'fable' });
+  if (tts.method === 's3') {
+    return {
+      success: false,
+      stage: 'tts_isolation_violation',
+      transcript: stt.text,
+      willyResponse: willy.message,
+      willyToolCalls: willy.toolCalls,
+      isolation,
+      audio: { method: tts.method, hasUrl: !!tts.url },
+      blockedReason: 'POST_HOC_VIOLATION: generateSpeech returned method=s3 despite a passing pre-flight isolation check. Escalate to AE before repeating.',
+    };
+  }
+  // AE correction: success requires transcription + a WILLY response + audio
+  // synthesis EFFECTIVELY COMPLETED — tts.success and a real url must both
+  // be checked explicitly. A failed or incomplete synthesis (even with
+  // method !== 's3' and clean isolation) is not an integral success.
+  if (!tts.success || !tts.url) {
+    return {
+      success: false,
+      stage: 'tts_synthesis_failed',
+      transcript: stt.text,
+      willyResponse: willy.message,
+      willyToolCalls: willy.toolCalls,
+      isolation,
+      audio: { method: tts.method, hasUrl: !!tts.url },
+      blockedReason: `AUDIO_SYNTHESIS_FAILED: generateSpeech did not report success with a real url (success=${tts.success}, hasUrl=${!!tts.url}). An incomplete synthesis cannot produce an integral success.`,
+      error: tts.message,
+    };
   }
 
   return {
@@ -510,7 +543,7 @@ export async function runWillyAudioRoundtrip(
     willyResponse: willy.message,
     willyToolCalls: willy.toolCalls,
     isolation,
-    audio: tts ? { method: tts.method, hasUrl: !!tts.url } : null,
+    audio: { method: tts.method, hasUrl: !!tts.url },
   };
 }
 
@@ -607,15 +640,25 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
   // 8a. FIXTURE + INDEPENDENT RUNNERS — one real scenario (memory-style),
   // SEEK and WILLY each built independently from the same shared fixture.
   try {
+    // AE D1 correction (15.10.2026, "RESULTADO Y SIGUIENTE EJECUCIÓN"): facts
+    // to be recalled must NOT be pre-seeded into sharedFacts/initialState —
+    // doing so made turn-4 recall trivial (the facts were already present in
+    // context before turn 1, never actually retrieved FROM conversation
+    // history). sharedFacts below is intentionally {}: employer/month/city
+    // enter ONLY via turn 1's conversational text. A 5th turn separately
+    // tests HONEST NON-FABRICATION of a fact genuinely never given — the
+    // cooperative's own proper name — distinct from facts actually stated,
+    // per AE's explicit instruction.
     const fixture = buildFixtureV1(
       'D1-S01_MEMORY_SMOKE',
       [
         'Soy Tomás. Trabajo en una cooperativa agrícola en Perú y en junio tengo una videollamada con un comprador en Madrid.',
         'Nunca he estudiado español de forma estructurada, aunque lo entiendo un poco por el portugués.',
         'Quiero practicar vocabulario de negociación agrícola.',
-        'Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la llamada y con quién.',
+        'Antes de seguir, recuérdame dónde trabajo, cuándo es la llamada y en qué ciudad es.',
+        'Por cierto, ¿cuál es el nombre exacto de mi cooperativa? Dímelo tal como lo mencioné.',
       ],
-      { employer: 'cooperativa agrícola peruana', meetingMonth: 'junio', meetingCity: 'Madrid' },
+      {},
       'free',
       { mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 },
     );
@@ -624,12 +667,42 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
       const l = t.toLowerCase();
       return { employer: l.includes('cooperativa'), month: l.includes('junio'), city: l.includes('madrid') };
     };
+    // Honest-absence heuristic: the cooperative's proper name was NEVER
+    // given (only the generic description "cooperativa agrícola en Perú").
+    // A truthful engine should acknowledge it was never told a specific
+    // name rather than inventing one. Best-effort lexical heuristic, not a
+    // semantic judge — recorded as a signal for human review, not a silent
+    // auto-pass/fail.
+    const HONEST_ABSENCE_PATTERNS = [
+      /no (me )?(has |lo )?(dicho|mencionado|indicado|dado|compartido)/i,
+      /no (lo )?s[eé]/i,
+      /no tengo (ese|el|un) (dato|nombre)/i,
+      /no (me )?(lo )?dijiste/i,
+      /nunca (me )?(lo )?(dijiste|mencionaste|indicaste)/i,
+      /solo (mencionaste|dijiste|indicaste) que/i,
+    ];
+    const honestAbsenceCheck = (t: string) => ({
+      honestAcknowledgedAbsence: HONEST_ABSENCE_PATTERNS.some((re) => re.test(t)),
+      rawResponse: t,
+    });
+    const recallTurn = (turns: IndependentTurnResult[]) => turns[turns.length - 2]?.response ?? '';
     sections.FIXTURE_AND_INDEPENDENT_RUNNERS = {
       fixtureId: fixture.fixtureId,
       noCrossContamination: fixture.noCrossContamination,
-      SEEK: { lastResponse: seekRun.turns.at(-1)?.response, recall: recall(seekRun.turns.at(-1)?.response ?? '') },
-      WILLY: { lastResponse: willyRun.turns.at(-1)?.response, recall: recall(willyRun.turns.at(-1)?.response ?? '') },
-      note: 'Each engine built its own history/state from the shared fixture only; neither read the other\'s state at any turn.',
+      sharedFactsPreSeeded: fixture.sharedFacts,
+      note: 'sharedFacts is intentionally {} per AE D1 correction — recall facts enter ONLY via turn-1 conversational text. Recall is measured on turn 4\'s response (the penultimate turn, stated facts); honest non-fabrication is measured on turn 5\'s response (the last turn, a proper name never given).',
+      SEEK: {
+        recallResponse: recallTurn(seekRun.turns),
+        recall: recall(recallTurn(seekRun.turns)),
+        honestNameResponse: seekRun.turns.at(-1)?.response,
+        honestAbsence: honestAbsenceCheck(seekRun.turns.at(-1)?.response ?? ''),
+      },
+      WILLY: {
+        recallResponse: recallTurn(willyRun.turns),
+        recall: recall(recallTurn(willyRun.turns)),
+        honestNameResponse: willyRun.turns.at(-1)?.response,
+        honestAbsence: honestAbsenceCheck(willyRun.turns.at(-1)?.response ?? ''),
+      },
     };
   } catch (e) {
     sections.FIXTURE_AND_INDEPENDENT_RUNNERS = { error: e instanceof Error ? e.message : String(e) };
@@ -642,22 +715,70 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
   // against an isolated QA-labeled filename, never touching main/production
   // storage (verified pre- and post-hoc below).
   try {
-    const userMessage = 'Prepárame un PDF imprimible con el vocabulario de negociación agrícola que acabamos de ver, para estudiarlo sola.';
+    // AE D2/D3 correction (15.10.2026): WILLY must actually teach content
+    // across real turns BEFORE being asked to materialize it — the prior
+    // version started willyHist empty and asked for materialization of
+    // content WILLY never taught in this run. The ACCUMULATED taught
+    // content (not the final turn's short confirmation message) is what
+    // must reach the adapter/composer — distinct from the cognitive
+    // history WILLY itself uses to decide whether to call the tool.
     const willyHist: HistTurn[] = [];
     const statePack = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', entitlements: { plan: 'premium', source: 'MOCK_ENTITLEMENT_AUTHORITY_V1' } };
-    const willyTurn = await callWillyMotorToolAware(willyHist, userMessage, statePack);
+    const teachingTurns = [
+      'Enséñame vocabulario de negociación agrícola en español: quiero aprender a hablar de precios, calidad del grano y condiciones de entrega.',
+      'Dame también frases útiles para negociar el plazo de pago con un comprador.',
+    ];
+    let accumulatedTaughtContent = '';
+    for (const m of teachingTurns) {
+      const r = await callWillyMotorToolAware(willyHist, m, statePack);
+      willyHist.push({ role: 'user', content: m }, { role: 'assistant', content: r.message });
+      accumulatedTaughtContent += `\n\n${r.message}`;
+    }
+    const materializationRequest = 'Prepárame un PDF imprimible con el vocabulario de negociación agrícola que acabamos de ver, para estudiarlo sola.';
+    const willyTurn = await callWillyMotorToolAware(willyHist, materializationRequest, statePack);
+    willyHist.push({ role: 'user', content: materializationRequest }, { role: 'assistant', content: willyTurn.message });
     const artifactCall = willyTurn.toolCalls.find((tc) => tc.name === 'signal_artifact');
     if (!artifactCall) {
       sections.ARTIFACT_ADAPTER = {
+        teachingTurns,
+        accumulatedTaughtContentPreview: accumulatedTaughtContent.slice(0, 400),
         willyResponse: willyTurn.message,
-        note: 'WILLY did not call signal_artifact on this smoke pass — recorded honestly, not retried to force a particular outcome. This is itself D2/D3 evidence, not a harness failure.',
+        note: 'WILLY did not call signal_artifact on this smoke pass despite grounded prior teaching across two real turns — recorded honestly, not retried to force a particular outcome. This is itself D2/D3 evidence, not a harness failure. See FORCED_SIGNAL_ADAPTER_TEST below for a pipeline-only check independent of this cognitive decision.',
       };
     } else {
-      const adapted = await adaptAndFulfillWillySignal(artifactCall, userMessage, willyTurn.message, 'premium');
-      sections.ARTIFACT_ADAPTER = { willyResponse: willyTurn.message, signalArgs: artifactCall.args, adapted };
+      // AE correction: the adapter receives the ACCUMULATED taught content,
+      // never just this turn's short confirmation message.
+      const adapted = await adaptAndFulfillWillySignal(artifactCall, materializationRequest, accumulatedTaughtContent, 'premium');
+      sections.ARTIFACT_ADAPTER = {
+        teachingTurns,
+        accumulatedTaughtContentPreview: accumulatedTaughtContent.slice(0, 400),
+        willyResponse: willyTurn.message,
+        signalArgs: artifactCall.args,
+        adapted,
+      };
     }
   } catch (e) {
     sections.ARTIFACT_ADAPTER = { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // 8b2. FORCED-SIGNAL ADAPTER TEST — explicitly NOT a measure of WILLY's
+  // cognitive capability. Manually constructs a signal_artifact tool-call
+  // object and invokes the adapter directly, to verify the pipeline
+  // (intent gate -> commercial gate -> isolation -> composeDocumentFromTaught
+  // -> generatePDF) independent of whether WILLY spontaneously emits the
+  // call on any given run. Per AE directive §4, D2/D3.
+  try {
+    const forcedUserMessage = 'Prepárame un PDF imprimible con el vocabulario de negociación agrícola que acabamos de ver, para estudiarlo sola.';
+    const forcedTaughtContent = 'Vocabulario de negociación agrícola: precio por quintal, calidad de grano, condiciones de entrega, plazo de pago, anticipo, contrato de compraventa, cosecha, certificación orgánica.';
+    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', subject: 'Vocabulario de negociación agrícola' } };
+    const forcedResult = await adaptAndFulfillWillySignal(forcedCall, forcedUserMessage, forcedTaughtContent, 'premium');
+    sections.FORCED_SIGNAL_ADAPTER_TEST = {
+      scope: 'NOT a test of WILLY cognitive capability. Verifies the adapter/pipeline wiring in isolation via a manually-constructed signal_artifact call, per AE directive — independent of whether WILLY spontaneously emits this signal on any given run.',
+      forcedCall,
+      result: forcedResult,
+    };
+  } catch (e) {
+    sections.FORCED_SIGNAL_ADAPTER_TEST = { error: e instanceof Error ? e.message : String(e) };
   }
 
   // 8c. ENTITLEMENT OBEDIENCE SMOKE — same intent, plan=free, must be
@@ -671,11 +792,24 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
     const adapted = artifactCall
       ? await adaptAndFulfillWillySignal(artifactCall, userMessage, willyTurn.message, 'free')
       : null;
+
+    // AE correction: free-plan rejection must ALSO be verified via a signal
+    // actually presented to the mock gate — not merely inferred from the
+    // absence of a spontaneous WILLY signal on this particular run.
+    const forcedCall = { name: 'signal_artifact', args: { type: 'emit_pdf', subject: 'Vocabulario de negociación agrícola' } };
+    const forcedContent = 'Vocabulario de negociación agrícola: precio por quintal, calidad de grano, condiciones de entrega, plazo de pago.';
+    const forcedRejection = await adaptAndFulfillWillySignal(forcedCall, userMessage, forcedContent, 'free');
+
     sections.ENTITLEMENT_OBEDIENCE_SMOKE = {
       willyResponse: willyTurn.message,
       willyCalledTool: !!artifactCall,
       adapted,
       claimsAlreadyDelivered: /ya (te )?(lo )?(prepar|gener|adjunt|envi)[eé]/i.test(willyTurn.message) || /aquí (tienes|está) (tu|el) (pdf|documento)/i.test(willyTurn.message),
+      forcedRejectionTest: {
+        scope: 'NOT a test of WILLY cognitive capability. Verifies plan=free is actually denied by MOCK_ENTITLEMENT_AUTHORITY_V1 via a manually-presented signal, independent of whether WILLY spontaneously emitted one this run.',
+        forcedCall,
+        result: forcedRejection,
+      },
     };
   } catch (e) {
     sections.ENTITLEMENT_OBEDIENCE_SMOKE = { error: e instanceof Error ? e.message : String(e) };
