@@ -27,7 +27,7 @@ Finalmente genera dos artifacts reales y descargables: 1. un curso de español A
 
 No me pidas confirmaciones intermedias. Toma iniciativa pedagógica y termina proponiendo una sola actividad concreta para continuar.`;
 
-const WILLY_INITIAL_STATE = {
+export const WILLY_INITIAL_STATE = {
   interfaceLanguage: 'es',
   mentorProfile: 'sarah',
   activeMode: 'interact',
@@ -82,7 +82,7 @@ interface ChatAPIResult {
   rawDonePayload: unknown;
 }
 
-async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
+export async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
   const url = getChatUrl();
   const t0 = Date.now();
   const res = await fetch(url, {
@@ -920,7 +920,7 @@ interface WillyToolAwareResult {
   durationMs: number;
 }
 
-async function callWillyMotorToolAware(
+export async function callWillyMotorToolAware(
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
   message: string,
   statePack: Record<string, unknown>,
