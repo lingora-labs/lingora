@@ -27,7 +27,7 @@ Finalmente genera dos artifacts reales y descargables: 1. un curso de español A
 
 No me pidas confirmaciones intermedias. Toma iniciativa pedagógica y termina proponiendo una sola actividad concreta para continuar.`;
 
-const WILLY_INITIAL_STATE = {
+export const WILLY_INITIAL_STATE = {
   interfaceLanguage: 'es',
   mentorProfile: 'sarah',
   activeMode: 'interact',
@@ -82,7 +82,7 @@ interface ChatAPIResult {
   rawDonePayload: unknown;
 }
 
-async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
+export async function callChatAPI(message: string, state: Record<string, unknown> = WILLY_INITIAL_STATE, extra: Record<string, unknown> = {}): Promise<ChatAPIResult> {
   const url = getChatUrl();
   const t0 = Date.now();
   const res = await fetch(url, {
@@ -920,7 +920,7 @@ interface WillyToolAwareResult {
   durationMs: number;
 }
 
-async function callWillyMotorToolAware(
+export async function callWillyMotorToolAware(
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
   message: string,
   statePack: Record<string, unknown>,
@@ -1565,6 +1565,10 @@ async function runWillyMotorShadowBenchmarkV4(): Promise<Record<string, unknown>
 }
 
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('willy_full_benchmark_prep_v1')) {
+    const { runWillyFullBenchmarkPrepV1 } = await import('./willy-full-benchmark');
+    return runWillyFullBenchmarkPrepV1();
+  }
   if (prompt && prompt.startsWith('willy_motor_shadow_benchmark_v4')) {
     return runWillyMotorShadowBenchmarkV4();
   }
