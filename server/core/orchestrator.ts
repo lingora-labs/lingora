@@ -175,17 +175,37 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
     return buildOpenContractPlan(ctx, levelFromMsg, validTopic);
   }
   let { level, topic } = existing;
-  if (turnClass === 'level_input') {
-    level = extractDocumentLevel(ctx.message) ?? level;
-  } else if (turnClass === 'topic_input') {
-    const t = extractCourseTopic(ctx.message);
-    if (t && !isInvalidCourseTopic(t)) topic = t;
+  // DAE fix (H1) — AE resolución 16.10.2026: classifyDocumentTurn picks ONE
+  // exclusive category per turn, checking the level regex before topic
+  // extraction. A continuation turn that states both in one message
+  // ("A1, sobre ser y estar", or "Nivel A1. Tema: SER y ESTAR") was
+  // classified only as level_input, so the topic branch never ran and the
+  // topic was silently dropped — the gate then re-asked for information
+  // the user had just given. Level and topic are now extracted
+  // independently from the SAME message every continuation turn, instead
+  // of being mutually exclusive by turnClass.
+  const levelFound = extractDocumentLevel(ctx.message);
+  if (levelFound) level = levelFound;
+  const topicFound = extractCourseTopic(ctx.message);
+  if (topicFound && !isInvalidCourseTopic(topicFound)) topic = topicFound;
+  // DAE fix (H1b) — a bare topic with no recognized connector ("Ser y
+  // estar", without "sobre"/"de") matches none of extractCourseTopic's
+  // patterns and previously fell through as turnClass 'other', re-asking
+  // for the topic. When level is already known, no topic yet, and this
+  // turn is not a confirmation/level/cancellation/noise message, accept
+  // the user's natural continuation as the topic directly — without
+  // turning every message into a course topic (noise, short
+  // acknowledgements and already-classified level/confirmation turns are
+  // excluded above and below).
+  if (!topic && level && level !== 'General' && turnClass === 'other') {
+    const raw = ctx.message?.trim();
+    if (raw && raw.length >= 3 && raw.length <= 80 && !isInvalidCourseTopic(raw) && !ORCH_NOISE.test(raw)) {
+      topic = raw;
+    }
   }
   const hasLevel = !!(level && level !== 'General');
-  if (hasLevel && (turnClass === 'confirmation' || turnClass === 'level_input' || turnClass === 'topic_input')) {
-    return topic
-      ? buildGeneratePdfPlan(ctx, topic, level!)
-      : buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
+  if (hasLevel && topic) {
+    return buildGeneratePdfPlan(ctx, topic, level!);
   }
   return buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
 }
