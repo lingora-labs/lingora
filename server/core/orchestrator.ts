@@ -191,16 +191,35 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
   // DAE fix (H1b) — a bare topic with no recognized connector ("Ser y
   // estar", without "sobre"/"de") matches none of extractCourseTopic's
   // patterns and previously fell through as turnClass 'other', re-asking
-  // for the topic. When level is already known, no topic yet, and this
-  // turn is not a confirmation/level/cancellation/noise message, accept
-  // the user's natural continuation as the topic directly — without
-  // turning every message into a course topic (noise, short
-  // acknowledgements and already-classified level/confirmation turns are
-  // excluded above and below).
-  if (!topic && level && level !== 'General' && turnClass === 'other') {
+  // for the topic. The original version of this fallback only fired when
+  // turnClass === 'other', which missed AE's own worked example ("Nivel
+  // A1. Tema: SER y ESTAR") — that message DOES contain a CEFR level
+  // token, so classifyDocumentTurn returns 'level_input', not 'other',
+  // and the fallback never ran even though the topic ("Tema: SER y
+  // ESTAR") has no "sobre"/"de" connector either. Verified by direct
+  // execution of the real extraction functions against that exact
+  // string (see tests/h1_test.js) before this correction. Fixed by (1)
+  // gating on turnClass !== 'confirmation' instead of turnClass ===
+  // 'other' — so a message that states level AND an unconnected topic in
+  // the same turn is covered, not just a bare topic-only turn — and (2)
+  // stripping recognized level-framing words/tokens ("nivel", "tema",
+  // "A1", etc.) from the raw message before treating the remainder as
+  // the topic, so the level declaration itself is never mistaken for the
+  // topic ("Nivel A1" alone strips to nothing and sets no topic — a bare
+  // level statement is never turned into a course topic, preserving AE's
+  // "No convertir cualquier mensaje en un tema de curso").
+  if (!topic && level && level !== 'General' && turnClass !== 'confirmation') {
     const raw = ctx.message?.trim();
-    if (raw && raw.length >= 3 && raw.length <= 80 && !isInvalidCourseTopic(raw) && !ORCH_NOISE.test(raw)) {
-      topic = raw;
+    const stripped = raw
+      ? raw.toLowerCase()
+          .replace(/\b(nivel|level|tema|topic)\b/g, ' ')
+          .replace(/\b(a0|a1|a2|b1|b2|c1|c2|principiante|beginner|intermedio|intermediate|avanzado|advanced|básico|basic|elemental|universitario|experto)\b/g, ' ')
+          .replace(/[.,;:]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      : '';
+    if (stripped && stripped.length >= 3 && stripped.length <= 80 && !isInvalidCourseTopic(stripped) && !ORCH_NOISE.test(stripped)) {
+      topic = stripped;
     }
   }
   const hasLevel = !!(level && level !== 'General');
@@ -279,7 +298,16 @@ function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: s
   };
 }
 
-const ORCH_NOISE = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
+// DAE fix (H1 regression guard) — "continuar" (infinitive) was missing from
+// this list; only "continúa"/"continua" (imperative) were covered, so a
+// plain "continuar" reply fell through as non-noise and, via the new H1b
+// topic fallback in buildDocumentContractGate(), could be misread as a
+// course topic — exactly the regression AE's "No convertir cualquier
+// mensaje en un tema de curso" warns against. Caught by direct test
+// execution (tests/h1_test.js, case H1-6), not by inspection. Added here
+// rather than only in the fallback's own filter because ORCH_NOISE is
+// shared with resolveCurrentTopic(), where the same gap applies.
+const ORCH_NOISE = /^(continúa|continua|continuar|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
 
 function resolvePedagogicalMode(
   message: string,
