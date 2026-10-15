@@ -251,6 +251,17 @@ export interface ArtifactAdapterResult {
   materialized: boolean;
   blockedReason?: string;
   attribution: string;
+  // AE correction (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE CRÉDITOS"):
+  // a successful (or attempted) emit_pdf materialization must separately
+  // disclose whether composeDocumentFromTaught() actually succeeded
+  // (structured composer) or whether generatePDF() received the
+  // plain-text fallback instead. Byte size / renderValidated alone cannot
+  // distinguish those two paths — AE's own example: a short, single-
+  // sentence forced input is fully compatible with the fallback producing
+  // a small but structurally valid PDF. These two fields make that
+  // distinction explicit instead of requiring it to be inferred from size.
+  composedByStructuredComposer?: boolean;
+  compositionFailureReason?: string;
   artifact?: {
     type: 'pdf' | 'audio';
     sha256?: string;
@@ -369,6 +380,15 @@ export async function adaptAndFulfillWillySignal(
       otherSubjects: [],
       mentorName: 'Sarah',
     });
+    // AE correction (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE
+    // CRÉDITOS"): capture composer outcome explicitly BEFORE branching on
+    // it for generatePDF's input — these two fields are surfaced on every
+    // return path below so a result never has to be inferred from byte
+    // size alone (AE's example: a short forced input is fully compatible
+    // with a small fallback PDF that never touched the structured
+    // composer).
+    const composedByStructuredComposer = composed.ok;
+    const compositionFailureReason = composed.ok ? undefined : composed.reason;
     const title = composed.ok ? composed.content.title : `LINGORA — ${signal.subject}`.slice(0, 80);
     const result = composed.ok
       ? await generatePDF({ title, content: '', courseContent: composed.content, filename: `willy-prep-v1-${Date.now()}` })
@@ -386,6 +406,8 @@ export async function adaptAndFulfillWillySignal(
         materialized: false,
         blockedReason: 'POST_HOC_VIOLATION: generatePDF returned method=s3 despite a passing pre-flight isolation check. Treat as a contained failure, not a success. Escalate to AE before repeating.',
         attribution: ATTRIBUTION_NOTE,
+        composedByStructuredComposer,
+        compositionFailureReason,
       };
     }
     if (!result.success || !result.url) {
@@ -399,6 +421,8 @@ export async function adaptAndFulfillWillySignal(
         materialized: false,
         failure: { subject: signal.subject },
         attribution: ATTRIBUTION_NOTE,
+        composedByStructuredComposer,
+        compositionFailureReason,
       };
     }
     return {
@@ -411,6 +435,8 @@ export async function adaptAndFulfillWillySignal(
       materialized: true,
       artifact: { type: 'pdf', sha256: result.pdfSha256, byteLength: result.pdfByteLength, renderValidated: result.renderValidated, method: result.method },
       attribution: ATTRIBUTION_NOTE,
+      composedByStructuredComposer,
+      compositionFailureReason,
     };
   }
 
@@ -719,6 +745,18 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
   // fulfilled for real, with intent + mock-commercial + isolation gates,
   // against an isolated QA-labeled filename, never touching main/production
   // storage (verified pre- and post-hoc below).
+  //
+  // AE correction (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE
+  // CRÉDITOS"): this block makes several sequential real calls (two
+  // teaching turns, the materialization turn, then the adapter/composer).
+  // An external failure (e.g. API 429) can interrupt any one of them, and
+  // the prior version's catch could not say which — so an environment
+  // failure risked being misread as "WILLY chose not to emit a signal".
+  // stage8b is now updated before each call and surfaced in the catch, and
+  // the error message is pattern-matched for known external-quota signals
+  // so this is classified ENVIRONMENT BLOCKED rather than scored as a
+  // cognitive/spontaneous-emission result, per AE's explicit instruction.
+  let stage8b = 'not_started';
   try {
     // AE D2/D3 correction (15.10.2026): WILLY must actually teach content
     // across real turns BEFORE being asked to materialize it — the prior
@@ -734,11 +772,14 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
       'Dame también frases útiles para negociar el plazo de pago con un comprador.',
     ];
     let accumulatedTaughtContent = '';
-    for (const m of teachingTurns) {
+    for (let i = 0; i < teachingTurns.length; i++) {
+      stage8b = `teaching_turn_${i + 1}_of_${teachingTurns.length}`;
+      const m = teachingTurns[i];
       const r = await callWillyMotorToolAware(willyHist, m, statePack);
       willyHist.push({ role: 'user', content: m }, { role: 'assistant', content: r.message });
       accumulatedTaughtContent += `\n\n${r.message}`;
     }
+    stage8b = 'materialization_turn';
     const materializationRequest = 'Prepárame un PDF imprimible con el vocabulario de negociación agrícola que acabamos de ver, para estudiarlo sola.';
     const willyTurn = await callWillyMotorToolAware(willyHist, materializationRequest, statePack);
     willyHist.push({ role: 'user', content: materializationRequest }, { role: 'assistant', content: willyTurn.message });
@@ -751,6 +792,7 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
         note: 'WILLY did not call signal_artifact on this smoke pass despite grounded prior teaching across two real turns — recorded honestly, not retried to force a particular outcome. This is itself D2/D3 evidence, not a harness failure. See FORCED_SIGNAL_ADAPTER_TEST below for a pipeline-only check independent of this cognitive decision.',
       };
     } else {
+      stage8b = 'adapter_and_composition';
       // AE correction: the adapter receives the ACCUMULATED taught content,
       // never just this turn's short confirmation message.
       const adapted = await adaptAndFulfillWillySignal(artifactCall, materializationRequest, accumulatedTaughtContent, 'premium');
@@ -763,7 +805,21 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
       };
     }
   } catch (e) {
-    sections.ARTIFACT_ADAPTER = { error: e instanceof Error ? e.message : String(e) };
+    const message = e instanceof Error ? e.message : String(e);
+    // AE dictamen (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE
+    // CRÉDITOS"): a 429/quota/billing failure from the underlying API
+    // provider is an external environment condition, not a cognitive
+    // decision by WILLY and not an absence-of-signal result. Flag it
+    // explicitly rather than requiring a human to recognize the pattern.
+    const environmentBlocked = /\b429\b|credits? remaining|insufficient_quota|rate.?limit|quota exceeded/i.test(message);
+    sections.ARTIFACT_ADAPTER = {
+      error: message,
+      stageInterrupted: stage8b,
+      environmentBlocked,
+      environmentBlockedNote: environmentBlocked
+        ? 'Classified as ENVIRONMENT BLOCKED per AE dictamen (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE CRÉDITOS"): an external API quota/billing failure interrupted stage `stageInterrupted` above. This must NOT be scored as WILLY declining to emit a signal, nor as any cognitive result — it is an unrelated infrastructure condition. Resolve the API quota before re-attempting this section.'
+        : undefined,
+    };
   }
 
   // 8b2. FORCED-SIGNAL ADAPTER TEST — explicitly NOT a measure of WILLY's
@@ -786,6 +842,7 @@ export async function runWillyFullBenchmarkPrepV1(): Promise<Record<string, unkn
     const forcedResult = await adaptAndFulfillWillySignal(forcedCall, forcedUserMessage, forcedTaughtContent, 'premium');
     sections.FORCED_SIGNAL_ADAPTER_TEST = {
       scope: 'NOT a test of WILLY cognitive capability. Verifies the adapter/pipeline wiring in isolation via a manually-constructed signal_artifact call, per AE directive — independent of whether WILLY spontaneously emits this signal on any given run.',
+      inputCaveat: 'AE note (15.10.2026): the forced input above is a single short sentence (eight agricultural terms). A small materialized PDF here is fully consistent with either the structured composer or the plain-text fallback — see composedByStructuredComposer/compositionFailureReason inside result.adapted for the explicit distinction; do not infer composer success from byte size alone.',
       forcedCall,
       result: forcedResult,
     };
