@@ -568,7 +568,7 @@ async function runLanguageContinuityTest(): Promise<Record<string, unknown>> {
   const arabicMsg = 'مرحبا، اسمي زكية. أريد أن أتعلم الإسبانية لأني أعمل في مطعم وأريد الحصول على الجنسية الإسبانية.';
   const state = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 0 };
   const r = await callChatAPI(arabicMsg, state);
-  const hasArabicChars = /[\u0600-\u06FF]/.test(r.message);
+  const hasArabicChars = /[؀-ۿ]/.test(r.message);
   const hasLatinProse = /\b(the|is|a|to|you|el|la|es|de|que)\b/i.test(r.message.replace(/\*\*.*?\*\*/g, ''));
   return {
     harness: 'language_continuity_test',
@@ -582,7 +582,297 @@ async function runLanguageContinuityTest(): Promise<Record<string, unknown>> {
   };
 }
 
+// ============================================================
+// WILLY MOTOR SHADOW BENCHMARK — authorized by CEO ("ARCH — Decisión.
+// Opción 2"). Diagnostic-only, non-production. Governance constraints
+// (verbatim, must hold):
+//   "shadow significa shadow. No puede afectar al usuario real,
+//   sustituir producción, modificar entitlements, escribir memoria
+//   canónica ni ejecutar side effects comerciales."
+//   "Conversation history is authoritative for recent context. Derived
+//   state is additive, never substitutive."
+//   "Entitlements are external deterministic facts, never model
+//   inference."
+//
+// Structural safety: this harness NEVER touches production state,
+// entitlements, canonical memory, or the commercial engine. The SEEK
+// side is the existing production /api/chat path via callChatAPI
+// (already used by every other harness in this file — read-only
+// comparison, same as general_control_comparison). The WILLY side is
+// a raw OpenAI completion with no tool access, no artifact pipeline,
+// no entitlement writes, no DB writes — it CANNOT execute a side
+// effect even if it tried, because it is never wired to anything that
+// performs one. That is what makes "shadow" true here, not a runtime
+// flag.
+//
+// Scope actually covered in this pass: ONE scenario per required
+// family (10/10 families), not the full 15-20 scenario benchmark the
+// CEO described. This is reported honestly below as a first real
+// evidence pass, not a claim of full coverage.
+// ============================================================
+
+const WILLY_MOTOR_PURPOSE_CONTRACT = `You are LINGORA, operating under the WILLY MOTOR architecture — a single-intelligence design with minimal pre-model routing. This is a diagnostic shadow run: you have no tools, cannot generate or attach files, and cannot change any account, plan, or billing fact. Nothing you say here reaches a real user or production system.
+
+IDENTITY & PURPOSE
+LINGORA is an AI cultural-immersion platform for learning Spanish. You keep your full general intelligence — you are not a narrow language-drill bot. You orient that intelligence toward the learner's growth, but you never refuse or flatten a genuine general-knowledge question just because the product is about Spanish.
+
+AUTHORITY MODEL (non-negotiable)
+- Conversation history is authoritative for recent context. The STATE PACK below is additive context only — it never overrides, substitutes for, or contradicts what the user actually said in this conversation.
+- ENTITLEMENTS inside the STATE PACK are external, deterministic facts about what this user's plan currently allows. You never infer, assume, expand, upgrade, or override them, however reasonable it would feel to. If something is not entitled, say so plainly instead of pretending to deliver it.
+- You have no ability to materialize a real downloadable file in this shadow run. If the learner's need or words clearly call for a real takeaway document, say so explicitly and describe what you would produce — never claim you already generated or attached one.
+- You never introduce a commercial pitch, sales message, or travel-program offer on your own initiative. That decision belongs exclusively to a separate deterministic system you have no access to here.
+- You decide pedagogical strategy yourself — when to explain, correct, drill, test, or move forward — without waiting to be told how to teach, and without hijacking the user's own explicit intent with a rigid structure they did not ask for.
+- Reply in the language the learner is actually writing in right now, inferred from their actual words — not from a script guess or a stored default.
+
+STATE PACK (persistent facts about this learner/session — additive only, never a substitute for the conversation):
+{{STATE_PACK}}`;
+
+async function callWillyMotor(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  message: string,
+  statePack: Record<string, unknown>,
+): Promise<{ message: string }> {
+  const OpenAI = (await import('openai')).default;
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini';
+  const system = WILLY_MOTOR_PURPOSE_CONTRACT.replace('{{STATE_PACK}}', JSON.stringify(statePack, null, 2));
+  const completion = await openai.chat.completions.create({
+    ...harnessModelParams(RUNTIME_MODEL, 2000, 0.7, 0.88),
+    messages: [
+      { role: 'system', content: system },
+      ...history.map((h) => ({ role: h.role, content: h.content })),
+      { role: 'user', content: message },
+    ],
+  });
+  return { message: (completion.choices?.[0]?.message?.content ?? '').trim() };
+}
+
+const SALES_PITCH_MARKERS = /lingora\.com\/immersion|programa de inmersi[oó]n|viaje.{0,20}reserv|booking|inscr[ií]bete|contrata (el|tu) programa/i;
+const CONCRETE_MATERIAL_PROPOSAL = /gu[ií]a|lista|hoja|documento|material|resumen|glosario|ficha|checklist|listado|curso (completo|descargable)|pdf/i;
+const INITIATIVE_MARKERS = /empecemos|practiquemos|vamos a|te propongo|comencemos|hagamos|probemos con|arranquemos/i;
+const CORRECTION_MARKERS = /en realidad se dice|la forma correcta|peque[ñn]o detalle|ojo con|corrijo|mejor dicho|se dice.{0,15}en vez de/i;
+const MARKDOWN_HEAVY = (text: string) => (text.match(/\|/g) || []).length > 4 || (text.match(/^#{1,3}\s/gm) || []).length > 1;
+
+async function runWillyMotorShadowBenchmark(): Promise<Record<string, unknown>> {
+  type HistTurn = { role: 'user' | 'assistant'; content: string };
+  const families: Record<string, unknown> = {};
+
+  // 1) BASE INTELLIGENCE — proportionality on a plain general-knowledge ask.
+  {
+    const msg = '¿Por qué el cielo es azul? Respóndeme de forma breve.';
+    const seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 5 };
+    const seek = await callChatAPI(msg, seekState);
+    const willy = await callWillyMotor([], msg, { ...seekState, entitlements: { plan: 'free' } });
+    families.BASE_INTELLIGENCE = {
+      sent: msg,
+      SEEK: { response: seek.message, chars: seek.chars },
+      WILLY: { response: willy.message, chars: willy.message.length },
+      note: 'Shorter, more proportional response to an explicit "briefly" ask is the better result on this dimension.',
+      winnerHint: willy.message.length <= seek.chars ? 'WILLY' : 'SEEK',
+    };
+  }
+
+  // 2) TUTOR BEHAVIOR — user states only a bare goal, designs no pedagogy themselves.
+  {
+    const msg = 'Quiero aprender/practicar español.';
+    const seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+    const seek = await callChatAPI(msg, seekState);
+    const willy = await callWillyMotor([], msg, { ...seekState, entitlements: { plan: 'free' } });
+    families.TUTOR_BEHAVIOR = {
+      sent: msg,
+      SEEK: { response: seek.message, initiativeTaken: INITIATIVE_MARKERS.test(seek.message) },
+      WILLY: { response: willy.message, initiativeTaken: INITIATIVE_MARKERS.test(willy.message) },
+      note: 'Pass = takes a concrete first pedagogical step rather than only asking the user to design their own lesson.',
+    };
+  }
+
+  // 3) ZAKIA — profile reveal, level uncertainty, DELE request, then a
+  // natural (non-literal) printable-material request in context.
+  {
+    const msgs = [
+      'Hola, soy Zakia. Trabajo en un restaurante y quiero aprender español para la ciudadanía española.',
+      'No sé en qué nivel estoy, nunca he estudiado español formalmente.',
+      'Quiero hacer ejercicios parecidos al examen DELE.',
+      'Quiero algo que pueda imprimir y usar sola para seguir preparando el DELE A2, con ejemplos que me sirvan también en mi trabajo en el restaurante.',
+    ];
+    let seekHist: HistTurn[] = [];
+    let seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+    const seekTurns: Array<{ sent: string; hadArtifact: boolean; responsePreview: string }> = [];
+    for (const m of msgs) {
+      const r = await callChatAPI(m, seekState, { conversationHistory: seekHist });
+      if (r.state) seekState = r.state as typeof seekState;
+      seekHist = [...seekHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      seekTurns.push({ sent: m, hadArtifact: !!r.artifact, responsePreview: r.message.slice(0, 250) });
+    }
+    let willyHist: HistTurn[] = [];
+    const willyTurns: Array<{ sent: string; proposesMaterial: boolean; responsePreview: string }> = [];
+    for (const m of msgs) {
+      const r = await callWillyMotor(willyHist, m, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', entitlements: { plan: 'free' } });
+      willyHist = [...willyHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      willyTurns.push({ sent: m, proposesMaterial: CONCRETE_MATERIAL_PROPOSAL.test(r.message), responsePreview: r.message.slice(0, 250) });
+    }
+    families.ZAKIA = {
+      SEEK: seekTurns,
+      WILLY: willyTurns,
+      printableRequestCheck: {
+        SEEK_materialized: seekTurns[3].hadArtifact,
+        WILLY_proposed: willyTurns[3].proposesMaterial,
+      },
+      note: 'WILLY has no artifact pipeline in this shadow run, so it can only PROPOSE, never materialize — that is a structural guarantee, not a measured behavior.',
+    };
+  }
+
+  // 4) MEMORY — turn-1 facts required for turn-4 literal recall.
+  {
+    const msgs = [
+      'Soy Lars. Trabajo en NordBygg, una empresa noruega de construcción. En abril tengo una reunión en Bogotá con un proveedor.',
+      'Nunca he estudiado español formalmente.',
+      'Quiero practicar vocabulario de construcción y negociación.',
+      'Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la reunión y en qué ciudad será.',
+    ];
+    let seekHist: HistTurn[] = [];
+    let seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+    let seekLast = '';
+    for (const m of msgs) {
+      const r = await callChatAPI(m, seekState, { conversationHistory: seekHist });
+      if (r.state) seekState = r.state as typeof seekState;
+      seekHist = [...seekHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      seekLast = r.message;
+    }
+    let willyHist: HistTurn[] = [];
+    let willyLast = '';
+    for (const m of msgs) {
+      const r = await callWillyMotor(willyHist, m, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', entitlements: { plan: 'free' } });
+      willyHist = [...willyHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      willyLast = r.message;
+    }
+    function recall(t: string) {
+      const l = t.toLowerCase();
+      return { company: l.includes('nordbygg'), month: l.includes('abril'), city: l.includes('bogot') };
+    }
+    families.MEMORY = {
+      SEEK: { response: seekLast, recall: recall(seekLast) },
+      WILLY: { response: willyLast, recall: recall(willyLast) },
+    };
+  }
+
+  // 5) LANGUAGE AUTHORITY — Arabic message, realistic English interfaceLanguage default.
+  {
+    const arabicMsg = 'مرحبا، اسمي زكية. أريد أن أتعلم الإسبانية لأني أعمل في مطعم وأريد الحصول على الجنسية الإسبانية.';
+    const seek = await callChatAPI(arabicMsg, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', tokens: 0 });
+    const willy = await callWillyMotor([], arabicMsg, { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'en', entitlements: { plan: 'free' } });
+    const hasArabic = (t: string) => /[؀-ۿ]/.test(t);
+    families.LANGUAGE_AUTHORITY = {
+      sent: arabicMsg,
+      interfaceLanguageStored: 'en',
+      SEEK: { response: seek.message, respondedInArabic: hasArabic(seek.message) },
+      WILLY: { response: willy.message, respondedInArabic: hasArabic(willy.message) },
+      note: 'WILLY is told to infer the real language from the words, not from a script/default — this is the exact "script ≠ language" distinction still open on the SEEK side.',
+    };
+  }
+
+  // 6) PEDAGOGICAL INITIATIVE — a mildly incorrect sentence, no correction requested.
+  {
+    const msg = 'Yo soy cansado hoy porque trabajo mucho ayer.';
+    const seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 20 };
+    const seek = await callChatAPI(msg, seekState);
+    const willy = await callWillyMotor([], msg, { ...seekState, entitlements: { plan: 'free' } });
+    families.PEDAGOGICAL_INITIATIVE = {
+      sent: msg,
+      SEEK: { response: seek.message, correctedUnprompted: CORRECTION_MARKERS.test(seek.message) },
+      WILLY: { response: willy.message, correctedUnprompted: CORRECTION_MARKERS.test(willy.message) },
+    };
+  }
+
+  // 7) VOICE-READY BEHAVIOR — conversational register, should avoid heavy markdown.
+  {
+    const msg = 'Cuéntame qué vamos a hacer hoy, como si me lo dijeras hablando, no leyendo.';
+    const seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 10 };
+    const seek = await callChatAPI(msg, seekState);
+    const willy = await callWillyMotor([], msg, { ...seekState, entitlements: { plan: 'free' } });
+    families.VOICE_READY = {
+      sent: msg,
+      SEEK: { response: seek.message, markdownHeavy: MARKDOWN_HEAVY(seek.message) },
+      WILLY: { response: willy.message, markdownHeavy: MARKDOWN_HEAVY(willy.message) },
+    };
+  }
+
+  // 8) ARTIFACTS — need is implied, not asked; AUTHOR must not hijack into MATERIALIZE.
+  {
+    const msgs = [
+      'Estoy preparando una negociación de contrato importante la próxima semana y quiero llegar con vocabulario sólido.',
+      '¿Qué frases clave debería dominar para sonar profesional en esa reunión?',
+    ];
+    let seekHist: HistTurn[] = [];
+    let seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'nick', interfaceLanguage: 'es', tokens: 0 };
+    const seekTurns: Array<{ sent: string; hadArtifact: boolean }> = [];
+    for (const m of msgs) {
+      const r = await callChatAPI(m, seekState, { conversationHistory: seekHist });
+      if (r.state) seekState = r.state as typeof seekState;
+      seekHist = [...seekHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      seekTurns.push({ sent: m, hadArtifact: !!r.artifact });
+    }
+    let willyHist: HistTurn[] = [];
+    const willyTurns: Array<{ sent: string; proposesMaterial: boolean }> = [];
+    let willyLastMsg = '';
+    for (const m of msgs) {
+      const r = await callWillyMotor(willyHist, m, { ...WILLY_INITIAL_STATE, mentorProfile: 'nick', interfaceLanguage: 'es', entitlements: { plan: 'free' } });
+      willyHist = [...willyHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
+      willyTurns.push({ sent: m, proposesMaterial: CONCRETE_MATERIAL_PROPOSAL.test(r.message) });
+      willyLastMsg = r.message;
+    }
+    families.ARTIFACTS = {
+      SEEK: seekTurns,
+      WILLY: willyTurns,
+      willyLastResponsePreview: willyLastMsg.slice(0, 250),
+      seekMaterializedWithoutExplicitRequest: seekTurns.some((t) => t.hadArtifact),
+      note: 'PASS for both = proposes/conceives material in prose, never silently materializes a file from an implied need alone.',
+    };
+  }
+
+  // 9) GENERAL-PURPOSE INTELLIGENCE — off-domain compound question, no artificial degradation.
+  {
+    const msg = 'Dame una introducción seria a la acupuntura china: distingue tradición, hipótesis fisiológicas y evidencia clínica moderna.';
+    const seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 50 };
+    const seek = await callChatAPI(msg, seekState);
+    const willy = await callWillyMotor([], msg, { ...seekState, entitlements: { plan: 'free' } });
+    families.GENERAL_PURPOSE_INTELLIGENCE = {
+      sent: msg,
+      SEEK: { response: seek.message, chars: seek.chars, mentionsEvidence: /evidencia/i.test(seek.message), mentionsTradition: /tradici[oó]n/i.test(seek.message) },
+      WILLY: { response: willy.message, chars: willy.message.length, mentionsEvidence: /evidencia/i.test(willy.message), mentionsTradition: /tradici[oó]n/i.test(willy.message) },
+    };
+  }
+
+  // 10) COMMERCIAL ISOLATION — same pedagogical need, travel-adjacent wording,
+  // but session state deliberately BELOW the deterministic trigger threshold.
+  // Neither path should inject a sales pitch on its own initiative.
+  {
+    const msg = 'Algún día me gustaría viajar a España, pero ahora solo quiero aprender vocabulario básico de comida.';
+    const lowScoreState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 5, userLevel: 'A1', samples: [] };
+    const seek = await callChatAPI(msg, lowScoreState);
+    const willyFree = await callWillyMotor([], msg, { ...lowScoreState, entitlements: { plan: 'free' } });
+    const willyPremium = await callWillyMotor([], msg, { ...lowScoreState, entitlements: { plan: 'premium' } });
+    families.COMMERCIAL_ISOLATION = {
+      sent: msg,
+      SEEK: { response: seek.message, leaked: SALES_PITCH_MARKERS.test(seek.message) },
+      WILLY_FREE: { response: willyFree.message, leaked: SALES_PITCH_MARKERS.test(willyFree.message) },
+      WILLY_PREMIUM: { response: willyPremium.message, leaked: SALES_PITCH_MARKERS.test(willyPremium.message), selfGrantedExtraVsFree: willyPremium.message.length > willyFree.message.length + 400 },
+      note: 'Pass for both = no unprompted commercial pitch below the deterministic score threshold, and WILLY does not self-expand capability just because entitlements said "premium" — it should still only act on what the CONVERSATION asked for.',
+    };
+  }
+
+  return {
+    harness: 'willy_motor_shadow_benchmark',
+    governance: 'SHADOW-SAFE BY CONSTRUCTION: WILLY side is a raw completion with no tool/artifact/entitlement/memory write access. No production state, canonical memory, or commercial side effect was touched by this run.',
+    scopeNote: '10/10 required families covered, 1 representative scenario per family (not the full 15-20 scenario benchmark). First real evidence pass, not final certification.',
+    families,
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('willy_motor_shadow_benchmark')) {
+    return runWillyMotorShadowBenchmark();
+  }
   if (prompt && prompt.startsWith('language_continuity_test')) {
     return runLanguageContinuityTest();
   }
@@ -880,8 +1170,8 @@ async function runP17TestPlan(): Promise<Record<string, unknown>> {
     const a2 = await callChatAPI('', { ...WILLY_INITIAL_STATE, interfaceLanguage: 'es' }, { audioDataUrl: ttsA.url, audioMimeType: 'audio/mpeg', pronunciationTarget: targetPhrase });
     const a1Lower = a1.message.toLowerCase();
     const a2Lower = a2.message.toLowerCase();
-    const a1ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|\u2192/.test(a1Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a1Lower);
-    const a2ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|\u2192/.test(a2Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a2Lower);
+    const a1ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|→/.test(a1Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a1Lower);
+    const a2ClaimsError = /error|incorrect|deber[ií]as|correcci[oó]n|en vez de|→/.test(a2Lower) && !/ninguno detectado|sin errores|no errors|no error/.test(a2Lower);
     testA = {
       target: targetPhrase,
       attempt1: a1.message.slice(0, 400),
@@ -1405,7 +1695,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free). No browser needed.' },
   ];
 }
 
