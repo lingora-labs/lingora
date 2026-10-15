@@ -731,11 +731,11 @@ async function runWillyMotorShadowBenchmark(): Promise<Record<string, unknown>> 
       'Antes de seguir, recuérdame el nombre de mi empresa, cuándo es la reunión y en qué ciudad será.',
     ];
     let seekHist: HistTurn[] = [];
-    let seekState = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
+    let seekState: Record<string, unknown> = { ...WILLY_INITIAL_STATE, mentorProfile: 'sarah', interfaceLanguage: 'es', tokens: 0 };
     let seekLast = '';
     for (const m of msgs) {
       const r = await callChatAPI(m, seekState, { conversationHistory: seekHist });
-      if (r.state) seekState = r.state as typeof seekState;
+      if (r.state) seekState = r.state as Record<string, unknown>;
       seekHist = [...seekHist, { role: 'user', content: m }, { role: 'assistant', content: r.message }];
       seekLast = r.message;
     }
@@ -1456,7 +1456,118 @@ async function runWillyMotorShadowBenchmarkV3(): Promise<Record<string, unknown>
   };
 }
 
+// ============================================================
+// WILLY MOTOR SHADOW BENCHMARK — V4 (DERIVED STATE ABLATION)
+//
+// Per AE's review of V3 ("AUDIT — WILLY MOTOR SHADOW V3"):
+//
+//   V3 TEST B killed the simple "more tokens breaks tool-calling"
+//   explanation (B1 ~1.5k tokens called the tool; B2 ~1.56k tokens —
+//   almost the same size as B1 — did NOT; B3 ~13k also did not). The
+//   variable that actually changed between B1 and B2/B3 was not size
+//   but the presence of three "soft derived state" (interpretive)
+//   fields: lastConcept, lastUserGoal, confirmedLevel. AE's hallazgo:
+//   "la composición del state pack altera el policy behavior del
+//   modelo" — and AE explicitly declined to name any single field
+//   "the culprit" from V3 alone, authorizing instead a single-field/
+//   combination ablation ("V4 — DERIVED STATE ABLATION") as "pequeño,
+//   barato" and the one test AE wants run before any full-benchmark
+//   or architecture decision: "V4 debe ser el último experimento de
+//   aislamiento antes de volver a decisión de arquitectura."
+//
+// V4 holds IDENTICAL to V3: same Zakia fixture (same history, same
+// model, same turn-4 message, same tool, same entitlements). It
+// varies ONLY which of the three soft-derived fields are present in
+// the turn-4 state pack, across all 8 combinations (minimal base,
+// each single field, each pair, and all three), and — per AE's own
+// instruction that V3's 1-shot TEST C/D style runs "no sirve para
+// evaluar tool reliability" — each of the 8 variants is run 5x, not
+// once, exactly like V3 TEST A.
+//
+// Unchanged from V2/V3: WILLY_MOTOR_PURPOSE_CONTRACT is NOT touched.
+// No production change. Shadow-safe by construction: same SHADOW
+// TOOL CAPTURE as V3 (tool_calls recorded, never executed).
+// ============================================================
+
+async function runTestV4_DerivedStateAblation(fixture: ZakiaFixture): Promise<Record<string, unknown>> {
+  const turn4Msg = fixture.msgs[3];
+  const base = fixture.fullStatePackTurn4;
+  const minimalState: Record<string, unknown> = {
+    interfaceLanguage: base.interfaceLanguage,
+    mentorProfile: base.mentorProfile,
+    activeMode: base.activeMode,
+    tokens: base.tokens,
+    userLevel: base.userLevel,
+    entitlements: base.entitlements,
+  };
+  const lastConcept = (base as Record<string, unknown>).lastConcept;
+  const lastUserGoal = (base as Record<string, unknown>).lastUserGoal;
+  const confirmedLevel = (base as Record<string, unknown>).confirmedLevel;
+
+  const variants: Array<{ label: string; pack: Record<string, unknown> }> = [
+    { label: 'BASE_minimal_state', pack: { ...minimalState } },
+    { label: 'PLUS_lastConcept', pack: { ...minimalState, lastConcept } },
+    { label: 'PLUS_lastUserGoal', pack: { ...minimalState, lastUserGoal } },
+    { label: 'PLUS_confirmedLevel', pack: { ...minimalState, confirmedLevel } },
+    { label: 'PLUS_lastConcept_lastUserGoal', pack: { ...minimalState, lastConcept, lastUserGoal } },
+    { label: 'PLUS_lastConcept_confirmedLevel', pack: { ...minimalState, lastConcept, confirmedLevel } },
+    { label: 'PLUS_lastUserGoal_confirmedLevel', pack: { ...minimalState, lastUserGoal, confirmedLevel } },
+    { label: 'PLUS_all_three', pack: { ...minimalState, lastConcept, lastUserGoal, confirmedLevel } },
+  ];
+
+  const variantResults: Array<Record<string, unknown>> = [];
+  for (const variant of variants) {
+    const runs: Array<{ run: number; toolCallCount: number; toolCalls: unknown; message: string; promptTokens: number | null; durationMs: number }> = [];
+    for (let i = 1; i <= 5; i++) {
+      const r = await callWillyMotorToolAware(fixture.willyHistUpToTurn3, turn4Msg, variant.pack);
+      runs.push({
+        run: i,
+        toolCallCount: r.toolCalls.length,
+        toolCalls: r.toolCalls,
+        message: r.message,
+        promptTokens: r.usage?.promptTokens ?? null,
+        durationMs: r.durationMs,
+      });
+    }
+    const successCount = runs.filter((rr) => rr.toolCallCount > 0).length;
+    variantResults.push({
+      label: variant.label,
+      statePackJsonLength: JSON.stringify(variant.pack).length,
+      fieldsPresent: Object.keys(variant.pack).filter((k) => ['lastConcept', 'lastUserGoal', 'confirmedLevel'].includes(k)),
+      toolCallReliability: `${successCount}/5`,
+      successCount,
+      runs,
+    });
+  }
+
+  return {
+    harness: 'test_v4_derived_state_ablation',
+    sent: turn4Msg,
+    variants: variantResults,
+    summaryTable: variantResults.map((r) => ({ state: (r as Record<string, unknown>).label, toolCalls: (r as Record<string, unknown>).toolCallReliability })),
+    note: 'Single- and paired-field ablation grid over the three "soft derived state" fields AE flagged in the V3 review (lastConcept, lastUserGoal, confirmedLevel), holding history, model, turn-4 message, tool, and entitlements IDENTICAL to V3 (same Zakia fixture). Each of the 8 variants is run 5x, per AE\'s explicit instruction that a single run cannot evaluate tool-call reliability (V3\'s own TEST A showed 4/5 variance at constant context size). This is AE\'s authorized "V4 — DERIVED STATE ABLATION": the last isolation experiment before a full-benchmark/maturity decision, per AE\'s own stated limit.',
+    governanceNote: 'Purpose contract UNCHANGED from V2/V3. No production change. Shadow-safe by construction — same SHADOW TOOL CAPTURE as V3: tool_calls recorded, never executed.',
+  };
+}
+
+async function runWillyMotorShadowBenchmarkV4(): Promise<Record<string, unknown>> {
+  const fixture = await prepareZakiaFixture();
+  const testV4 = await runTestV4_DerivedStateAblation(fixture);
+
+  return {
+    harness: 'willy_motor_shadow_benchmark_v4',
+    governance: 'SHADOW-SAFE BY CONSTRUCTION, same as V1/V2/V3: WILLY calls are raw completions with SHADOW TOOL CAPTURE (tool_calls recorded, never executed). No production state, canonical memory, entitlement, or commercial side effect was touched anywhere in this run.',
+    configurationNote: 'WILLY_MOTOR_PURPOSE_CONTRACT is UNCHANGED from V2/V3 in this entire pass — no prompt reinforcement was tested here, so every result below is directly comparable to V2/V3 under the same configuration.',
+    scopeNote: 'Per AE\'s review of the V3 report ("AUDIT — WILLY MOTOR SHADOW V3"): V3 showed the critical variable between B1 (tool called) and B2/B3 (tool not called) was not token size but the presence of soft-derived-state fields (lastConcept, lastUserGoal, confirmedLevel). AE declined to name a single "culprit" field from V3 alone and authorized this single-field/combination ablation, run 5x per variant, as the one microtest to run before any full-benchmark sweep or architecture decision — explicitly the LAST isolation experiment before that decision ("V4 debe ser el último experimento de aislamiento antes de volver a decisión de arquitectura"). This pass does not touch the purpose contract, does not run the broader scenario sweep, and does not extend the long-horizon scenario.',
+    instrumentationNote: 'durationMs and token usage are captured for every WILLY call in this pass, exactly as in V3.',
+    TEST_V4_DERIVED_STATE_ABLATION: testV4,
+  };
+}
+
 export async function runDiagnostic(prompt?: string): Promise<Record<string, unknown>> {
+  if (prompt && prompt.startsWith('willy_motor_shadow_benchmark_v4')) {
+    return runWillyMotorShadowBenchmarkV4();
+  }
   if (prompt && prompt.startsWith('willy_motor_shadow_benchmark_v3')) {
     return runWillyMotorShadowBenchmarkV3();
   }
@@ -2288,7 +2399,7 @@ export function toolCatalog() {
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
     { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
-    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). No browser needed.' },
+    { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). Also runs willy_motor_shadow_benchmark_v4 (fourth pass, same unmodified purpose contract: AE-authorized derived-state ablation grid — single-field and paired-field combinations of lastConcept/lastUserGoal/confirmedLevel, each run 5x, history/model/turn/tool/entitlements held identical to V3 — the final isolation microtest before any full-benchmark or architecture decision). No browser needed.' },
   ];
 }
 
