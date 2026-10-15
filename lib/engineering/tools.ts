@@ -1,5 +1,5 @@
 import { ALLOWED_OWNER, ALLOWED_REPO, assertRepo, gh } from './github-app';
-import { POLICY, forbidDestructive, resolveBranch } from './policy';
+import { POLICY, forbidDestructive, resolveBranch, assertBranchWritable } from './policy';
 import { CANONICAL_PRODUCT_URL } from '../product';
 
 type GhRef = { object: { sha: string } };
@@ -2340,11 +2340,13 @@ async function putFile(path: string, content: string, message: string, branch: s
 
 export async function writeFile(path: string, content: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertBranchWritable(b); // GATE-01: no direct writes to main from this or any internal command
   return putFile(path, content, message, b);
 }
 
 export async function writeFiles(files: Array<{ path: string; content: string }>, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertBranchWritable(b); // GATE-01: no direct writes to main from this or any internal command
   if (files.length === 1) return writeFile(files[0].path, files[0].content, message, b);
 
   const head = await getHeadSha(b);
@@ -2371,6 +2373,7 @@ export async function writeFiles(files: Array<{ path: string; content: string }>
 
 export async function deleteFile(path: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertBranchWritable(b); // GATE-01: no direct writes to main from this or any internal command
   const existing = await readFile(path, b);
   if (!existing.found || !existing.sha) throw new Error(`File not found: ${path}`);
   const { status, data } = await gh<{ commit: { sha: string } }>('DELETE', `${repoPath()}/contents/${encodeURIComponent(path)}`, { message, sha: existing.sha, branch: b });
@@ -2388,6 +2391,27 @@ export async function rollbackCommit(sha?: string, branch = 'main') {
   if (!parent) throw new Error('Cannot revert: no parent');
   if (target !== head) throw new Error('rollback_commit currently reverts only HEAD (no history rewrite)');
   const { data: parentCommit } = await gh<{ commit: { tree: { sha: string } } }>('GET', `${repoPath()}/commits/${parent}`);
+
+  // GATE-01: a revert is a write like any other — it must land on its own
+  // branch and go through a reviewed, checked pull request, never patched
+  // directly onto main's (or any protected branch's) ref. This removes the
+  // one path that previously bypassed the review requirement entirely.
+  if (b === 'main' && !POLICY.mainWrite) {
+    const revertBranchName = `revert/${target.slice(0, 7)}-${Date.now()}`;
+    await createBranch(revertBranchName, b);
+    const { status, data: newCommit } = await gh<{ sha: string }>('POST', `${repoPath()}/git/commits`, { message: `lingora(mcp): revert ${target.slice(0, 7)}`, tree: parentCommit.commit.tree.sha, parents: [head] });
+    if (status >= 400) throw new Error(`revert commit failed: ${JSON.stringify(newCommit)}`);
+    const { status: rs, data: ref } = await gh('PATCH', `${repoPath()}/git/refs/heads/${revertBranchName}`, { sha: newCommit.sha, force: false });
+    if (rs >= 400) throw new Error(`revert ref failed: ${JSON.stringify(ref)}`);
+    return {
+      reverted: target,
+      revertBranch: revertBranchName,
+      revertCommit: newCommit.sha,
+      branch: b,
+      note: 'GATE-01: revert staged on its own branch, not applied to main. Open a pull request from this branch and merge it through the normal reviewed/checked path to land the revert.',
+    };
+  }
+
   const { status, data: newCommit } = await gh<{ sha: string }>('POST', `${repoPath()}/git/commits`, { message: `lingora(mcp): revert ${target.slice(0, 7)}`, tree: parentCommit.commit.tree.sha, parents: [head] });
   if (status >= 400) throw new Error(`revert commit failed: ${JSON.stringify(newCommit)}`);
   const { status: rs, data: ref } = await gh('PATCH', `${repoPath()}/git/refs/heads/${b}`, { sha: newCommit.sha, force: false });
@@ -2411,7 +2435,62 @@ export async function getPullRequest(number: number) {
   return data;
 }
 
+type GhPrSummary = { number: number; title: string; state: string; user: { login: string } | null; head: { sha: string } };
+type GhReview = { state: string; user: { login: string } | null };
+type GhCheckRunsResponse = { check_runs: Array<{ name: string; status: string; conclusion: string | null }> };
+
+async function fetchMergeGateInputs(number: number) {
+  const { data: pr } = await gh<GhPrSummary>('GET', `${repoPath()}/pulls/${number}`);
+  const { data: reviewsRaw } = await gh<GhReview[]>('GET', `${repoPath()}/pulls/${number}/reviews`);
+  const reviews = Array.isArray(reviewsRaw) ? reviewsRaw : [];
+  const prAuthor = pr.user?.login ?? null;
+  const approvals = reviews.filter((r) => r.state === 'APPROVED');
+  const independentApprovals = approvals.filter((r) => r.user?.login && r.user.login !== prAuthor);
+
+  const headSha = pr.head?.sha;
+  const { data: checkRunsRaw } = await gh<GhCheckRunsResponse>('GET', `${repoPath()}/commits/${headSha}/check-runs`);
+  const runs = checkRunsRaw?.check_runs ?? [];
+  const allChecksPassing = runs.length > 0 && runs.every((r) => r.status === 'completed' && r.conclusion === 'success');
+
+  return { pr, prAuthor, approvals, independentApprovals, headSha, runs, allChecksPassing };
+}
+
+// GATE-01 (AE "STOP DE ARQUITECTURA", 15.10.2026): read-only report of
+// whether mergePullRequest() would currently be allowed for this PR —
+// independent human approval present, and all required checks passing —
+// WITHOUT merging anything. Use this to inspect gate status before acting.
+export async function checkMergeGate(number: number) {
+  const { pr, prAuthor, approvals, independentApprovals, headSha, runs, allChecksPassing } = await fetchMergeGateInputs(number);
+  return {
+    number,
+    title: pr.title,
+    state: pr.state,
+    author: prAuthor,
+    headSha,
+    approvals: approvals.map((r) => r.user?.login ?? null),
+    hasIndependentApproval: independentApprovals.length > 0,
+    checkRuns: runs.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion })),
+    allChecksPassing,
+    mergeGateWouldPass: independentApprovals.length > 0 && allChecksPassing,
+  };
+}
+
 export async function mergePullRequest(number: number) {
+  if (POLICY.requireIndependentApprovalForMerge || POLICY.requireChecksForMerge) {
+    const { prAuthor, independentApprovals, headSha, runs, allChecksPassing } = await fetchMergeGateInputs(number);
+
+    if (POLICY.requireIndependentApprovalForMerge && independentApprovals.length === 0) {
+      throw new Error(
+        `Policy (GATE-01): merge blocked — PR #${number} has no APPROVED review from anyone other than its own author (${prAuthor ?? 'unknown'}). An AI-authored approval or declaration does not satisfy this.`,
+      );
+    }
+    if (POLICY.requireChecksForMerge && !allChecksPassing) {
+      throw new Error(
+        `Policy (GATE-01): merge blocked — PR #${number} head ${headSha} has ${runs.length === 0 ? 'no check runs at all' : 'failing or incomplete check runs'}. All required checks must complete with conclusion "success" before merge.`,
+      );
+    }
+  }
+
   const { status, data } = await gh<{ merged: boolean; sha: string }>('PUT', `${repoPath()}/pulls/${number}/merge`, { merge_method: 'squash' });
   if (status >= 400) throw new Error(`merge failed: ${JSON.stringify(data)}`);
   return data;
@@ -2426,15 +2505,16 @@ export function toolCatalog() {
     { name: 'read_files', description: 'Read multiple text files' },
     { name: 'get_commit', description: 'Commit metadata by SHA or ref' },
     { name: 'compare_refs', description: 'Compare two refs' },
-    { name: 'write_file', description: 'Create or update one file. branch may be main.' },
-    { name: 'write_files', description: 'Atomic multi-file commit. branch may be main.' },
-    { name: 'delete_file', description: 'Delete one file on a branch' },
+    { name: 'write_file', description: 'Create or update one file on a branch. GATE-01: direct writes to main are refused (Policy error) — use a feature branch and a pull request.' },
+    { name: 'write_files', description: 'Atomic multi-file commit on a branch. GATE-01: direct writes to main are refused (Policy error) — use a feature branch and a pull request.' },
+    { name: 'delete_file', description: 'Delete one file on a branch. GATE-01: direct deletes on main are refused (Policy error) — use a feature branch and a pull request.' },
     { name: 'create_branch', description: 'Create a branch from main or given SHA source' },
-    { name: 'rollback_commit', description: 'Revert HEAD via new commit (no force push)' },
+    { name: 'rollback_commit', description: 'Revert a commit. GATE-01: when targeting main, stages the revert on its own new branch instead of writing to main directly — open a pull request from that branch to land it.' },
     { name: 'create_pull_request', description: 'Open a PR' },
     { name: 'get_pull_request', description: 'Read one PR' },
     { name: 'list_pull_requests', description: 'List PRs' },
-    { name: 'merge_pull_request', description: 'Squash-merge a PR when policy allows' },
+    { name: 'merge_pull_request', description: 'GATE-01: squash-merges a PR only if it has an APPROVED review from someone other than its own author AND all check-runs on its head SHA completed with conclusion "success" (zero check-runs also blocks the merge). An AI-written approval declaration does not satisfy the independent-review requirement. Throws a Policy error naming exactly which condition failed otherwise.' },
+    { name: 'check_merge_gate', description: 'GATE-01: read-only report of whether merge_pull_request would currently be allowed for this PR (independent approval present? all checks passing?) — does not merge anything.' },
     { name: 'run_diagnostic', description: 'Run WILLY FREE ("willy"), WILLY with binary escrow of PDF artifacts ("willy_escrow"), a custom prompt, decision_harness:<N>, decision_harness_json:<N>, audio_roundtrip, voice_loop, product_test_a/b/c, p17_test_plan, p18_first_turn, p18_action_trace, p19_validation, zakia_replay_test, simple_proportionality_test, general_control_comparison, final_certification_sweep, zakia_real_replay, or language_continuity_test (Arabic message with a realistic English interfaceLanguage default — isolates whether the mentor follows the student\'s actual written language).  Also runs willy_motor_shadow_benchmark (CEO-authorized shadow comparison: current SEEK production path vs a tool-less WILLY Motor purpose-contract path, same real conversation/state, across the 10 required test families; structurally side-effect-free).  Also runs willy_motor_shadow_benchmark_v2 (second pass: tool-intent symmetry via SHADOW TOOL CAPTURE, entitlement-gated cognition free-vs-premium, and a bounded 16-turn long-horizon coherence scenario — same shadow-safe-by-construction guarantee). Also runs willy_motor_shadow_benchmark_v3 (third pass, same unmodified purpose contract as V2: isolates the V2 turn-4 tool-call-failure mechanism via 4 targeted tests — 5x reproducibility, state-pack size/composition with history held constant, a no-history control, and tool-called-vs-text-emitted-vs-text-useful for FREE/PREMIUM — before any broader scenario sweep). Also runs willy_motor_shadow_benchmark_v4 (fourth pass, same unmodified purpose contract: AE-authorized derived-state ablation grid — single-field and paired-field combinations of lastConcept/lastUserGoal/confirmedLevel, each run 5x, history/model/turn/tool/entitlements held identical to V3 — the final isolation microtest before any full-benchmark or architecture decision). Also runs willy_d5_audio_continuity_v1 (AE FAST TRACK, D5 priority directive 15.10.2026: first real audio->STT->WILLY->TTS circuit — real reproducible synthesized input audio via generateSpeech(), genuine seeded WILLY context, runWillyAudioRoundtrip() invoked for the first time in this workstream, isolation verified pre- and post-hoc, lexical continuity heuristic; n=1 first circuit, not the frozen D5 scorecard\'s 3 repetitions). Also runs willy_stt_isolation_forensic_v1 (AE bounded forensic directive 15.10.2026, §4: synthesizes ONE fixed audio sample via generateSpeech(), records its SHA-256, then calls transcribeAudio() 3 independent times on the SAME bytes — isolates whisper-1 stability/determinism with no WILLY call anywhere in the path; independent of and does not alter the frozen D5_MULTIMODAL_CONTINUITY scorecard). No browser needed.' },
   ];
 }
@@ -2464,6 +2544,7 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
     case 'get_pull_request': return getPullRequest(Number(args.number));
     case 'list_pull_requests': return listPullRequests((args.state as 'open' | 'closed' | 'all') || 'open');
     case 'merge_pull_request': return mergePullRequest(Number(args.number));
+    case 'check_merge_gate': return checkMergeGate(Number(args.number));
     case 'run_diagnostic': return runDiagnostic(args.prompt ? String(args.prompt) : undefined);
     default: throw new Error(`Unknown tool: ${name}`);
   }
