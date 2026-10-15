@@ -1085,3 +1085,111 @@ export async function runWillyD5AudioContinuityV1(): Promise<Record<string, unkn
 
   return report;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 10. STT ISOLATION FORENSIC — bounded diagnostic authorized by AE
+//     ("DICTAMEN D5: ANOMALÍA DE CONTINUIDAD MULTIMODAL", 15.10.2026, §4).
+//     Scope, exactly as AE specified: synthesize ONE fixed audio sample,
+//     record its SHA-256 and source text, then run transcribeAudio() on
+//     the SAME bytes multiple independent times. This isolates whether STT
+//     (whisper-1) itself is unstable on identical input, WITHOUT involving
+//     WILLY at all — no callWillyMotorToolAware call anywhere in this
+//     function. Per AE's explicit instructions: does not reopen D1-D4,
+//     does not modify WILLY, does not alter the frozen D5 scorecard. This
+//     is an independent diagnostic, not an extension or repetition of D5.
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function runWillySttIsolationForensicV1(): Promise<Record<string, unknown>> {
+  const report: Record<string, unknown> = {
+    harness: 'willy_stt_isolation_forensic_v1',
+    authorization:
+      'AE "DICTAMEN D5: ANOMALÍA DE CONTINUIDAD MULTIMODAL" (15.10.2026), §4: "Autorizo un experimento acotado exclusivamente a determinar dónde aparece la divergencia STT... sintetizar una única muestra de audio, conservar su hash y utilizar exactamente los mismos bytes de entrada en varias transcripciones independientes." Independent diagnostic — does not call WILLY, does not reopen D1-D4, does not modify the frozen D5_MULTIMODAL_CONTINUITY scorecard.',
+    scope:
+      'Isolates STT (whisper-1) stability on a single fixed audio input, decoupled entirely from WILLY and from D5\'s own continuity question. A finding here neither confirms nor replaces the D5 (n=3) result already closed and recorded by AE.',
+  };
+
+  // Same production generateSpeech() function D5 already uses — never a
+  // second/mocked audio system. The text is reused verbatim from the D5
+  // recall question so this forensic probe is directly comparable to the
+  // audio D5 synthesizes, including the specific run that diverged.
+  const sourceText = 'Recuérdame, ¿en qué ciudad es mi videollamada, en qué mes es, y qué producto voy a negociar?';
+  const { generateSpeech, transcribeAudio } = await import('../../server/tools/audio-toolkit');
+
+  const preFlightIsolation = verifyStorageIsolation();
+  const tts = await generateSpeech(sourceText, { voice: 'nova' });
+
+  if (tts.method === 's3') {
+    report.aislamiento = { preFlight: preFlightIsolation, synthesisMethod: tts.method, violated: true };
+    report.blockedReason = 'AUDIO_SYNTHESIS_ISOLATION_VIOLATION';
+    return report;
+  }
+  if (!tts.success || !tts.url) {
+    report.blockedReason = 'AUDIO_SYNTHESIS_FAILED';
+    report.error = tts.message;
+    return report;
+  }
+  const dataUrlMatch = tts.url.match(/^data:audio\/mpeg;base64,(.+)$/);
+  if (!dataUrlMatch) {
+    report.blockedReason = 'AUDIO_UNEXPECTED_URL_SHAPE';
+    return report;
+  }
+  const audioBase64 = dataUrlMatch[1];
+
+  // Fixed input bytes: the SAME base64 string is reused verbatim for every
+  // transcription call below. No audio is re-synthesized between calls.
+  const { createHash } = await import('crypto');
+  const audioBuffer = Buffer.from(audioBase64, 'base64');
+  const audioSha256 = createHash('sha256').update(audioBuffer).digest('hex');
+
+  report.audioFijo = {
+    sourceText,
+    synthesisMethod: tts.method,
+    byteLength: audioBuffer.length,
+    sha256: audioSha256,
+    note: 'Single audio sample, synthesized once. The identical base64 bytes (verified by this SHA-256) are reused for every transcription call below — never re-synthesized between calls.',
+    // Included so AE/Dirección can perform their own independent auditory
+    // inspection of this exact sample, per AE's explicit request — this
+    // function cannot itself perform human listening.
+    base64DataUrl: tts.url,
+  };
+  report.aislamiento = { preFlight: preFlightIsolation, synthesisMethod: tts.method, violated: false };
+
+  const expectedKeywords = ['ciudad', 'mes', 'producto'];
+  const transcriptions: Array<Record<string, unknown>> = [];
+  for (let i = 1; i <= 3; i++) {
+    try {
+      const result = await transcribeAudio({ data: audioBase64, format: 'mp3' });
+      const lower = (result.text ?? '').toLowerCase();
+      transcriptions.push({
+        attempt: i,
+        success: result.success,
+        text: result.text,
+        language: result.language,
+        matchesExpectedLexically: expectedKeywords.every((k) => lower.includes(k)),
+        error: result.success ? undefined : result.error,
+      });
+    } catch (e) {
+      transcriptions.push({ attempt: i, success: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  report.transcripciones = transcriptions;
+
+  const texts = transcriptions.map((t) => (t.success ? String(t.text ?? '') : null)).filter((t): t is string => t !== null);
+  const allIdentical = texts.length > 0 && texts.every((t) => t === texts[0]);
+  const allMatchExpected = transcriptions.every((t) => t.matchesExpectedLexically === true);
+
+  report.consistenciaVerdict = {
+    allAttemptsSucceeded: transcriptions.every((t) => t.success === true),
+    allTranscriptsIdentical: allIdentical,
+    allTranscriptsMatchExpectedLexically: allMatchExpected,
+    interpretation: !transcriptions.every((t) => t.success === true)
+      ? 'ONE OR MORE TRANSCRIPTION CALLS FAILED OUTRIGHT — see per-attempt errors above. Human review required.'
+      : allIdentical && allMatchExpected
+      ? 'STABLE: identical input bytes produced identical, content-faithful transcripts across all 3 independent calls. Suggests the prior D5 divergence was not a baseline/generic STT instability on this exact audio — review whether it depended on the specific audio generation instance from that D5 run, or on other execution conditions (per AE §4).'
+      : !allIdentical
+      ? 'UNSTABLE: identical input bytes produced DIFFERENT transcripts across calls — direct evidence of whisper-1 non-determinism/instability independent of WILLY or audio generation variance.'
+      : 'Transcripts were identical to each other but did not lexically match the expected source text — possible systematic (not random) misrecognition of this specific audio sample. Human review and auditory inspection of audioFijo.base64DataUrl recommended.',
+  };
+
+  return report;
+}
