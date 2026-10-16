@@ -706,6 +706,26 @@ export interface ExecutionPlan {
   reason: string;
   executionOrder: ExecutionStep[];
   resolvedTopic?: string;
+  // DAE fix (AE-05) — plan-level, executor-agnostic contract-clear flag.
+  // See orchestrator.ts's buildTaskSwitchContinuationPlan(): a redirect
+  // that already states its new instruction in the same turn ("Cambiemos
+  // de tema. Cuéntame sobre la historia de Cartagena.") must clear the
+  // stale pendingDocumentRequest AND let the remainder resolve through
+  // the FULL orchestration pipeline — which may land on any executor
+  // (mentor conversation, a different tool, even a brand-new document
+  // contract). The previously existing clearDocumentContract mechanism
+  // (AE-01/AE-04) only fires inside specific step.params handlers
+  // (collectDocumentParameter's mentor bypass, generateCoursePdf's
+  // success path) — it cannot reach a plan the remainder resolves to
+  // arbitrarily. This flag is read once, generically, by
+  // execution-engine.ts's compileResult() after assembling the normal
+  // per-step statePatch, independent of which executor/action ran. As of
+  // the AE-EXECUTE round (defect H), execution-engine-stream.ts's
+  // executePlanStream() reads the SAME flag through the SAME shared
+  // helper (state-manager.ts's clearDocumentContractIfRequested()), so
+  // blocking and streaming execution can no longer drift apart on this
+  // rule.
+  clearDocumentContract?: boolean;
 }
 
 export interface OrchestrationContext {
@@ -723,8 +743,43 @@ export interface OrchestrationContext {
 // SECTION 8 — STATE MANAGER CONTRACTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type StatePatch = Omit<Partial<SessionState>, 'requestedOperation'> & {
+// DAE fix (AE-EXECUTE round, 2026-10-16, defect C) — TYPED, TRANSPORT-SAFE
+// DELETE SEMANTICS. AE/Work's real-UI QA proved `undefined` is not a safe
+// "delete this field" signal once a patch crosses JSON: `undefined` values
+// are dropped entirely by JSON.stringify (both NextResponse.json in the
+// blocking path and the manual JSON.stringify in execution-engine-stream.ts's
+// SSE emit), so the key is simply ABSENT from the payload the browser
+// receives. app/beta/use-beta-page.ts's client merge (`{ ...s, ...data.state
+// }`) then falls back to whatever OLD value was already in `s`, because the
+// key was never there to overwrite it — the document contract the server
+// considers closed survives in the browser and can be resent on the next
+// turn, resurrecting it server-side. AE required "una semántica explícita,
+// estable y tipada... no utilizar valores undefined como única señal de
+// eliminación entre procesos."
+//
+// Fix: `null` is the ONLY valid explicit-delete sentinel for a clearable
+// field, because `null` (unlike `undefined`) SURVIVES JSON.stringify/parse
+// intact. `undefined` keeps meaning exactly what it always meant — "not
+// touched by this patch" — for every field, clearable or not.
+//
+// CLEARABLE_FIELDS is the single source of truth for which fields accept
+// this sentinel. mergeStatePatch() (server/core/state-manager.ts) and the
+// client merge helper (app/beta/beta-io.ts's applyServerStatePatch(), used
+// by BOTH the blocking and streaming merge sites in use-beta-page.ts) all
+// iterate this SAME list — one shared mechanism read in three places, not
+// three independently-maintained deletion rules. A future clearable field
+// is added here once; buildDocumentContractGate(), mergeStatePatch() and the
+// client merge never need touching by hand again.
+export const CLEARABLE_FIELDS = [
+  'requestedOperation',
+  'pendingDocumentRequest',
+] as const;
+
+export type ClearableField = typeof CLEARABLE_FIELDS[number];
+
+export type StatePatch = Omit<Partial<SessionState>, ClearableField> & {
   requestedOperation?: RequestedOperation | null;
+  pendingDocumentRequest?: PendingDocumentRequest | null;
 };
 
 export interface StateValidationResult {
