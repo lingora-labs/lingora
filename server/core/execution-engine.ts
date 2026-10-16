@@ -207,15 +207,34 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       ) {
         console.log(`[EXEC] Contract clarification bypass: action=${step.action}`);
         const cMsg = step.params.clarificationMessage as string;
-        const contractPatch: StatePatch = step.params?.pendingDocumentRequest
-          ? {
-              pendingDocumentRequest:
-                step.params.pendingDocumentRequest as import('../../lib/contracts').PendingDocumentRequest,
-            }
-          : {};
+        // DAE fix (AE-01) — AE resolución 16.10.2026: this bypass had only
+        // ONE way to affect pendingDocumentRequest — a truthy check on
+        // step.params.pendingDocumentRequest that either SET it to a new
+        // contract object or left it COMPLETELY UNCHANGED (an absent or
+        // falsy pendingDocumentRequest produced contractPatch = {}, which
+        // is dropped to `patch: undefined`, applying no change at all).
+        // There was no way for a plan to explicitly CLEAR the contract
+        // through this path — orchestrator.ts's new cancellation handling
+        // (buildCancelContractPlan) needs exactly that: acknowledge a
+        // withdrawal via collectDocumentParameter's existing text-only
+        // bypass, and durably drop pendingDocumentRequest so the gate does
+        // not re-trigger on the next turn. Reuses the SAME
+        // clearDocumentContract flag already wired (and tested) for the
+        // generateCoursePdf success path below — not a second, parallel
+        // clearing mechanism — so a plan sets EITHER
+        // pendingDocumentRequest (open/collect) OR clearDocumentContract
+        // (cancel), never both.
+        const contractPatch: StatePatch | undefined = step.params?.clearDocumentContract === true
+          ? { pendingDocumentRequest: undefined }
+          : step.params?.pendingDocumentRequest
+            ? {
+                pendingDocumentRequest:
+                  step.params.pendingDocumentRequest as import('../../lib/contracts').PendingDocumentRequest,
+              }
+            : undefined;
         return {
           text: cMsg,
-          patch: Object.keys(contractPatch).length ? contractPatch : undefined,
+          patch: contractPatch,
         };
       }
 
@@ -536,7 +555,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
           const up = (msg ?? '').toUpperCase();
           const cm = up.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/);
           if (cm) return cm[1];
-          const rm = up.match(/\b([A-C][0-2])[-\u2013]([A-C][0-2])\b/);
+          const rm = up.match(/\b([A-C][0-2])[-–]([A-C][0-2])\b/);
           if (rm) return `${rm[1]}-${rm[2]}`;
           if (/UNIVERSITARIO/.test(up)) return 'Universitario';
           if (/PROFESIONAL/.test(up))  return 'Profesional';
@@ -966,6 +985,21 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
     (acc, o) => (o.patch ? { ...acc, ...o.patch } : acc),
     {} as StatePatch,
   );
+
+  // DAE fix (AE-05) — plan-level, executor-agnostic contract clear. The
+  // existing clearDocumentContract mechanism (AE-01/AE-04) only fires
+  // inside specific step.params handlers (collectDocumentParameter's
+  // mentor bypass, generateCoursePdf's success path above) — it cannot
+  // reach a plan produced for an arbitrary remainder instruction
+  // (orchestrator.ts's buildTaskSwitchContinuationPlan recurses into the
+  // full orchestrate() pipeline, which may land on ANY executor/action:
+  // plain mentor conversation, a different tool, even a brand-new
+  // document contract). This reads the flag once, generically, after the
+  // normal per-step statePatch is assembled, so it applies no matter
+  // which per-step handlers ran or what they returned.
+  if (plan.clearDocumentContract === true) {
+    statePatch.pendingDocumentRequest = undefined;
+  }
 
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 

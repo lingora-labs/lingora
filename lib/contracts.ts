@@ -706,6 +706,21 @@ export interface ExecutionPlan {
   reason: string;
   executionOrder: ExecutionStep[];
   resolvedTopic?: string;
+  // DAE fix (AE-05) — plan-level, executor-agnostic contract-clear flag.
+  // See orchestrator.ts's buildTaskSwitchContinuationPlan(): a redirect
+  // that already states its new instruction in the same turn ("Cambiemos
+  // de tema. Cuéntame sobre la historia de Cartagena.") must clear the
+  // stale pendingDocumentRequest AND let the remainder resolve through
+  // the FULL orchestration pipeline — which may land on any executor
+  // (mentor conversation, a different tool, even a brand-new document
+  // contract). The previously existing clearDocumentContract mechanism
+  // (AE-01/AE-04) only fires inside specific step.params handlers
+  // (collectDocumentParameter's mentor bypass, generateCoursePdf's
+  // success path) — it cannot reach a plan the remainder resolves to
+  // arbitrarily. This flag is read once, generically, by
+  // execution-engine.ts's compileResult() after assembling the normal
+  // per-step statePatch, independent of which executor/action ran.
+  clearDocumentContract?: boolean;
 }
 
 export interface OrchestrationContext {

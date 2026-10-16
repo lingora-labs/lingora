@@ -117,6 +117,31 @@ function extractCourseTopic(message: string): string | undefined {
     const candidate = sobreM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
     if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
   }
+  // DAE fix (AE-02) — "tema: X" / "tema X" is the exact construction from
+  // AE's own worked first-message example ("Hazme un curso PDF. Nivel A1.
+  // Tema: SER y ESTAR.") and matched none of the three existing patterns
+  // (none require "sobre"/"acerca de", none require a "curso/pdf/..."
+  // noun phrase ending in a second "de", and the CEFR-level pattern
+  // requires "de|sobre|en" right after the level token, not a sentence
+  // break). Because extractCourseTopic() is the single shared primitive
+  // used by classifyDocumentTurn(), the !existing (first-message) branch
+  // of buildDocumentContractGate(), AND the existing (continuation)
+  // branch, adding this one pattern here — rather than patching any of
+  // its three call sites separately — fixes AE-02 (first message) and
+  // strengthens the already-fixed H1/H1b continuation path at the same
+  // root, with no call-site changes needed.
+  // Colon is mandatory, not optional: "tema: X" is a declaration, but
+  // "tema" appears in plenty of ordinary sentences that are NOT declaring
+  // one ("no tengo tema todavía", "¿qué tema prefieres?") — a bare
+  // "tema <word>" match without the colon would misread those as topic
+  // declarations too. Matches AE's own worked example exactly ("Tema: SER
+  // y ESTAR" has the colon) while staying precise about what counts as
+  // an actual declaration.
+  const temaM = norm.match(/\btema\s*:\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (temaM) {
+    const candidate = temaM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
   const deM = norm.match(
     /\b(?:curso|pdf|material|guía|guia)\s+(?:[abc][012]\s+)?(?:de\s+)?(?:[a-záéíóúñü]+\s+){0,2}de\s+([a-záéíóúñü][^,.;?!\n]{2,60})/,
   );
@@ -134,10 +159,146 @@ function extractCourseTopic(message: string): string | undefined {
 
 const CONTRACT_EXPIRY_TURNS = 15;
 
-type DocumentTurnClass = 'level_input' | 'topic_input' | 'confirmation' | 'other';
+type DocumentTurnClass = 'level_input' | 'topic_input' | 'confirmation' | 'cancellation' | 'task_switch' | 'other';
+
+// DAE fix (AE-01) — Explicit withdrawal of an open document request
+// ("Olvídalo.", "No, gracias.", "Cancela.", "Forget it.") is a real,
+// distinct state-cycle event, not noise and not a topic. AE's instruction
+// was explicit: "El problema no se resuelve añadiendo cada nueva expresión
+// a ORCH_NOISE: necesitamos distinguir una continuación válida de una
+// retirada de la solicitud." ORCH_NOISE intentionally stays untouched by
+// this fix — a cancellation is classified and handled as its own turn
+// class, upstream of both the topic fallback and ORCH_NOISE, so the fix
+// does not depend on ever-expanding a noise list.
+const CANCELLATION_PATTERNS = [
+  /^olv[ií]dal?o$/i,
+  /^olv[ií]delo$/i,
+  /^cancela(r|lo)?$/i,
+  /^d[ée]jalo( as[ií])?$/i,
+  /^mejor no$/i,
+  /^ya no( quiero)?$/i,
+  /^no\s*,?\s*gracias$/i,
+  /^no\s+quiero(\s+(el|un|hacer)?\s*(curso|pdf))?$/i,
+  /^nada(\s+m[aá]s)?$/i,
+  /^olv[ií]date( de ello)?$/i,
+  /^forget\s+it$/i,
+  /^never\s*mind$/i,
+  /^cancel(\s+it)?$/i,
+  /^no\s+thanks?$/i,
+  /^no\s+thank\s+you$/i,
+  /^don'?t\s+bother$/i,
+] as const;
+
+function normalizeForClassification(message: string): string {
+  return (message ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[.!?¡¿]+$/g, '')
+    .trim();
+}
+
+function isCancellationMessage(message: string): boolean {
+  const norm = normalizeForClassification(message);
+  if (!norm) return false;
+  return CANCELLATION_PATTERNS.some(p => p.test(norm));
+}
+
+// DAE fix (AE-04) — AE resolución 16.10.2026 (segunda ronda sobre PR #10):
+// "Un contrato PDF pendiente no puede convertirse en propietario de los
+// siguientes mensajes." Concrete case AE traced through this file: a
+// contract is open awaiting topic (level already known, e.g. A1). The
+// user writes "Cambiemos de tema" — not a withdrawal (they may still want
+// the PDF, just not on whatever topic was implied before), and not a
+// level/CEFR answer, and not recognized by any of extractCourseTopic's
+// connector patterns. That left it falling through to H1b's bare-topic
+// fallback below, which strips recognized level/CEFR tokens from the raw
+// message and accepts whatever text remains as the topic — "tema" gets
+// stripped, leaving "cambiemos de", which the fallback then accepted as a
+// real topic and queued for PDF generation. This is the same root failure
+// as AE-01 (the pending contract outranking explicit user intent), but
+// for a *redirect* rather than a *withdrawal* — doctrine's ordering
+// ("intención explícita del usuario → modo activo → fase pedagógica →
+// contexto legado") means the contract (contexto legado) must not get to
+// reinterpret a message that is itself an explicit instruction about the
+// conversation, regardless of what's left over after stripping level
+// words.
+//
+// AE explicitly rejected solving this by growing CANCELLATION_PATTERNS
+// with more idioms. This is deliberately a SEPARATE, grammatically bounded
+// turn class, not an expansion of that list: a redirect act ("let's talk
+// about something else") is a different speech act from a withdrawal
+// ("never mind, forget the whole PDF") — the underlying document request
+// may still be wanted, just not on the half-specified topic. The patterns
+// below match a closed set of exhortative/imperative redirect VERBS
+// (cambiar/hablar/pasar, in nosotros or imperative form) combined with an
+// explicit "to something/somewhere else" object, not an open-ended list of
+// synonyms for "stop" — and are checked as their own category, never
+// folded into isCancellationMessage.
+const TASK_SWITCH_PATTERNS = [
+  /\b(cambiemos|cambia(mos)?|cambiar)\s+(de\s+(tema|asunto|curso|idea)|a\s+otr[oa])\b/i,
+  /\b(hablemos|hablar|habla)\s+(de\s+otra\s+cosa|de\s+otro\s+tema|sobre\s+otra\s+cosa)\b/i,
+  /\b(pasemos|pasar|pasa)\s+a\s+otr[oa]\s+(tema|cosa|asunto)\b/i,
+  /\b(volvamos|volver|vuelve)\s+(a\s+otro\s+tema|despu[eé]s(\s+a\s+esto)?)\b/i,
+  /\bmejor\s+(hablemos|cambiemos|pasamos)\b/i,
+  /\bprefiero\s+(hablar|otro\s+tema)\b/i,
+  /\bchange\s+(the\s+)?(subject|topic)\b/i,
+  /\bswitch\s+topics?\b/i,
+  /\blet'?s\s+talk\s+about\s+something\s+else\b/i,
+  /\blet'?s\s+switch\s+(to\s+)?something\s+else\b/i,
+] as const;
+
+function isTaskSwitchMessage(message: string): boolean {
+  const norm = normalizeForClassification(message);
+  if (!norm) return false;
+  return TASK_SWITCH_PATTERNS.some(p => p.test(norm));
+}
+
+// DAE fix (AE-05) — AE resolución 16.10.2026 (tercera ronda sobre PR #10):
+// "una redirección debe liberar el contrato anterior y ejecutar la nueva
+// intención en el mismo turno cuando esté suficientemente especificada."
+// AE's exact case: "Cambiemos de tema. Cuéntame sobre la historia de
+// Cartagena." — AE-04 correctly detected the redirect and cleared the
+// contract, but then discarded the second sentence and asked the user
+// what they wanted, even though they had just said it. The fix is
+// structural, not a new pattern list: find where the matched redirect
+// phrase ENDS in the raw message and treat whatever remains as a
+// candidate continuation instruction. Returns null when there is nothing
+// meaningful left (a bare "Cambiemos de tema." correctly still falls back
+// to buildTaskSwitchPlan's clarification question).
+function extractTaskSwitchRemainder(message: string): string | null {
+  const raw = message ?? '';
+  for (const p of TASK_SWITCH_PATTERNS) {
+    const m = raw.match(p);
+    if (m && m.index !== undefined) {
+      let rest = raw.slice(m.index + m[0].length);
+      // Strip leading sentence punctuation/whitespace left by the match
+      // boundary, then a leading coordinating connector ("y"/"and") that
+      // may syntactically link the redirect to the next clause without
+      // itself being content.
+      rest = rest.replace(/^[\s.,;:!?¡¿-]+/, '').trim();
+      rest = rest.replace(/^(y|and)\s+/i, '').trim();
+      return rest.length > 0 ? rest : null;
+    }
+  }
+  return null;
+}
 
 function classifyDocumentTurn(message: string): DocumentTurnClass {
   const norm = message.toLowerCase().trim();
+  // DAE fix (AE-01) — checked FIRST: a cancellation phrase must never be
+  // reachable by the level/topic/confirmation checks below it, so it can
+  // never be misclassified into a path that reads it as course content.
+  if (isCancellationMessage(message)) {
+    return 'cancellation';
+  }
+  // DAE fix (AE-04) — checked SECOND, still ahead of level/topic/
+  // confirmation, for the same reason as cancellation: a redirect
+  // instruction must never reach extractCourseTopic() or the H1b
+  // fallback, which is exactly what let "Cambiemos de tema" degrade into
+  // the bogus topic "cambiemos de".
+  if (isTaskSwitchMessage(message)) {
+    return 'task_switch';
+  }
   if (/^(sí|si|yes|ok|vale|listo|genera|generate|proceed|adelante|go ahead|hazlo|claro)$/i.test(norm)) {
     return 'confirmation';
   }
@@ -174,18 +335,110 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
     const validTopic = (topicRaw && !isInvalidCourseTopic(topicRaw)) ? topicRaw : null;
     return buildOpenContractPlan(ctx, levelFromMsg, validTopic);
   }
+  // DAE fix (AE-01) — a cancellation turn against an open contract must
+  // clear the contract and acknowledge the withdrawal, and must do so
+  // BEFORE level/topic extraction or the H1b fallback run at all — not as
+  // an extra exclusion bolted onto those checks. See buildCancelContractPlan().
+  if (turnClass === 'cancellation') {
+    return buildCancelContractPlan(ctx);
+  }
+  // DAE fix (AE-04) — same rationale as AE-01's early return, for the
+  // redirect case: must run BEFORE level/topic extraction and the H1b
+  // fallback, or the stripped leftover of a redirect sentence ("Cambiemos
+  // de tema" → "cambiemos de" once "tema" is stripped) gets accepted as a
+  // topic by H1b. See buildTaskSwitchPlan().
+  // DAE fix (AE-05) — before falling back to the plain "what would you
+  // like instead" acknowledgement, check whether the redirect already
+  // carried its own instruction in the same turn ("Cambiemos de tema.
+  // Cuéntame sobre la historia de Cartagena."). If so, clear the contract
+  // and let that remainder resolve through the full pipeline immediately
+  // — see buildTaskSwitchContinuationPlan(). ORCH_NOISE guards against a
+  // remainder that is itself just more noise ("Cambiemos de tema, vale.")
+  // being mistaken for a real instruction.
+  if (turnClass === 'task_switch') {
+    const remainder = extractTaskSwitchRemainder(ctx.message);
+    // ORCH_NOISE elsewhere in this file always strips trailing sentence
+    // punctuation before testing (its `^...$` anchors otherwise never
+    // match "please." or "vale."), so the same normalization applies here.
+    const remainderForNoiseCheck = remainder?.toLowerCase().trim().replace(/[.,;:!?¡¿]+$/, '').trim() ?? '';
+    if (remainder && remainder.length >= 3 && remainderForNoiseCheck.length > 0 && !ORCH_NOISE.test(remainderForNoiseCheck)) {
+      return buildTaskSwitchContinuationPlan(ctx, remainder);
+    }
+    return buildTaskSwitchPlan(ctx);
+  }
   let { level, topic } = existing;
-  if (turnClass === 'level_input') {
-    level = extractDocumentLevel(ctx.message) ?? level;
-  } else if (turnClass === 'topic_input') {
-    const t = extractCourseTopic(ctx.message);
-    if (t && !isInvalidCourseTopic(t)) topic = t;
+  // DAE fix (H1) — AE resolución 16.10.2026: classifyDocumentTurn picks ONE
+  // exclusive category per turn, checking the level regex before topic
+  // extraction. A continuation turn that states both in one message
+  // ("A1, sobre ser y estar", or "Nivel A1. Tema: SER y ESTAR") was
+  // classified only as level_input, so the topic branch never ran and the
+  // topic was silently dropped — the gate then re-asked for information
+  // the user had just given. Level and topic are now extracted
+  // independently from the SAME message every continuation turn, instead
+  // of being mutually exclusive by turnClass.
+  const levelFound = extractDocumentLevel(ctx.message);
+  if (levelFound) level = levelFound;
+  const topicFound = extractCourseTopic(ctx.message);
+  if (topicFound && !isInvalidCourseTopic(topicFound)) topic = topicFound;
+  // DAE fix (H1b) — a bare topic with no recognized connector ("Ser y
+  // estar", without "sobre"/"de") matches none of extractCourseTopic's
+  // patterns and previously fell through as turnClass 'other', re-asking
+  // for the topic. The original version of this fallback only fired when
+  // turnClass === 'other', which missed AE's own worked example ("Nivel
+  // A1. Tema: SER y ESTAR") — that message DOES contain a CEFR level
+  // token, so classifyDocumentTurn returns 'level_input', not 'other',
+  // and the fallback never ran even though the topic ("Tema: SER y
+  // ESTAR") has no "sobre"/"de" connector either. Verified by direct
+  // execution of the real extraction functions against that exact
+  // string (see tests/h1_test.js) before this correction. Fixed by (1)
+  // gating on turnClass !== 'confirmation' instead of turnClass ===
+  // 'other' — so a message that states level AND an unconnected topic in
+  // the same turn is covered, not just a bare topic-only turn — and (2)
+  // stripping recognized level-framing words/tokens ("nivel", "tema",
+  // "A1", etc.) from the raw message before treating the remainder as
+  // the topic, so the level declaration itself is never mistaken for the
+  // topic ("Nivel A1" alone strips to nothing and sets no topic — a bare
+  // level statement is never turned into a course topic, preserving AE's
+  // "No convertir cualquier mensaje en un tema de curso"). AE-02's fix to
+  // extractCourseTopic() above now already catches "Tema: SER y ESTAR"
+  // directly (topicFound, a few lines up), so this fallback is now the
+  // residual path for topics with NEITHER a "sobre/de" connector NOR a
+  // "tema:" prefix (e.g. a genuinely bare "Ser y estar"). The
+  // turnClass === 'cancellation' / 'task_switch' branches above mean this
+  // code can never run for a withdrawal or redirect message — there is
+  // nothing further to exclude here for AE-01 or AE-04 by turnClass alone.
+  if (!topic && level && level !== 'General' && turnClass !== 'confirmation') {
+    const raw = ctx.message?.trim();
+    const stripped = raw
+      ? raw.toLowerCase()
+          .replace(/\b(nivel|level|tema|topic)\b/g, ' ')
+          .replace(/\b(a0|a1|a2|b1|b2|c1|c2|principiante|beginner|intermedio|intermediate|avanzado|advanced|básico|basic|elemental|universitario|experto)\b/g, ' ')
+          .replace(/[.,;:]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      : '';
+    // DAE fix (AE-04) — defense in depth, structural rather than another
+    // phrase list: no genuine topic noun phrase ends in a bare, dangling
+    // preposition/connector. "Cambiemos de tema" strips (via the nivel/
+    // tema removal above) to "cambiemos de" — turnClass already routes
+    // this to 'task_switch' before reaching here, but this guard also
+    // catches any redirect phrasing TASK_SWITCH_PATTERNS doesn't name
+    // explicitly, without adding yet another enumerated expression list.
+    const endsInDanglingConnector = /\b(de|en|a|con|por|para|sobre|y|o)$/i.test(stripped);
+    if (
+      stripped &&
+      stripped.length >= 3 &&
+      stripped.length <= 80 &&
+      !isInvalidCourseTopic(stripped) &&
+      !ORCH_NOISE.test(stripped) &&
+      !endsInDanglingConnector
+    ) {
+      topic = stripped;
+    }
   }
   const hasLevel = !!(level && level !== 'General');
-  if (hasLevel && (turnClass === 'confirmation' || turnClass === 'level_input' || turnClass === 'topic_input')) {
-    return topic
-      ? buildGeneratePdfPlan(ctx, topic, level!)
-      : buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
+  if (hasLevel && topic) {
+    return buildGeneratePdfPlan(ctx, topic, level!);
   }
   return buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
 }
@@ -246,6 +499,105 @@ function buildCollectingPlan(ctx: OrchestrationContext, contract: PendingDocumen
   };
 }
 
+// DAE fix (AE-01) — the contract-withdrawal plan. Reuses the 'mentor'
+// executor and the already-wired 'collectDocumentParameter' contract
+// clarification bypass (execution-engine.ts dispatchToExecutor) so no new
+// action name, no new executor branch and no mentor LLM call are needed —
+// only clearDocumentContract: true is new, and it is the SAME flag already
+// used (and tested) by the generateCoursePdf success path, extended by
+// this fix's execution-engine.ts change to also apply here. Deliberately
+// does NOT pass pendingDocumentRequest, and passes no topic/level derived
+// from the cancellation message — a withdrawal produces no course content,
+// by construction.
+function buildCancelContractPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: 'Entendido, dejamos el curso en PDF por ahora. ¿En qué más te puedo ayudar?',
+    en: 'Got it — I will drop the PDF course request for now. What else can I help with?',
+    no: 'Forstått, jeg lar PDF-kursforespørselen ligge for nå. Hva annet kan jeg hjelpe med?',
+    de: 'Verstanden, ich lasse die PDF-Kursanfrage vorerst ruhen. Wobei kann ich sonst helfen?',
+    fr: "Compris, j'abandonne la demande de cours PDF pour l'instant. Autre chose ?",
+    it: 'Capito, lascio la richiesta del corso PDF per ora. Altro?',
+    pt: 'Entendido, deixo o pedido do curso em PDF por agora. Em que mais posso ajudar?',
+    nl: 'Begrepen, ik laat het PDF-cursusverzoek voor nu rusten. Waarmee kan ik verder helpen?',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:cancelled — user withdrew the course-PDF request; pendingDocumentRequest cleared, no topic/level inferred from the cancellation message.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], clearDocumentContract: true } }],
+  };
+}
+
+// DAE fix (AE-04) — the redirect plan. AE's doctrine ordering (intención
+// explícita del usuario → modo activo → fase pedagógica → contexto
+// legado) means a half-specified pending contract must not get to decide
+// what a redirect message means. This clears pendingDocumentRequest via
+// the SAME clearDocumentContract flag and the SAME collectDocumentParameter
+// bypass already used by buildCancelContractPlan (AE-01) — no new action
+// name, no new executor, no mentor LLM call — but the acknowledgement is
+// deliberately worded for a redirect, not a withdrawal: it invites the
+// user to say what they want instead of announcing that the PDF request
+// was dropped outright, since a redirect ("let's talk about something
+// else") does not necessarily mean the user no longer wants a course —
+// only that the contract cannot keep guessing on their behalf. Once
+// cleared, the user's actual next message is evaluated by the FULL
+// orchestrate() pipeline from a clean slate — not pre-owned by the stale
+// contract — which is the concrete fix for "un contrato PDF pendiente no
+// puede convertirse en propietario de los siguientes mensajes."
+function buildTaskSwitchPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: 'Claro, dejamos ese tema a un lado. ¿De qué te gustaría hablar, o sobre qué tema prefieres el curso en PDF?',
+    en: 'Sure, let’s set that topic aside. What would you like to talk about, or what topic should the PDF course cover instead?',
+    no: 'Klart det, vi legger det temaet til side. Hva vil du snakke om, eller hvilket tema vil du at PDF-kurset skal dekke i stedet?',
+    de: 'Klar, lassen wir das Thema erst mal. Worüber möchtest du sprechen, oder welches Thema soll der PDF-Kurs stattdessen behandeln?',
+    fr: "D'accord, laissons ce sujet de côté. De quoi veux-tu parler, ou quel sujet veux-tu pour le cours en PDF ?",
+    it: 'Certo, lasciamo quel tema da parte. Di cosa vuoi parlare, o quale argomento preferisci per il corso in PDF?',
+    pt: 'Claro, deixamos esse tema de lado. Sobre o que gostaria de falar, ou qual tema prefere para o curso em PDF?',
+    nl: 'Oké, laten we dat onderwerp even opzij zetten. Waarover wil je praten, of welk onderwerp moet de PDF-cursus behandelen?',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:task_switch — user redirected away from the current half-specified topic; pendingDocumentRequest cleared so the next message is evaluated fresh by the full intent priority (explicit intent > active mode > pedagogical phase > legacy context), not pre-owned by the stale contract.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], clearDocumentContract: true } }],
+  };
+}
+
+// DAE fix (AE-05) — the redirect-with-immediate-instruction plan. Clears
+// pendingDocumentRequest from a LOCAL COPY of ctx.state (never mutates the
+// real session state directly — that still only happens via the
+// clearDocumentContract flag honored generically by execution-engine's
+// compileResult) and recurses into orchestrate() with the remainder as
+// the message. This means the remainder is evaluated by the exact same
+// full pipeline any standalone message would go through — conversation,
+// a different artifact, even a brand-new document contract the user
+// explicitly opens on the new topic — never by asking the mentor's LLM to
+// judge whether to keep going, which would reintroduce the
+// non-determinism AE-01 removed. clearDocumentContract: true is stamped
+// onto the OUTER returned plan (not into some inner step's params) so the
+// stale contract clears durably no matter what kind of plan the
+// recursive orchestrate() call produces.
+function buildTaskSwitchContinuationPlan(ctx: OrchestrationContext, remainder: string): ExecutionPlan {
+  const clearedState: typeof ctx.state = { ...ctx.state, pendingDocumentRequest: undefined };
+  const freshCtx: OrchestrationContext = { ...ctx, message: remainder, state: clearedState };
+  const innerPlan = orchestrate(freshCtx);
+  return {
+    ...innerPlan,
+    clearDocumentContract: true,
+    reason: `document_contract:task_switch_continuation — redirect carried an immediate new instruction ("${remainder.slice(0, 60)}"); pendingDocumentRequest cleared and the remainder evaluated fresh by the full pipeline in the same turn. Inner plan reason: ${innerPlan.reason}`,
+  };
+}
+
 function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: string): ExecutionPlan {
   return {
     executor: 'tool_pdf', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
@@ -259,7 +611,26 @@ function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: s
   };
 }
 
-const ORCH_NOISE = /^(continúa|continua|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
+// DAE fix (H1 regression guard) — "continuar" (infinitive) was missing from
+// this list; only "continúa"/"continua" (imperative) were covered, so a
+// plain "continuar" reply fell through as non-noise and, via the new H1b
+// topic fallback in buildDocumentContractGate(), could be misread as a
+// course topic — exactly the regression AE's "No convertir cualquier
+// mensaje en un tema de curso" warns against. Caught by direct test
+// execution (tests/h1_test.js, case H1-6), not by inspection. Added here
+// rather than only in the fallback's own filter because ORCH_NOISE is
+// shared with resolveCurrentTopic(), where the same gap applies.
+// AE-01 note: cancellation phrases are deliberately NOT added to this
+// list — AE explicitly rejected growing ORCH_NOISE as the fix for
+// cancellation. They are handled upstream as their own turn class
+// (see CANCELLATION_PATTERNS / classifyDocumentTurn above), which runs
+// before this list is ever consulted for a document-contract turn.
+// AE-05 note: "please"/"por favor"/"gracias"/"thanks"/"thank you" added
+// here (not to a new list) because this is exactly ORCH_NOISE's existing
+// job — a courtesy particle left over after extractTaskSwitchRemainder()
+// strips a matched redirect phrase ("Switch topics please." → "please.")
+// is noise, not a new instruction, same as "vale" or "ok" already were.
+const ORCH_NOISE = /^(continúa|continua|continuar|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood|please|por favor|gracias|thanks|thank you)$/i;
 
 function resolvePedagogicalMode(
   message: string,
