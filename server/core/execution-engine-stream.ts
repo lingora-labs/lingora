@@ -11,7 +11,7 @@ import {
   SuggestedAction,
   ArtifactRegistryEntry,
 } from '../../lib/contracts'
-import { mergeStatePatch } from './state-manager'
+import { mergeStatePatch, clearDocumentContractIfRequested, toWireState } from './state-manager'
 import { evaluateCommercial } from './commercial-engine-adapter'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
@@ -118,14 +118,36 @@ export function executePlanStream(
             })),
           ].slice(-20)
         }
+        // DAE fix (AE-EXECUTE round, defect H) — Work's real-UI QA proved
+        // this file never applied plan.clearDocumentContract at all: the
+        // blocking execution-engine.ts's compileResult() had it, this
+        // streaming path did not, so a redirect-with-instruction turn could
+        // answer correctly (E/AE-05 passes) while the stale document
+        // contract stayed alive for the next turn whenever that turn
+        // streamed (H fails). Fix is the SAME shared mechanism
+        // execution-engine.ts now calls — clearDocumentContractIfRequested()
+        // in state-manager.ts — not a second, independently-maintained copy
+        // of the same `if` check (AE: "preferiblemente con un mecanismo de
+        // actualización compartido en vez de duplicar reglas").
+        Object.assign(patch, clearDocumentContractIfRequested(plan))
         const updatedState = mergeStatePatch(state, patch)
         if (!plan.blocking) {
           const commercial = await evaluateCommercial(updatedState, plan)
           if (commercial.triggered && commercial.message) emit({ delta: `\n\n${commercial.message}` })
         }
+        // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
+        // mergeStatePatch() already translated this turn's null-as-clear
+        // sentinel into `undefined` on updatedState (correct for the
+        // server's OWN in-memory SessionState). Sending updatedState
+        // directly over SSE would let JSON.stringify drop that now-bare
+        // undefined key again — the exact same loss, one level deeper.
+        // toWireState() re-applies the explicit null, from the ORIGINAL
+        // patch, onto a wire-only copy so it survives transport; the
+        // server's own updatedState object above is untouched.
+        const wireState = toWireState(updatedState, patch)
         emit({
           done: true,
-          state: updatedState,
+          state: wireState,
           ...(artifact ? { artifact } : {}),
           ...(artifacts.length ? { artifacts } : {}),
           ...(artifactFailures.length ? { artifactFailures } : {}),
@@ -150,7 +172,21 @@ export function executePlanStream(
         controller.close()
       } catch (err) {
         console.error('[stream] fatal:', err instanceof Error ? err.message : err)
-        emit({ done: true, state: mergeStatePatch(state, { tokens: (state.tokens ?? 0) + 1 }) })
+        // DAE fix (AE-EXECUTE round, defect H, exhaustiveness) — this
+        // fallback path (mentor LLM call failed, e.g. network error) built
+        // its OWN separate state patch literal, bypassing the shared
+        // clearDocumentContractIfRequested() mechanism entirely. A redirect
+        // that fails over to this branch would resurrect the stale
+        // document contract exactly like the original defect H, just via a
+        // second, uncovered code path instead of the main one. Same shared
+        // helper, same call shape, even on the error path.
+        const fallbackPatch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        Object.assign(fallbackPatch, clearDocumentContractIfRequested(plan))
+        const fallbackState = mergeStatePatch(state, fallbackPatch)
+        // Same wire/internal split as the success path above — see the
+        // comment there for why toWireState() must run on top of
+        // mergeStatePatch() rather than being skipped on this branch.
+        emit({ done: true, state: toWireState(fallbackState, fallbackPatch) })
         controller.close()
       }
     },
