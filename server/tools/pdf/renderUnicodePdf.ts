@@ -39,11 +39,22 @@ export function transcriptPrintHtml(title: string, content: string): string {
 export async function renderUnicodePdf(html: string, requireArabic = false): Promise<Uint8Array> {
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
-    // AWS/Vercel Lambda ships no Arabic fonts. Register the licensed
-    // Noto font BEFORE launching Chromium. Never silently render tofu.
+    // This Chromium version has no chromium.font() API. Load the licensed
+    // Noto file explicitly and embed it as @font-face in the document.
+    // This avoids relying on undocumented system fonts in Lambda.
+    let arabicFontCss = '';
     if (requireArabic) {
-      const registered = await chromium.font(ARABIC_FONT_URL);
-      if (!registered) throw new Error('Arabic font provisioning failed');
+      const response = await fetch(ARABIC_FONT_URL, {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) throw new Error('Arabic font download failed: HTTP ' + response.status);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const fontSignature = buffer.subarray(0, 4).toString('hex');
+      if (buffer.length < 20000 || !['00010000', '4f54544f'].includes(fontSignature)) {
+        throw new Error('Arabic font is missing or invalid');
+      }
+      arabicFontCss = '@font-face{font-family:"LingoraArabic";src:url(data:font/ttf;base64,'
+        + buffer.toString('base64') + ') format("truetype");font-style:normal;font-weight:100 900;}';
     }
     browser = await puppeteer.launch({
       args: chromium.args,
@@ -54,7 +65,7 @@ export async function renderUnicodePdf(html: string, requireArabic = false): Pro
     const printStyle = '<style>' +
       '@page{size:A4;margin:16mm 14mm}' +
       'html{print-color-adjust:exact;-webkit-print-color-adjust:exact}' +
-      'body{font-family:"Noto Naskh Arabic","Open Sans",Arial,sans-serif;line-height:1.6;color:#1a2430}' +
+      'body{font-family:"LingoraArabic","Open Sans",Arial,sans-serif;line-height:1.6;color:#1a2430}' +
       'main{max-width:none}' +
       '.speech{white-space:pre-wrap;overflow-wrap:anywhere;unicode-bidi:plaintext;font-size:12pt;line-height:1.65}' +
       '.turn{break-inside:avoid-page;padding:10px 0;border-bottom:1px solid #dde3ea}' +
@@ -66,7 +77,7 @@ export async function renderUnicodePdf(html: string, requireArabic = false): Pro
       'tr{break-inside:avoid-page}' +
       'p,li,blockquote{orphans:3;widows:3}' +
       '[dir="auto"]{unicode-bidi:plaintext}' +
-      '</style>';
+      arabicFontCss + '</style>';
     const source = html.includes('</head>')
       ? html.replace('</head>', printStyle + '</head>')
       : '<html><head>' + printStyle + '</head><body>' + html + '</body></html>';
