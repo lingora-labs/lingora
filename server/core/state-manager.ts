@@ -22,9 +22,10 @@ import {
   SessionState,
   StatePatch,
   StateValidationResult,
-  RequestedOperation,
+  ExecutionPlan,
   CONTINUITY_FIELDS,
   INVARIANT_FIELDS,
+  CLEARABLE_FIELDS,
   DEFAULT_SESSION_STATE,
 } from '../../lib/contracts';
 
@@ -139,31 +140,101 @@ export function repairState(state: SessionState, errors: string[]): SessionState
 // STATE MERGE — CONSTITUTIONAL TRANSLATION LAYER
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// StatePatch allows requestedOperation?: RequestedOperation | null
-//   null = explicit clear sentinel (set by execution-engine after hard overrides)
+// StatePatch allows null on every field listed in CLEARABLE_FIELDS
+// (lib/contracts.ts) — null = explicit, transport-safe clear sentinel.
 //
-// SessionState allows requestedOperation?: RequestedOperation
-//   null is not valid here — only undefined or a RequestedOperation value
+// SessionState never allows null on those fields — only undefined or a
+// real value.
 //
 // mergeStatePatch is the only place where StatePatch becomes SessionState.
-// It must translate null -> undefined before returning.
+// It must translate null -> undefined before returning, for EVERY field in
+// CLEARABLE_FIELDS, not just requestedOperation.
 //
 // SEEK 4.1a — PERSISTENCE CONTRACT:
 // { ...current, ...patch } spread preserves ALL patch fields, including
 // artifactRegistry (undeclared in StatePatch type but valid at runtime).
-// No pick(), no whitelist, no filter beyond the requestedOperation sentinel.
+// No pick(), no whitelist, no filter beyond the CLEARABLE_FIELDS sentinel.
+//
+// DAE fix (AE-EXECUTE round, defect C) — generalized from a single
+// hand-written `if (patch.requestedOperation === null)` branch to a loop
+// over CLEARABLE_FIELDS. This is the shared mechanism AE required instead
+// of per-field duplicated rules: pendingDocumentRequest now gets the exact
+// same treatment requestedOperation already had, with no new branch to
+// maintain, and any future clearable field needs only a CLEARABLE_FIELDS
+// entry — never a new line here.
 
 export function mergeStatePatch(current: SessionState, patch: StatePatch): SessionState {
-  const merged = { ...current, ...patch } as SessionState & {
-    requestedOperation?: RequestedOperation | null;
-  };
+  const merged = { ...current, ...patch } as SessionState & Record<string, unknown>;
 
-  // Constitutional translation: null-as-clear -> undefined
-  if (patch.requestedOperation === null) {
-    merged.requestedOperation = undefined;
+  for (const field of CLEARABLE_FIELDS) {
+    if ((patch as Record<string, unknown>)[field] === null) {
+      (merged as Record<string, unknown>)[field] = undefined;
+    }
   }
 
   return merged as SessionState;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED DOCUMENT-CONTRACT CLEAR MECHANISM
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// DAE fix (AE-EXECUTE round, defect H) — AE-05 introduced plan-level
+// clearDocumentContract handling ONLY inside execution-engine.ts's
+// compileResult(). Work's real-UI QA proved server/core/execution-engine-
+// stream.ts (the path nearly all free-text mentor-first turns actually run
+// through) builds its state patch through a completely separate code path
+// that never looked at this flag at all — so a redirect-with-instruction
+// turn could answer correctly (E/AE-05 passes) while the stale contract
+// stayed alive into the next turn ONLY when that turn happened to stream
+// (H fails). AE's mandate is explicit: "preferiblemente con un mecanismo de
+// actualización compartido en vez de duplicar reglas" — not a second,
+// independently-maintained copy of the same `if` check in the stream file.
+// This function is that one shared mechanism: both execution-engine.ts's
+// compileResult() and execution-engine-stream.ts's executePlanStream() call
+// it identically when assembling their respective state patches.
+export function clearDocumentContractIfRequested(
+  plan: Pick<ExecutionPlan, 'clearDocumentContract'>,
+): Pick<StatePatch, 'pendingDocumentRequest'> {
+  return plan.clearDocumentContract === true
+    ? { pendingDocumentRequest: null }
+    : {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WIRE STATE — THE OTHER HALF OF THE TRANSPORT FIX
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// DAE fix (AE-EXECUTE round, defect C, completing the fix) — mergeStatePatch()
+// is correct and necessary for the SERVER's own in-memory SessionState: that
+// type forbids null, so null must become undefined before any other
+// server-side logic (evaluateCommercial, a later step in this same request,
+// etc.) touches the object. But that translation happens BEFORE the API
+// route/stream ever calls JSON.stringify — so if the route simply sent
+// `updatedState` (the already-merged, null-free object) back to the
+// browser, the cleared field would ALREADY be bare `undefined` by the time
+// JSON.stringify runs on it, and undefined keys are dropped exactly as
+// before this fix. Serializing the merged state directly would silently
+// reintroduce defect C underneath the new null-sentinel mechanism.
+//
+// toWireState() is the one place that re-applies the explicit `null` for
+// any CLEARABLE_FIELDS entry the ORIGINAL patch cleared this turn, onto a
+// COPY of the already-merged state, strictly for what gets sent over the
+// wire (NextResponse.json in the blocking route, or the SSE `done` event's
+// `state` field in execution-engine-stream.ts). The server's own
+// `updatedState`/in-memory SessionState is never mutated or given a null —
+// only the wire copy is. Both transports call this SAME function.
+export function toWireState(
+  state: SessionState,
+  patch: StatePatch,
+): SessionState & Record<string, unknown> {
+  const wire = { ...state } as SessionState & Record<string, unknown>;
+  for (const field of CLEARABLE_FIELDS) {
+    if ((patch as Record<string, unknown>)[field] === null) {
+      (wire as Record<string, unknown>)[field] = null;
+    }
+  }
+  return wire;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
