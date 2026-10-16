@@ -83,6 +83,9 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
     }
 
     const validation = await validateRender(pdfBytes);
+    if (!validation.ok) {
+      return { success: false, error: 'render_validation_failed', message: validation.error ?? 'PDF structural validation failed', renderValidated: false, renderValidationError: validation.error };
+    }
     const buffer  = Buffer.from(pdfBytes);
     const sha256  = createHash('sha256').update(buffer).digest('hex');
     const key     = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;

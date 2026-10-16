@@ -162,6 +162,14 @@ export async function fulfillArtifactSignals(
       nativeLanguage,
     })
 
+    // A partial multi-subject fallback would silently drop most of the
+    // student's material. Reject rather than pretend that a clipped PDF
+    // satisfies the request. A single-subject fallback carries ALL text.
+    if (!composed.ok && pdfs.length > 1) {
+      console.error('[7.1] compound artifact composition incomplete', signal.subject, composed.reason)
+      failures.push({ subject: signal.subject })
+      continue
+    }
     const title = composed.ok ? composed.content.title : `LINGORA — ${signal.subject}`.slice(0, 80)
 
     const result = composed.ok
@@ -173,7 +181,7 @@ export async function fulfillArtifactSignals(
         })
       : await generatePDF({
           title,
-          content: `# ${signal.subject}\n\n${excerptForSubject(pedagogicalContent, signal.subject)}`,
+          content: `# ${signal.subject}\n\n${pedagogicalContent}`,
           filename: `lingora-${Date.now()}-${artifacts.length}`,
         })
 

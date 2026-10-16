@@ -157,6 +157,11 @@ export type ComposeResult =
 
 export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
   if (!params.fullContent?.trim()) return { ok: false, reason: 'empty_body' }
+  // The composer has a bounded budget. Oversize input must use the FULL
+  // original response in the paginated fallback, not a silently cut source.
+  if (params.fullContent.length > MAX_FULL_CONTENT_CHARS) {
+    return { ok: false, reason: 'full_content_exceeds_composer_budget' }
+  }
 
   try {
     const OpenAI = (await import('openai')).default
@@ -164,7 +169,7 @@ export async function composeDocumentFromTaught(params: ComposeParams): Promise<
     const { buildModelParams } = await import('../../mentors/mentor-engine')
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
 
-    const boundedContent = params.fullContent.slice(0, MAX_FULL_CONTENT_CHARS)
+    const boundedContent = params.fullContent
     const otherSubjectsLine = params.otherSubjects.length > 0
       ? params.otherSubjects.map((s) => `"${s}"`).join(', ')
       : '(none — this was the only subject taught in this turn)'
@@ -272,6 +277,14 @@ Return ONLY this JSON:
 
     const hasContent = blocks.length >= 2 && blocks.some((b) => (b.type === 'heading' || b.type === 'paragraph') && !!b.content)
     if (!hasContent) return { ok: false, reason: `insufficient_content_blocks:${blocks.length}` }
+
+    // The layout model is only a composer. Preserve the Tutor Maestro's full
+    // source unabridged in an explicit appendix shared by PDF and HTML. This
+    // makes any summarization/reordering auditable without changing tutor text.
+    blocks.push(
+      { type: 'heading', level: 1, content: 'Contenido original íntegro del tutor' },
+      { type: 'paragraph', content: params.fullContent },
+    )
 
     return {
       ok: true,

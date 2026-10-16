@@ -4,8 +4,9 @@ export type MK = 'sarah' | 'alex' | 'nick'
 export type TK = 'conversation' | 'structured' | 'cervantes' | 'business' | 'travel' | 'course' | 'leveltest'
 export type Lang = 'es' | 'en' | 'no' | 'fr' | 'de' | 'it' | 'pt' | 'ar' | 'ja' | 'zh'
 
-export const BACKEND_LANG = (l: Lang): string =>
-  (['ar', 'ja', 'zh'] as Lang[]).includes(l) ? 'en' : l
+// The student's selected explanation language is authoritative even when
+// no text has been typed yet (first-turn greeting, Arabic/Japanese/Chinese).
+export const BACKEND_LANG = (l: Lang): string => l
 export type Phase = 'onboarding' | 'splash' | 'mode' | 'chat'
 
 export interface Artifact {

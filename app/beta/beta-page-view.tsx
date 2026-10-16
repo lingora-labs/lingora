@@ -7,12 +7,14 @@ import { doExportTxt, doExportPdfBackend } from './beta-io'
 import { useBetaPage } from './use-beta-page'
 
 export default function BetaPageView() {
+  const [exportStatus, setExportStatus] = React.useState<string | null>(null)
   const {
-    phase, setPhase, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
+    phase, setPhase, hydrated, persistWarning, resetChat, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   } = useBetaPage()
+  if (!hydrated) return null
   return (
     <>
       <style>{`
@@ -157,11 +159,16 @@ export default function BetaPageView() {
               {showExport && (
                 <div style={{ position:'absolute', top:'115%', right:0, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:12, padding:'5px 0', zIndex:50, minWidth:160 }}>
                   <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar TXT</button>
-                  <button onClick={() => { void doExportPdfBackend(msgs, session); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar PDF</button>
+                  <button onClick={() => { setExportStatus('Preparando PDF…'); void doExportPdfBackend(msgs, session).then(result => setExportStatus(result.message)); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar PDF</button>
                 </div>
               )}
             </div>
-            <button onClick={() => { setActiveMode('interact'); setPhase('onboarding') }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
+            <button onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
+            {(exportStatus || persistWarning) && (
+              <div role="status" aria-live="polite" style={{ fontSize:10, maxWidth:260, color:'var(--teal)' }}>
+                {exportStatus || persistWarning}
+              </div>
+            )}
           </div>
           <div style={{ flex:1, overflowY:'auto', padding:'20px 16px', display:'flex', flexDirection:'column', gap:14 }}>
             {msgs.map(m => <Bubble key={m.id} msg={m} mc={mm.color} />)}

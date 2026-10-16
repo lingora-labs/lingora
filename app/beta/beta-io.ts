@@ -35,42 +35,73 @@ export function doExportTxt(msgs: Msg[]) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'})); a.download = `lingora-${ts}.txt`; a.click()
 }
 
-export async function doExportPdfBackend(msgs: Msg[], ss: SS) {
-  if (!msgs.length) return
+export type PdfExportResult =
+  | { ok: true; message: string; bytes: number }
+  | { ok: false; message: string }
+
+// This is an explicit UI operation, NEVER another student message or a
+// second tutor decision. A failed PDF remains a failed PDF: do not silently
+// return TXT under a PDF button.
+export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExportResult> {
   const lines = msgs
-    .map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() }))
+    .filter(m => m.sender !== 'ln')
+    .map(m => ({
+      sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
+      text: (m.text || '').replace(/<[^>]+>/g, ' ').trim(),
+    }))
     .filter(l => l.text.length > 0)
+  if (lines.length === 0) return { ok: false, message: 'Todavía no hay conversación para exportar.' }
   const transcript = lines.map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Exporta esta conversación a PDF',
+        message: 'Exportar conversación',
+        uiAction: 'export_chat_pdf',
         exportTranscript: transcript,
         state: {
           ...trimStateForPayload(ss as unknown as Record<string, unknown>),
-          mentor: ss.mentor,
-          lang: ss.lang,
-          topic: ss.topic,
+          mentor: ss.mentor, lang: ss.lang, topic: ss.topic,
           interfaceLanguage: BACKEND_LANG(ss.lang),
         },
       }),
     })
-    if (!res.ok) {
-      if (res.status === 413) {
-        doExportTxt(msgs)
-        return
-      }
-      throw new Error(`PDF export failed: HTTP ${res.status}`)
-    }
+    if (!res.ok) return { ok: false, message: `Error del servidor al exportar PDF (HTTP ${res.status}).` }
     const data = await res.json()
-    const artifactUrl = data.artifact?.url
-    if (artifactUrl && ['pdf', 'pdf_chat'].includes(data.artifact?.type)) {
-      const a = document.createElement('a'); a.href = artifactUrl; a.download = `lingora-session-${Date.now()}.pdf`; a.click()
-      return
+    const artifact = data?.artifact
+    if (!['pdf', 'pdf_chat'].includes(artifact?.type) || typeof artifact?.url !== 'string') {
+      return { ok: false, message: 'No se generó un PDF. La conversación continúa disponible en pantalla.' }
     }
-    doExportTxt(msgs)
-  } catch { doExportTxt(msgs) }
+    if (artifact.renderValidated === false) {
+      return { ok: false, message: 'El PDF no pasó la validación estructural.' }
+    }
+    // Verify the response contains actual PDF bytes, not merely a link or a
+    // JSON claim. Browser download must use a Blob to work with data: URLs.
+    const pdf = await fetch(artifact.url)
+    if (!pdf.ok) return { ok: false, message: 'El PDF existe pero no se pudo recuperar para descargarlo.' }
+    const blob = await pdf.blob()
+    const magic = new Uint8Array(await blob.slice(0, 5).arrayBuffer())
+    const isPdf = magic.length === 5 && magic[0] === 37 && magic[1] === 80
+      && magic[2] === 68 && magic[3] === 70 && magic[4] === 45
+    if (!isPdf || blob.size < 500) {
+      return { ok: false, message: 'La descarga no contiene un archivo PDF íntegro.' }
+    }
+    const localUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+    try {
+      const a = document.createElement('a')
+      a.href = localUrl
+      a.download = `lingora-session-${Date.now()}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(localUrl), 30000)
+    }
+    return { ok: true, message: `Descarga de PDF iniciada (${blob.size} bytes verificados).`, bytes: blob.size }
+  } catch (error) {
+    console.warn('[LINGORA export PDF] download failed', error)
+    return { ok: false, message: 'No fue posible descargar el PDF. Inténtalo de nuevo; no se sustituyó por TXT.' }
+  }
 }
 
 export function trimStateForPayload(state: Record<string, unknown>): Record<string, unknown> {
