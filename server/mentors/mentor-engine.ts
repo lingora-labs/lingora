@@ -309,7 +309,8 @@ function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, sys
 }
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
-  const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Audio input]'
+  // A blank opening turn is a real UI session-start event, not an audio file.
+  const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Session opened without a written message]'
   const rawHistory = params.request?.conversationHistory
   const history = Array.isArray(rawHistory)
     ? rawHistory.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim().length > 0)

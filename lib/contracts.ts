@@ -543,6 +543,8 @@ export interface AttachedFile {
 export interface ChatRequest {
   message: string;
   exportTranscript?: string;
+  // 7.1 — explicit UI operation, not language intent inferred from conversation.
+  uiAction?: 'export_chat_pdf';
   state: SessionState;
   files?: AttachedFile[];
   audioDataUrl?: string;

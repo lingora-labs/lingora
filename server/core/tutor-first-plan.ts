@@ -41,7 +41,7 @@ export function buildTutorFirstPlan(
     artifacts: [],
     mentor: {
       profile: state.mentorProfile ?? 'Alex',
-      directive: 'RICH_CONTENT_DIRECTIVE',
+      directive: message.trim() ? 'RICH_CONTENT_DIRECTIVE' : 'FIRST_TURN_DIRECTIVE',
       injectContinuity: true,
       injectErrorMemory: Boolean(state.errorMemory),
       cognitiveStructure: true,

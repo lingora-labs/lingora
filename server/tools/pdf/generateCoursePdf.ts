@@ -91,7 +91,7 @@ export interface DocumentContent {
 
 export type CourseContent = DocumentContent;
 
-function toPdfSafeText(s: string, maxLen = 400): string {
+function toPdfSafeText(s: string, maxLen = Number.MAX_SAFE_INTEGER): string {
   return String(s ?? '')
     .replace(/◆/g, '-').replace(/▶/g, '>').replace(/→/g, '->')
     .replace(/[–—]/g, '-').replace(/💡/g, '!').replace(/[·]/g, '.')
@@ -99,7 +99,7 @@ function toPdfSafeText(s: string, maxLen = 400): string {
     .slice(0, maxLen);
 }
 
-function safe(v: unknown, max = 400): string {
+function safe(v: unknown, max = Number.MAX_SAFE_INTEGER): string {
   return toPdfSafeText(String(v ?? ''), max);
 }
 
@@ -185,6 +185,23 @@ function drawLines(ps: PS, lines: string[], size: number, font: PDFFont, color =
   }
 }
 
+// 7.1 — Long text flows across pages. A large paragraph or list item must
+// never silently lose content or fall below the printable page.
+async function drawFlowLines(
+  ps: PS, lines: string[], size: number, font: PDFFont,
+  content: DocumentContent, color = C_DARK, indent = 0,
+): Promise<PS> {
+  for (const line of lines) {
+    if (!ensureSpace(ps, size * 1.6)) {
+      footer(ps, content);
+      ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+    }
+    ps.page.drawText(safe(line), { x: ML + indent, y: ps.y, size, font, color });
+    ps.y -= size * 1.45;
+  }
+  return ps;
+}
+
 function gap(ps: PS, n = 8): void { ps.y -= n; }
 
 function hRule(ps: PS, color = C_LIGHT, thickness = 0.5): void {
@@ -267,25 +284,21 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
     case 'paragraph': {
       const lines = wrapLines(text, ps.reg, 9.5, CW);
       const needed = lines.length * 9.5 * 1.45 + 12;
-      if (!ensureSpace(ps, needed)) {
+      const pageCapacity = H - MB - 65;
+      if (needed <= pageCapacity && !ensureSpace(ps, needed)) {
         footer(ps, content);
         ps = await newPage(ps.doc, ps.bold, ps.reg, content);
       }
-      drawLines(ps, lines, 9.5, ps.reg);
+      ps = await drawFlowLines(ps, lines, 9.5, ps.reg, content);
       gap(ps, 6);
       break;
     }
 
     case 'bullets': {
       const items = block.items ?? (text ? [text] : []);
-      const needed = items.length * 11 * 1.4 + 10;
-      if (!ensureSpace(ps, needed)) {
-        footer(ps, content);
-        ps = await newPage(ps.doc, ps.bold, ps.reg, content);
-      }
       for (const item of items) {
         const lines = wrapLines(`• ${item}`, ps.reg, 9.5, CW - 8);
-        drawLines(ps, lines, 9.5, ps.reg, C_DARK, 8);
+        ps = await drawFlowLines(ps, lines, 9.5, ps.reg, content, C_DARK, 8);
       }
       gap(ps, 6);
       break;
@@ -293,14 +306,10 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
 
     case 'numbered': {
       const items = block.items ?? (text ? [text] : []);
-      if (!ensureSpace(ps, items.length * 11 * 1.4 + 10)) {
-        footer(ps, content);
-        ps = await newPage(ps.doc, ps.bold, ps.reg, content);
+      for (let i = 0; i < items.length; i++) {
+        const lines = wrapLines(`${i + 1}. ${items[i]}`, ps.reg, 9.5, CW - 12);
+        ps = await drawFlowLines(ps, lines, 9.5, ps.reg, content, C_DARK, 12);
       }
-      items.forEach((item, i) => {
-        const lines = wrapLines(`${i + 1}. ${item}`, ps.reg, 9.5, CW - 12);
-        drawLines(ps, lines, 9.5, ps.reg, C_DARK, 12);
-      });
       gap(ps, 6);
       break;
     }

@@ -9,6 +9,7 @@ import {
   ChatRequest,
   ChatResponse,
   SessionState,
+  ExecutionPlan,
   OrchestrationContext,
   DEFAULT_SESSION_STATE,
 } from '../../../lib/contracts';
@@ -30,7 +31,9 @@ import { buildTutorFirstPlan } from '../../../server/core/tutor-first-plan';
 export const runtime     = 'nodejs';
 export const maxDuration = 300;
 
-const STREAMING_ENABLED = process.env.LINGORA_STREAMING_ENABLED === 'true';
+// 7.1 — all conversational tutor turns share one tool-capable streaming path.
+// Explicit runtime-only UI operations remain blocking and use executePlan.
+const STREAMING_ENABLED = true;
 const DEBUG_TRACE       = process.env.LINGORA_DEBUG_TRACE === 'true';
 const IS_PRODUCTION     = process.env.NODE_ENV === 'production'
   && process.env.LINGORA_DEBUG_OVERRIDE !== 'true';
@@ -299,14 +302,32 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const normalizedMessage = audioTranscript || rawMessageForNormalization;
 
-    // 7.1 — conversational turns go to the Tutor Maestro.
-    // No intent classification. No orchestrator decision.
-    // ContextPack is information. Explicit UI actions are not classified here.
-    const plan = buildTutorFirstPlan(
-      normalizedMessage,
-      state,
-      state.interfaceLanguage ?? 'en',
-    );
+    // A genuine UI command has its own typed transport. The student has
+    // already clicked the export action; do not re-interpret it as prose.
+    if (body.uiAction && body.uiAction !== 'export_chat_pdf') {
+      return errorResponse(400, 'Unsupported UI operation', state);
+    }
+    if (body.uiAction === 'export_chat_pdf' && !body.exportTranscript?.trim()) {
+      return NextResponse.json({
+        message: 'No hay contenido de conversación para exportar.',
+        state,
+        artifactFailures: [{ subject: 'Exportación de conversación' }],
+        suggestedActions: [],
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+    }
+    const exportPlan: ExecutionPlan = {
+      executor: 'tool_pdf',
+      priority: 100,
+      blocking: true,
+      pedagogicalAction: 'export_chat_pdf',
+      artifacts: ['pdf_chat'],
+      skipPhaseAdvance: true,
+      reason: '7.1 — explicit UI export; no tutor/router cognitive decision',
+      executionOrder: [{ order: 1, executor: 'tool_pdf', action: 'exportChatPdf' }],
+    };
+    const plan = body.uiAction === 'export_chat_pdf'
+      ? exportPlan
+      : buildTutorFirstPlan(normalizedMessage, state, state.interfaceLanguage ?? 'en');
 
     const chatRequest: ChatRequest = {
       message: normalizedMessage,
@@ -315,6 +336,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioDataUrl,
       audioMimeType,
       exportTranscript: body.exportTranscript,
+      uiAction: body.uiAction,
       conversationHistory: body.conversationHistory,
     };
 
@@ -356,12 +378,13 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const wireState = toWireState(updatedState, result.statePatch);
 
+    const exportFailed = body.uiAction === 'export_chat_pdf' && !resultArtifact;
     const response: ChatResponse = {
-      message: commercialSuffix
-        ? `${result.message}\n\n${commercialSuffix}`
-        : result.message,
+      message: exportFailed
+        ? 'No se pudo generar el PDF de esta conversación. Inténtalo de nuevo.'
+        : commercialSuffix ? `${result.message}\n\n${commercialSuffix}` : result.message,
       artifact:         resultArtifact,
-      ...(blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
+      ...(exportFailed ? { artifactFailures: [{ subject: 'Exportación de conversación' }] } : blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
       state:            wireState,
       suggestedActions: result.suggestedActions,
       ...(!IS_PRODUCTION && DEBUG_TRACE && {

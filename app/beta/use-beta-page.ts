@@ -216,7 +216,7 @@ export function useBetaPage() {
       addMsg({ sender: 'user', text: msg })
       if (actionKey === 'export_chat_pdf') {
         const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
-        callAPI({ message: msg, exportTranscript: transcript })
+        callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
       } else {
         callAPI({ message: msg })
       }
