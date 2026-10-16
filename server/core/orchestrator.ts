@@ -253,6 +253,36 @@ function isTaskSwitchMessage(message: string): boolean {
   return TASK_SWITCH_PATTERNS.some(p => p.test(norm));
 }
 
+// DAE fix (AE-05) — AE resolución 16.10.2026 (tercera ronda sobre PR #10):
+// "una redirección debe liberar el contrato anterior y ejecutar la nueva
+// intención en el mismo turno cuando esté suficientemente especificada."
+// AE's exact case: "Cambiemos de tema. Cuéntame sobre la historia de
+// Cartagena." — AE-04 correctly detected the redirect and cleared the
+// contract, but then discarded the second sentence and asked the user
+// what they wanted, even though they had just said it. The fix is
+// structural, not a new pattern list: find where the matched redirect
+// phrase ENDS in the raw message and treat whatever remains as a
+// candidate continuation instruction. Returns null when there is nothing
+// meaningful left (a bare "Cambiemos de tema." correctly still falls back
+// to buildTaskSwitchPlan's clarification question).
+function extractTaskSwitchRemainder(message: string): string | null {
+  const raw = message ?? '';
+  for (const p of TASK_SWITCH_PATTERNS) {
+    const m = raw.match(p);
+    if (m && m.index !== undefined) {
+      let rest = raw.slice(m.index + m[0].length);
+      // Strip leading sentence punctuation/whitespace left by the match
+      // boundary, then a leading coordinating connector ("y"/"and") that
+      // may syntactically link the redirect to the next clause without
+      // itself being content.
+      rest = rest.replace(/^[\s.,;:!?¡¿-]+/, '').trim();
+      rest = rest.replace(/^(y|and)\s+/i, '').trim();
+      return rest.length > 0 ? rest : null;
+    }
+  }
+  return null;
+}
+
 function classifyDocumentTurn(message: string): DocumentTurnClass {
   const norm = message.toLowerCase().trim();
   // DAE fix (AE-01) — checked FIRST: a cancellation phrase must never be
@@ -317,7 +347,23 @@ function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
   // fallback, or the stripped leftover of a redirect sentence ("Cambiemos
   // de tema" → "cambiemos de" once "tema" is stripped) gets accepted as a
   // topic by H1b. See buildTaskSwitchPlan().
+  // DAE fix (AE-05) — before falling back to the plain "what would you
+  // like instead" acknowledgement, check whether the redirect already
+  // carried its own instruction in the same turn ("Cambiemos de tema.
+  // Cuéntame sobre la historia de Cartagena."). If so, clear the contract
+  // and let that remainder resolve through the full pipeline immediately
+  // — see buildTaskSwitchContinuationPlan(). ORCH_NOISE guards against a
+  // remainder that is itself just more noise ("Cambiemos de tema, vale.")
+  // being mistaken for a real instruction.
   if (turnClass === 'task_switch') {
+    const remainder = extractTaskSwitchRemainder(ctx.message);
+    // ORCH_NOISE elsewhere in this file always strips trailing sentence
+    // punctuation before testing (its `^...$` anchors otherwise never
+    // match "please." or "vale."), so the same normalization applies here.
+    const remainderForNoiseCheck = remainder?.toLowerCase().trim().replace(/[.,;:!?¡¿]+$/, '').trim() ?? '';
+    if (remainder && remainder.length >= 3 && remainderForNoiseCheck.length > 0 && !ORCH_NOISE.test(remainderForNoiseCheck)) {
+      return buildTaskSwitchContinuationPlan(ctx, remainder);
+    }
     return buildTaskSwitchPlan(ctx);
   }
   let { level, topic } = existing;
@@ -527,6 +573,31 @@ function buildTaskSwitchPlan(ctx: OrchestrationContext): ExecutionPlan {
   };
 }
 
+// DAE fix (AE-05) — the redirect-with-immediate-instruction plan. Clears
+// pendingDocumentRequest from a LOCAL COPY of ctx.state (never mutates the
+// real session state directly — that still only happens via the
+// clearDocumentContract flag honored generically by execution-engine's
+// compileResult) and recurses into orchestrate() with the remainder as
+// the message. This means the remainder is evaluated by the exact same
+// full pipeline any standalone message would go through — conversation,
+// a different artifact, even a brand-new document contract the user
+// explicitly opens on the new topic — never by asking the mentor's LLM to
+// judge whether to keep going, which would reintroduce the
+// non-determinism AE-01 removed. clearDocumentContract: true is stamped
+// onto the OUTER returned plan (not into some inner step's params) so the
+// stale contract clears durably no matter what kind of plan the
+// recursive orchestrate() call produces.
+function buildTaskSwitchContinuationPlan(ctx: OrchestrationContext, remainder: string): ExecutionPlan {
+  const clearedState: typeof ctx.state = { ...ctx.state, pendingDocumentRequest: undefined };
+  const freshCtx: OrchestrationContext = { ...ctx, message: remainder, state: clearedState };
+  const innerPlan = orchestrate(freshCtx);
+  return {
+    ...innerPlan,
+    clearDocumentContract: true,
+    reason: `document_contract:task_switch_continuation — redirect carried an immediate new instruction ("${remainder.slice(0, 60)}"); pendingDocumentRequest cleared and the remainder evaluated fresh by the full pipeline in the same turn. Inner plan reason: ${innerPlan.reason}`,
+  };
+}
+
 function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: string): ExecutionPlan {
   return {
     executor: 'tool_pdf', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
@@ -554,7 +625,12 @@ function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: s
 // cancellation. They are handled upstream as their own turn class
 // (see CANCELLATION_PATTERNS / classifyDocumentTurn above), which runs
 // before this list is ever consulted for a document-contract turn.
-const ORCH_NOISE = /^(continúa|continua|continuar|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
+// AE-05 note: "please"/"por favor"/"gracias"/"thanks"/"thank you" added
+// here (not to a new list) because this is exactly ORCH_NOISE's existing
+// job — a courtesy particle left over after extractTaskSwitchRemainder()
+// strips a matched redirect phrase ("Switch topics please." → "please.")
+// is noise, not a new instruction, same as "vale" or "ok" already were.
+const ORCH_NOISE = /^(continúa|continua|continuar|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood|please|por favor|gracias|thanks|thank you)$/i;
 
 function resolvePedagogicalMode(
   message: string,
