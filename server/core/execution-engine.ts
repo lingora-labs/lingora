@@ -986,6 +986,21 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
     {} as StatePatch,
   );
 
+  // DAE fix (AE-05) — plan-level, executor-agnostic contract clear. The
+  // existing clearDocumentContract mechanism (AE-01/AE-04) only fires
+  // inside specific step.params handlers (collectDocumentParameter's
+  // mentor bypass, generateCoursePdf's success path above) — it cannot
+  // reach a plan produced for an arbitrary remainder instruction
+  // (orchestrator.ts's buildTaskSwitchContinuationPlan recurses into the
+  // full orchestrate() pipeline, which may land on ANY executor/action:
+  // plain mentor conversation, a different tool, even a brand-new
+  // document contract). This reads the flag once, generically, after the
+  // normal per-step statePatch is assembled, so it applies no matter
+  // which per-step handlers ran or what they returned.
+  if (plan.clearDocumentContract === true) {
+    statePatch.pendingDocumentRequest = undefined;
+  }
+
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
   // SEEK 4.1a — register artifact in session artifact memory
