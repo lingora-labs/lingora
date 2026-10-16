@@ -55,8 +55,10 @@ async function main(): Promise<void> {
   const result = await executePlan(plan, request, state);
   const patchHasKey = Object.prototype.hasOwnProperty.call(result.statePatch, 'pendingDocumentRequest');
   check(
-    'AE-04 pipeline step 2/4: executePlan() returns a statePatch that explicitly carries pendingDocumentRequest: undefined',
-    patchHasKey && result.statePatch.pendingDocumentRequest === undefined,
+    // DAE fix (AE-EXECUTE round, defect C) — transport-safe `null` sentinel;
+    // see lib/contracts.ts's CLEARABLE_FIELDS doc comment.
+    'AE-04 pipeline step 2/4: executePlan() returns a statePatch that explicitly carries pendingDocumentRequest: null (transport-safe clear sentinel)',
+    patchHasKey && result.statePatch.pendingDocumentRequest === null,
     `statePatch=${JSON.stringify(result.statePatch)}`,
   );
   check(

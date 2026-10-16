@@ -63,8 +63,12 @@ async function main(): Promise<void> {
     const result = await executePlan(plan, request, state);
     const patchHasKey = Object.prototype.hasOwnProperty.call(result.statePatch, 'pendingDocumentRequest');
     check(
-      'AE-05 (AE\'s exact case) 3/3: executePlan() clears pendingDocumentRequest via the plan-level flag even though the resolved action is NOT collectDocumentParameter/generateCoursePdf',
-      patchHasKey && result.statePatch.pendingDocumentRequest === undefined,
+      // DAE fix (AE-EXECUTE round, defect C+H) — transport-safe `null`
+      // sentinel, applied here via the shared clearDocumentContractIfRequested()
+      // helper (state-manager.ts) that both execution-engine.ts and
+      // execution-engine-stream.ts now call identically.
+      'AE-05 (AE\'s exact case) 3/3: executePlan() clears pendingDocumentRequest via the plan-level flag (null sentinel) even though the resolved action is NOT collectDocumentParameter/generateCoursePdf',
+      patchHasKey && result.statePatch.pendingDocumentRequest === null,
       `statePatch=${JSON.stringify(result.statePatch)}`,
     );
 
