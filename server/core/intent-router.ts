@@ -335,6 +335,34 @@ const ALL_RULES: PatternRule[] = [
   ...PRACTICE_RULES,
 ];
 
+// DAE fix (AE-EXECUTE round, defect F) — AE/Work's real-UI QA: "En lugar
+// del PDF, hazme una tabla comparativa de SER y ESTAR con ejemplos" matched
+// an export_chat_pdf HARD_OVERRIDE_RULES pattern (/\bpdf\b.*(...|tabla|...)\b/i)
+// because the word "pdf" appears before "tabla" in the sentence, and
+// hard-override rules are evaluated before artifact/table rules. AE framed
+// this as a precedence/negation defect, not a table-generator defect: "La
+// nueva intención debe prevalecer sobre una operación mencionada como
+// descartada."
+//
+// Fix is ONE general, structural check — not a growing list of rejection
+// phrases: a message that explicitly marks "pdf" as the REJECTED option
+// ("en lugar de/en vez de/instead of/rather than ... pdf") must never be
+// classified into export_chat_pdf or generate_course_pdf by this same
+// message, no matter what also appears later in it. The alternative the
+// user actually asked for (table, schema, etc.) is then free to match
+// normally against ARTIFACT_RULES/LEARN_RULES exactly as if the rejected
+// "pdf" mention were not there — this is precedence correction, not a new
+// classification path.
+const PDF_REJECTION_PATTERNS: RegExp[] = [
+  // "de" and the Spanish contraction "del" (de + el) must both match —
+  // "en lugar del PDF" is the ordinary phrasing, not "en lugar de PDF".
+  /\b(en lugar del?|en vez del?|instead of|rather than)\b.{0,12}\bpdf\b/i,
+];
+
+function mentionsRejectedPdf(message: string): boolean {
+  return PDF_REJECTION_PATTERNS.some(p => p.test(message));
+}
+
 function isCompoundPedagogicalAct(message: string): boolean {
   const t = message.toLowerCase();
   const teachOrDomain =
@@ -380,7 +408,20 @@ export function classifyIntent(
     };
   }
 
-  for (const rule of ALL_RULES) {
+  // DAE fix (AE-EXECUTE round, defect F) — when THIS message explicitly
+  // rejects "pdf" in favor of something else, the pdf-export hard-override
+  // rules are excluded from matching for this classification pass only.
+  // Every other rule (including the artifact/table rules that should win
+  // instead) still runs in its normal order and confidence.
+  const rejectsPdf = mentionsRejectedPdf(message);
+  const rulesToEvaluate = rejectsPdf
+    ? ALL_RULES.filter(r => !(
+        r.type === 'hard_override'
+        && (r.subtype === 'export_chat_pdf' || r.subtype === 'generate_course_pdf')
+      ))
+    : ALL_RULES;
+
+  for (const rule of rulesToEvaluate) {
     if (rule.onlyInModes && !rule.onlyInModes.includes(state.activeMode)) {
       continue;
     }
