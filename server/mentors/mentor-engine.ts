@@ -96,6 +96,7 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
+  SIGNAL_ARTIFACT_TOOL,
   parseArtifactSignal,
   type ArtifactSignal,
 } from '@/lib/artifact-signal'
@@ -109,11 +110,6 @@ import type {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 const MENTOR_MAX_OUTPUT_TOKENS = 4096
 const COMPOUND_MAX_OUTPUT_TOKENS = 8192
-
-// P8c — decision-call context window for `taught`. Was 8000; observed compound
-// response was 16,941 chars and got truncated mid-first-domain, hiding the
-// second domain from the signal-decision model entirely.
-const DECISION_TAUGHT_CONTEXT_CHARS = 40000
 
 const FALLBACKS: Record<string, string> = {
   es: 'No pude procesar tu mensaje. Intenta de nuevo.',
@@ -357,48 +353,6 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
-// P10 — deterministic list-decision. Replaces multi-tool-call emission
-// (mentor decides via signal_artifact tool, 0..N times in one completion —
-// measured 80% reliable at N=2) with a single structured JSON list that CODE
-// iterates deterministically. Model authority over WHAT/WHETHER to
-// materialize is unchanged; only the transport mechanism for that decision
-// changed. Validated via isolated harness: 40/40 (100%) across two
-// independently captured taught texts.
-async function decideArtifactSignals(
-  RUNTIME_MODEL: string,
-  system: string,
-  user: string,
-  taught: string,
-): Promise<ArtifactSignal[]> {
-  const jsonDecisionSystem =
-    system
-    + '\nYou already taught the content below. Now decide, for the ENTIRE taught content, which distinct subjects warrant a materialized artifact (e.g. a downloadable PDF course). '
-    + 'List EVERY subject that warrants one — if the content covered two distinct domains and both deserve materialization, list both as separate entries. Do not merge distinct subjects into one entry. '
-    + 'Respond with ONLY this JSON object, no other text: {"artifacts": [{"type": "emit_pdf", "trigger": "pedagogical_completion", "subject": "exact subject name"}]} — the array may have 0, 1, or more entries.'
-
-  const decision = await openai.chat.completions.create({
-    ...buildModelParams(RUNTIME_MODEL, 700, 0),
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: jsonDecisionSystem },
-      { role: 'user', content: user },
-      { role: 'assistant', content: taught.slice(0, DECISION_TAUGHT_CONTEXT_CHARS) },
-    ],
-  })
-
-  const signals: ArtifactSignal[] = []
-  try {
-    const raw = decision.choices?.[0]?.message?.content ?? '{}'
-    const parsed = JSON.parse(raw)
-    const entries = Array.isArray(parsed.artifacts) ? parsed.artifacts : []
-    for (const entry of entries) {
-      const s = parseArtifactSignal(entry)
-      if (s) signals.push(s)
-    }
-  } catch { /* leave signals empty on malformed JSON */ }
-  return signals
-}
-
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
   const normalized = normalizeRuntimeCall(params)
   const { system, user } = buildMentorPrompt({
@@ -412,39 +366,44 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     const stream = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
       stream: true,
+      // 7.1: the Tutor Maestro alone chooses whether to request a real tool.
+      // Tool calls and teaching text are produced by the SAME model turn.
+      tools: [SIGNAL_ARTIFACT_TOOL],
+      tool_choice: 'auto',
       messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }],
     })
     const gen = (async function* () {
+      // OpenAI streams function-call arguments in fragments, keyed by tool index.
+      // Collect them while continuing to stream teaching text to the student.
+      const calls = new Map<number, { name: string; args: string }>()
       let taught = ''
       for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content
-        if (delta) {
-          taught += delta
-          yield delta
+        const delta = chunk.choices?.[0]?.delta
+        if (delta?.content) {
+          taught += delta.content
+          yield delta.content
+        }
+        for (const tool of delta?.tool_calls ?? []) {
+          const previous = calls.get(tool.index) ?? { name: '', args: '' }
+          previous.name += tool.function?.name ?? ''
+          previous.args += tool.function?.arguments ?? ''
+          calls.set(tool.index, previous)
         }
       }
-      // P19-F — this guard was 200, chosen with no empirical basis against
-      // what a real first-turn response looks like. Confirmed in
-      // production: a bare greeting + opening question ("¡Hola! ... escribe
-      // 2 frases...") naturally lands at 150-270 characters — squarely
-      // straddling the old threshold, so whether decideArtifactSignals even
-      // ran was close to a coin flip. Every genuine teaching turn observed
-      // in testing (a real grammar point, a short table, a full lesson) was
-      // consistently 1000+ characters. 350 cleanly separates "turn barely
-      // finished" from "something was actually taught", without risking
-      // suppressing real short artifacts (the shortest legitimate one
-      // observed, a fast-path comparison table, was already 1400+ chars).
-      // This is a backstop alongside the content-level instruction fix
-      // (ARTIFACT_CHANNEL_INSTRUCTION / FIRST_TURN_DIRECTIVE) — not a
-      // replacement for it, since a long-but-still-trivial response could
-      // otherwise slip through on instruction-following alone.
-      if (taught.trim().length < 350) return
-      try {
-        const decided = await decideArtifactSignals(RUNTIME_MODEL, system, user, taught)
-        signals.push(...decided)
-      } catch (e) {
-        console.warn('[E-06] signal decision failed', e instanceof Error ? e.message : e)
+      // Validate structured requests emitted by THIS tutor turn. Never run
+      // a second LLM to interpret the response or decide what it meant.
+      for (const [, call] of [...calls.entries()].sort(([a], [b]) => a - b)) {
+        if (call.name !== 'signal_artifact') continue
+        try {
+          const signal = parseArtifactSignal(JSON.parse(call.args))
+          if (signal) signals.push(signal)
+        } catch (error) {
+          console.warn('[7.1] invalid tutor tool arguments', error instanceof Error ? error.message : error)
+        }
       }
+      // An artifact must have actual content. Do not materialize an empty
+      // assistant message and pretend a document was produced.
+      if (!taught.trim() && signals.length) signals.splice(0)
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals

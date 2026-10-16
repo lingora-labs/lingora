@@ -41,7 +41,6 @@
 // never both, never neither, never a partial success masked as a full one.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
-import { hasExplicitArtifactRequest } from '../../lib/context-pack'
 
 function excerptForSubject(content: string, subject: string): string {
   const text = content.trim()
@@ -128,16 +127,14 @@ export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
-  userMessage: string = '',
+  _userMessage: string = '',
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
-  // P19-F2 — see file header. Only emit_pdf signals whose triggering user
-  // turn actually requested a document pass through; the rest are
-  // silently dropped before any composer/renderer work is attempted.
-  // emit_audio is left untouched here — different trigger surface (P16
-  // voice conversation), out of scope for this reproduced bug.
-  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && hasExplicitArtifactRequest(userMessage));
-  const audioSignals = deduped.filter((s) => s.type === 'emit_audio');
+  // 7.1: the tutor, not a regex over the user's words, decides the intent.
+  // Runtime enforces the explicit-request declaration and per-turn side-effect
+  // budget. PDF materialization is never automatic after a normal lesson.
+  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
+  const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
   if (pdfs.length === 0 && audioSignals.length === 0) return { artifacts: [], failures: [] };
 
   const { generatePDF } = await import('../tools/pdf-generator')

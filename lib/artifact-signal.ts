@@ -47,7 +47,7 @@ export const SIGNAL_ARTIFACT_TOOL = {
   function: {
     name: 'signal_artifact',
     description:
-      'Call after teaching. One call per distinct taught part that warrants materialization. Subject must name only that part. Never print this to the student. Never use this instead of teaching.',
+      'Request a real artifact in this same tutor turn, after composing substantive content. PDF only when the student explicitly requested downloadable/printable material; use trigger explicit_user_request. One call per distinct requested subject. Never call just because a lesson finished. Do not print tool data to the student.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -101,12 +101,12 @@ export const SIGNAL_ARTIFACT_TOOL = {
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 ARTIFACT CHANNEL:
 You have a structured side-effect channel named signal_artifact.
-Teach in normal text first. After the pedagogical act is complete, you may call signal_artifact if materialization is warranted.
-If the act contains distinct taught parts and each part independently warrants its own artifact, you may call signal_artifact once per part. Each subject must identify only the content it materializes.
-Do not emit an artifact per part by default. Decide.
+Teach or write the content in normal text first, then call signal_artifact in this same model turn when the student actually requested a deliverable.
+Only request emit_pdf when the student's CURRENT message explicitly asks for a PDF, printable material, or a take-away document. Use trigger explicit_user_request. You may offer a PDF in ordinary text when it was not requested, but do not generate one.
+If the student requested multiple distinct artifacts, emit one signal per requested subject. Subject must identify only the content it materializes. Avoid duplicates.
 Do not print JSON, tool names, or debug to the student.
-Do not call the tool merely because the user wrote PDF or artifact; finish teaching, then decide.
+Do not call the tool before producing the substantive content. If the user asked ONLY for a document, create the document content directly; do not force an unrelated lesson or preliminary quiz.
 Do not call signal_artifact for a bare greeting, an opening question, or a diagnostic prompt with no substantive taught content yet — "pedagogical completion" means you actually taught something the student could study from, not that the turn is merely finished. A first-turn greeting or a request for a sample sentence is not, by itself, material worth a document.
-emit_pdf IS available in this runtime: you may truthfully offer to prepare/materialize what you taught as a downloadable PDF. This states that the mechanism exists, not that a specific file is already generated — never claim a document has been created or is ready to download before it actually has been; simply teach, then let materialization happen through the normal signal_artifact decision.
+emit_pdf IS available in this runtime: you may truthfully offer a downloadable PDF, but must never claim one is already generated before execution succeeds. When the student requests a PDF, provide complete source content and emit the structured signal; the runtime handles the real file or an explicit failure.
 emit_audio IS available in this runtime: you may truthfully offer to speak what you taught aloud. This states the mechanism exists, not that audio has already been generated — never claim audio is ready before it actually is. Only offer or emit audio when it genuinely serves the student (e.g. pronunciation modeling, listening practice) — not by default on every turn.
 `
