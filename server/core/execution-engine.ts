@@ -407,112 +407,30 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
       }
 
       if (step.action === 'exportChatPdf') {
-        const rawTranscript = ctx.request.exportTranscript || ctx.request.message || '';
-        const now = new Date();
-        const dateStr = now.toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' });
-        const mentorName = (ctx.state.mentorProfile ?? 'Alex').charAt(0).toUpperCase() +
-                           (ctx.state.mentorProfile ?? 'Alex').slice(1);
-        // P17 Defect 3 — never show a bare "N/A" for level: say honestly
-        // that it has not been confirmed yet instead of inventing one.
-        const levelStr  = ctx.state.confirmedLevel ?? ctx.state.userLevel ?? 'Nivel aún no confirmado';
-        const tokensStr = String(ctx.state.tokens ?? 0);
-
-        // P17 Defect 3 — SESSION EXPORT AS STUDY-READY RECORD.
-        // Try the rich composer first (real content hierarchy, real wrap,
-        // no truncation — reuses the same renderCoursePdf pipeline already
-        // hardened by P12-A/B). Falls back to the prior flat transcript PDF
-        // only if composition fails — never worse than the pre-P17 baseline.
-        let richResult: Awaited<ReturnType<typeof generatePDF>> | null = null;
-        if (rawTranscript.trim()) {
-          try {
-            const { composeSessionSummary } = await import('../tools/pdf/composeSessionSummary');
-            const composed = await composeSessionSummary({
-              transcript: rawTranscript,
-              mentorName,
-              level: ctx.state.confirmedLevel ?? ctx.state.userLevel ?? undefined,
-              interfaceLanguage: ctx.state.interfaceLanguage,
-              turnCount: ctx.state.tokens ?? 0,
-              dateStr,
-            });
-            if (composed.ok) {
-              richResult = await generatePDF({
-                title: composed.content.title,
-                content: '',
-                courseContent: composed.content,
-                filename: `lingora-session-${Date.now()}`,
-              });
-            } else {
-              console.warn('[PDF] session summary composition fallback:', composed.reason);
-            }
-          } catch (e) {
-            console.warn('[PDF] session summary composer exception, falling back:', e instanceof Error ? e.message : e);
-          }
+        // 7.1-FQA2: An export is the student's actual conversation, not a
+        // new AI-authored study guide. It is deliberately deterministic.
+        // "Study summary" remains a distinct, separately named capability.
+        const transcript = ctx.request.exportTranscript?.trim() ?? '';
+        if (!transcript) {
+          console.warn('[7.1] transcript export rejected: empty source');
+          return { text: 'No hay conversación que exportar.' };
         }
-
-        if (richResult?.success) {
-          const messageCount = rawTranscript.split('\n').filter(Boolean).length;
-          return { artifact: { type: 'pdf_chat' as const, url: richResult.url, messageCount } };
+        const date = new Date().toLocaleDateString('es-ES', {
+          year: 'numeric', month: 'long', day: 'numeric',
+        });
+        const result = await generatePDF({
+          title: `LINGORA — Historial íntegro de conversación — ${date}`,
+          content: transcript,
+          filename: `lingora-full-transcript-${Date.now()}`,
+        });
+        if (!result.success || !result.url) {
+          console.error('[7.1] transcript export failed', result.error, result.message);
+          return { text: 'No se pudo generar el historial íntegro en PDF.' };
         }
-
-        const lines = rawTranscript.split('\n').filter(Boolean);
-        const formattedLines = lines.map((line: string) => {
-          if (line.startsWith('[Student]:') || line.startsWith('[USER]:')) {
-            return line.replace(/^\[(?:Student|USER)\]:/, '▶ Estudiante:');
-          }
-          const mentorMatch = line.match(/^\[([A-Z]+)\]:/);
-          if (mentorMatch) return line.replace(/^\[[A-Z]+\]:/, `◆ ${mentorName}:`);
-          return line;
-        }).join('\n');
-
-        const header = [
-          '══════════════════════════════════════════',
-          '   LINGORA - HISTORIAL DE SESION',
-          '══════════════════════════════════════════',
-          `Mentor:   ${mentorName}`,
-          `Nivel:    ${levelStr}`,
-          `Turnos:   ${tokensStr}`,
-          `Fecha:    ${dateStr}`,
-          '──────────────────────────────────────────',
-          '',
-        ].join('\n');
-
-        const footer = [
-          '',
-          '──────────────────────────────────────────',
-          'LINGORA - AI Cultural Immersion Platform for Spanish',
-          'Learn -> Connect -> Experience',
-          `Exportado el ${dateStr}`,
-        ].join('\n');
-
-        // SEEK 4.1a — include artifacts from session registry in export
-        const sessionArtifacts = (ctx.state as unknown as { artifactRegistry?: ArtifactRegistryEntry[] }).artifactRegistry ?? [];
-        const artifactSection = sessionArtifacts.length > 0
-          ? [
-              '',
-              '══════════════════════════════════════════',
-              '   MATERIALES GENERADOS EN SESION',
-              '══════════════════════════════════════════',
-              ...sessionArtifacts.map((a, i) =>
-                `${i + 1}. [${a.type.toUpperCase()}] ${a.title}`
-              ),
-              '',
-            ].join('\n')
-          : '';
-
-        const content = header + formattedLines + artifactSection + footer;
-        const result = await generatePDF({ title: `LINGORA - Sesion - ${dateStr}`, content });
-        console.log(`[PDF] exportChatPdf result.success: ${result.success}, method: ${result.method}, url_exists: ${!!result.url}`);
-        if (!result.success) console.error(`[PDF] exportChatPdf error: ${result.error} — ${result.message}`);
-
-        const messageCount = rawTranscript
-          ? rawTranscript.split('\n').filter(Boolean).length
-          : 0;
-
-        const artifact = result.success
-          ? { type: 'pdf_chat' as const, url: result.url, messageCount }
-          : undefined;
-
-        return { artifact };
+        const messageCount = (transcript.match(/^\[(?:Student|USER|SARAH|ALEX|NICK)\]:/gim) ?? []).length;
+        return {
+          artifact: { type: 'pdf_chat' as const, url: result.url, messageCount },
+        };
       }
 
       if (step.action === 'generateCoursePdf') {

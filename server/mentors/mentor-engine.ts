@@ -405,12 +405,14 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       // Tool-only model turns are valid OpenAI behavior. If the tutor first
       // requested a file without writing content, let the SAME tutor finish
       // its answer (one cognitive authority; not a second artifact decider).
-      if (!taught.trim() && signals.length) {
+      const needsFullDocument = signals.some((signal) => signal.type === 'emit_pdf')
+        && taught.trim().length < 500
+      if (needsFullDocument || (!taught.trim() && signals.length)) {
         try {
           const continuation = await openai.chat.completions.create({
             ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
             messages: [
-              { role: 'system', content: system + '\nThe artifact request from your previous step has been captured but NOT executed. Complete the student-facing material now in full, as ordinary text. Never claim that a file already exists. The deterministic runtime will attempt to render it after you finish.' },
+              { role: 'system', content: system + '\nThe artifact request from your previous step has been captured but NOT executed. Your previous response was only an introductory promise or an empty tool call, NOT a usable document. Now AUTHOR the full substantial student-facing content in the requested language, covering every requested section, examples and exercises (with answer key when requested). Do not repeat a promise or say you will prepare it later. Do not claim that a PDF already exists. The runtime will render your content afterward.' },
               ...normalized.history,
               { role: 'user', content: user },
             ],
@@ -418,14 +420,17 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           const completed = continuation.choices?.[0]?.message?.content?.trim() ?? ''
           if (completed) {
             taught = completed
-            yield completed
+            yield '\n\n' + completed
           }
         } catch (error) {
           console.warn('[7.1] tutor continuation failed', error instanceof Error ? error.message : error)
         }
       }
-      if (!taught.trim() && signals.length) {
-        // Honest failure; never emit an empty/placeholder artifact.
+      if (signals.some((signal) => signal.type === 'emit_pdf') && taught.trim().length < 500) {
+        // Content integrity gate: a one-paragraph promise is not a PDF.
+        signals.splice(0)
+        yield '\n\nNo pude completar el contenido necesario para el documento. Inténtalo de nuevo.'
+      } else if (!taught.trim() && signals.length) {
         signals.splice(0)
         yield FALLBACKS[resolveInterfaceLanguage(normalized.state)] ?? FALLBACKS.en
       }

@@ -72,12 +72,22 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
   try {
     let pdfBytes: Uint8Array;
 
-    if (params.lessonContent) {
+    const { containsArabic } = await import('./pdf/renderUnicodePdf');
+    if (params.courseContent && containsArabic(params.courseContent)) {
+      // One structured document source for HTML AND PDF. The browser
+      // supplies Arabic shaping/bidi; standard pdf-lib fonts cannot.
+      const { renderArtifactHtml } = await import('./web/renderArtifactHtml');
+      const { renderUnicodePdf } = await import('./pdf/renderUnicodePdf');
+      pdfBytes = await renderUnicodePdf(renderArtifactHtml(params.courseContent), true);
+    } else if (params.lessonContent) {
       const { generateLessonPdf } = await import('./pdf/generateLessonPdf');
       pdfBytes = await generateLessonPdf(params.lessonContent);
     } else if (params.courseContent) {
       const { renderCoursePdf } = await import('./pdf/generateCoursePdf');
       pdfBytes = await renderCoursePdf(params.courseContent);
+    } else if (containsArabic(params.title + '\n' + params.content)) {
+      const { renderUnicodePdf, transcriptPrintHtml } = await import('./pdf/renderUnicodePdf');
+      pdfBytes = await renderUnicodePdf(transcriptPrintHtml(params.title, params.content), true);
     } else {
       pdfBytes = await generatePlainTextPdf(params.title, params.content);
     }
