@@ -42,6 +42,10 @@ export function buildTutorFirstPlan(
     mentor: {
       profile: state.mentorProfile ?? 'Alex',
       directive: 'RICH_CONTENT_DIRECTIVE',
+      injectContinuity: true,
+      injectErrorMemory: Boolean(state.errorMemory),
+      cognitiveStructure: true,
+      activeTopic: state.lastConcept?.trim() || state.currentLessonTopic?.trim() || undefined,
     },
     commercial: undefined,
     skipPhaseAdvance: true,
