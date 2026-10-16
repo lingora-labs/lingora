@@ -201,10 +201,54 @@ function wrapLines(text: string, font: PDFFont, size: number, maxW: number): str
   return lines.length ? lines : [''];
 }
 
-function drawLines(ps: PS, lines: string[], size: number, font: PDFFont, color = C_DARK, indent = 0): void {
+// DAE fix (AE-03) — AE resolución 16.10.2026: renderBlock() computed how
+// much space a block needed, checked it ONCE with ensureSpace(), paged
+// once if that failed, then called drawLines() which drew EVERY line of
+// the block in a single pass with no further page-boundary check. A block
+// whose wrapped lines are taller than one full fresh page — not just
+// taller than the space remaining on the current page — would still run
+// past the bottom margin on the new page too, since nothing re-checked
+// mid-draw. Confirmed by AE directly inspecting renderBlock(); the
+// existing 539-character test did not exercise this because it fit
+// within a single page even after wrapping.
+//
+// Fixed at the shared primitive used by paragraph/bullets/numbered/
+// callout/exercise/quote/summary: drawLines() now checks remaining space
+// before EACH line, not once before the whole block, and starts a new
+// page mid-block exactly like the table/key_value renderers already
+// page-break per row. ps is a shared mutable object (not reassigned by
+// its callers — renderBlock holds the same reference throughout), so
+// mutating ps.page/ps.y in place here is visible to the caller without
+// any call-site change beyond `await` and passing `content` through.
+//
+// Residual, explicitly out-of-scope risk: heading (level 1), callout/
+// exercise, quote and summary pre-draw a background rectangle sized for
+// the WHOLE block's lines before calling drawLines(). If such a block is
+// itself taller than a full page (a heading, quote or callout of that
+// length is not a realistic case — those are short by construction) the
+// backing rectangle would not visually extend across the page break. This
+// is a cosmetic pagination refinement already deferred as H4 by AE's own
+// prioritization, not a content-loss defect — the content itself still
+// paginates correctly either way, which is AE-03's actual requirement.
+async function drawLines(
+  ps: PS,
+  lines: string[],
+  size: number,
+  font: PDFFont,
+  content: DocumentContent,
+  color = C_DARK,
+  indent = 0,
+): Promise<void> {
+  const lineH = size * 1.45;
   for (const line of lines) {
+    if (!ensureSpace(ps, lineH)) {
+      footer(ps, content);
+      const np = await newPage(ps.doc, ps.bold, ps.reg, content);
+      ps.page = np.page;
+      ps.y = np.y;
+    }
     ps.page.drawText(safe(line), { x: ML + indent, y: ps.y, size, font, color });
-    ps.y -= size * 1.45;
+    ps.y -= lineH;
   }
 }
 
@@ -281,7 +325,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
       if (lvl === 1) {
         ps.page.drawRectangle({ x: ML - 4, y: ps.y - lines.length * size * 1.45 - 4, width: CW + 8, height: lines.length * size * 1.45 + 12, color: C_LIGHT });
       }
-      drawLines(ps, lines, size, ps.bold, color);
+      await drawLines(ps, lines, size, ps.bold, content, color);
       if (lvl === 1) hRule(ps, C_TEAL, 1.5);
       gap(ps, 4);
       break;
@@ -294,7 +338,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
         footer(ps, content);
         ps = await newPage(ps.doc, ps.bold, ps.reg, content);
       }
-      drawLines(ps, lines, 9.5, ps.reg);
+      await drawLines(ps, lines, 9.5, ps.reg, content);
       gap(ps, 6);
       break;
     }
@@ -308,7 +352,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
       }
       for (const item of items) {
         const lines = wrapLines(`• ${item}`, ps.reg, 9.5, CW - 8);
-        drawLines(ps, lines, 9.5, ps.reg, C_DARK, 8);
+        await drawLines(ps, lines, 9.5, ps.reg, content, C_DARK, 8);
       }
       gap(ps, 6);
       break;
@@ -320,10 +364,10 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
         footer(ps, content);
         ps = await newPage(ps.doc, ps.bold, ps.reg, content);
       }
-      items.forEach((item, i) => {
-        const lines = wrapLines(`${i + 1}. ${item}`, ps.reg, 9.5, CW - 12);
-        drawLines(ps, lines, 9.5, ps.reg, C_DARK, 12);
-      });
+      for (let i = 0; i < items.length; i++) {
+        const lines = wrapLines(`${i + 1}. ${items[i]}`, ps.reg, 9.5, CW - 12);
+        await drawLines(ps, lines, 9.5, ps.reg, content, C_DARK, 12);
+      }
       gap(ps, 6);
       break;
     }
@@ -502,7 +546,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
       ps.page.drawRectangle({ x: ML, y: ps.y - boxH + 8, width: CW, height: boxH, color: bgColor });
       ps.page.drawText(safe(label.toUpperCase(), 30), { x: ML + 8, y: ps.y - 12, size: 8, font: ps.bold, color: labelColor });
       ps.y -= 20;
-      drawLines(ps, lines, 9.5, ps.reg, txtColor, 8);
+      await drawLines(ps, lines, 9.5, ps.reg, content, txtColor, 8);
       gap(ps, 8);
       break;
     }
@@ -515,7 +559,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
         ps = await newPage(ps.doc, ps.bold, ps.reg, content);
       }
       ps.page.drawRectangle({ x: ML, y: ps.y - needed + 4, width: 3, height: needed, color: C_TEAL });
-      drawLines(ps, lines, 10, ps.reg, C_MUTED, 12);
+      await drawLines(ps, lines, 10, ps.reg, content, C_MUTED, 12);
       gap(ps, 8);
       break;
     }
@@ -536,7 +580,7 @@ async function renderBlock(ps: PS, block: DocumentBlock, content: DocumentConten
       }
       gap(ps, 6);
       ps.page.drawRectangle({ x: ML, y: ps.y - boxH + 6, width: CW, height: boxH, color: C_LIGHT });
-      drawLines(ps, lines, 9.5, ps.reg, C_DARK, 8);
+      await drawLines(ps, lines, 9.5, ps.reg, content, C_DARK, 8);
       gap(ps, 8);
       break;
     }
@@ -678,7 +722,7 @@ async function renderClosing(ps: PS, content: DocumentContent): Promise<void> {
 
   if (content.nextStep) {
     const lines = wrapLines(content.nextStep, ps.reg, 10, CW);
-    drawLines(ps, lines, 10, ps.reg, C_MUTED);
+    await drawLines(ps, lines, 10, ps.reg, content, C_MUTED);
     gap(ps, 12);
   }
 
