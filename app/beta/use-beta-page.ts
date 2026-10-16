@@ -4,7 +4,7 @@ import {
   BACKEND_LANG, MENTOR_META, COPY, TSYS,
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS,
 } from './beta-model'
-import { trimStateForPayload } from './beta-io'
+import { trimStateForPayload, applyServerStatePatch } from './beta-io'
 
 export function useBetaPage() {
   const [phase, setPhase] = useState<Phase>('onboarding')
@@ -135,7 +135,10 @@ export function useBetaPage() {
               if (parsed.done) {
                 if (parsed.state) {
                   setSession(s => {
-                    const n = { ...s, ...parsed.state, samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
+                    // DAE fix (AE-EXECUTE round, defect C/H) — shared
+                    // merge helper instead of a bare spread; see beta-io.ts.
+                    const merged = applyServerStatePatch(s, parsed.state)
+                    const n = { ...merged, samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId } as SS
                     sessionRef.current = n
                     return n
                   })
@@ -167,7 +170,10 @@ export function useBetaPage() {
       const data = await res.json()
       if (data.state) {
         setSession(s => {
-          const n = { ...s, ...data.state, samples: [...(s.samples ?? []), ...((data.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
+          // DAE fix (AE-EXECUTE round, defect C) — shared merge helper
+          // instead of a bare spread; see beta-io.ts's applyServerStatePatch.
+          const merged = applyServerStatePatch(s, data.state)
+          const n = { ...merged, samples: [...(s.samples ?? []), ...((data.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId } as SS
           sessionRef.current = n
           return n
         })

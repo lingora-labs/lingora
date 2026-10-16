@@ -62,7 +62,7 @@ import {
   ArtifactRegistryEntry,
 } from '../../lib/contracts';
 
-import { advanceTutorPhase } from './state-manager';
+import { advanceTutorPhase, clearDocumentContractIfRequested } from './state-manager';
 import { buildModelParams } from '../mentors/mentor-engine';
 import { buildContextualActions } from './suggested-actions';
 
@@ -224,8 +224,15 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         // clearing mechanism — so a plan sets EITHER
         // pendingDocumentRequest (open/collect) OR clearDocumentContract
         // (cancel), never both.
+        //
+        // DAE fix (AE-EXECUTE round, defect C) — `undefined` is dropped by
+        // JSON.stringify at the API boundary, so the browser never actually
+        // received a signal to clear the old value (see lib/contracts.ts's
+        // CLEARABLE_FIELDS doc comment for the full chain). `null` is the
+        // transport-safe sentinel; mergeStatePatch() translates it to
+        // `undefined` for the in-memory SessionState exactly as before.
         const contractPatch: StatePatch | undefined = step.params?.clearDocumentContract === true
-          ? { pendingDocumentRequest: undefined }
+          ? { pendingDocumentRequest: null }
           : step.params?.pendingDocumentRequest
             ? {
                 pendingDocumentRequest:
@@ -810,9 +817,11 @@ Return ONLY this JSON:
             .filter(b => b.type === 'heading' && b.level === 1 && b.content)
             .map(b => b.content as string);
           const artifact = { type: 'course_pdf' as const, title: courseTitle, url: result.url, modules: headings };
-          // SEEK 4.1c2 — clear document contract after successful PDF generation
+          // SEEK 4.1c2 — clear document contract after successful PDF generation.
+          // DAE fix (AE-EXECUTE round, defect C) — null, not undefined; see
+          // CLEARABLE_FIELDS in lib/contracts.ts.
           const clearPatch: StatePatch | undefined = step.params?.clearDocumentContract === true
-            ? { pendingDocumentRequest: undefined }
+            ? { pendingDocumentRequest: null }
             : undefined;
         return { artifact, patch: clearPatch };
       }
@@ -997,9 +1006,14 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
   // document contract). This reads the flag once, generically, after the
   // normal per-step statePatch is assembled, so it applies no matter
   // which per-step handlers ran or what they returned.
-  if (plan.clearDocumentContract === true) {
-    statePatch.pendingDocumentRequest = undefined;
-  }
+  //
+  // DAE fix (AE-EXECUTE round, defects C+H) — now delegates to the SAME
+  // shared clearDocumentContractIfRequested() helper (state-manager.ts)
+  // that execution-engine-stream.ts's executePlanStream() also calls, so
+  // the blocking and streaming paths can never drift apart again on this
+  // rule, and emits the transport-safe `null` sentinel instead of
+  // `undefined`.
+  Object.assign(statePatch, clearDocumentContractIfRequested(plan));
 
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
