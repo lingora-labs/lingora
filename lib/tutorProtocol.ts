@@ -1,4 +1,4 @@
-// LINGORA SEEK 3.0 — TUTOR PROTOCOL v1.2 + P2 compound-sequence exception
+// LINGORA SEEK 3.0 — TUTOR PROTOCOL v1.2 + P2 compound-sequence exception + 7.1 general intelligence alignment
 import type { SessionState } from '@/lib/contracts'
 
 export type PedagogicalAction =
@@ -164,7 +164,6 @@ export const TUTOR_PROHIBITIONS = `
 — Do not generate a PDF unless explicitly requested by the student.
 — Do not generate an image unless explicitly requested by the student.
 — Do not blend multiple phases (lesson + quiz + feedback) in a single response unless the student explicitly sequenced several requests in this same message. Then cover those requested parts in this turn.
-— Do not act as a general-purpose AI assistant — you have a specific tutoring role.
 — Do not give the quiz answer before the student responds.`
 
 export function modeToTutorMode(
