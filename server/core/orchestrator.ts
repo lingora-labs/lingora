@@ -1,1 +1,966 @@
-[READ_FROM_DISK]
+// =============================================================================
+// server/core/orchestrator.ts
+// LINGORA SEEK 4.1c2 + SEEK 5.0 S1 Camino C — mentor-first + ContextPack transport
+// =============================================================================
+import {
+  OrchestrationContext,
+  ExecutionPlan,
+  ExecutionStep,
+  ExecutorType,
+  PedagogicalAction,
+  MentorDirective,
+  ArtifactType,
+  TutorPhase,
+  MentorProfile,
+  IntentSubtype,
+  PendingDocumentRequest,
+} from '../../lib/contracts';
+
+import {
+  isHardOverride,
+  isStrongCurriculumRequest,
+  isFastPathArtifact,
+} from './intent-router';
+
+import { buildContextPack } from '../../lib/context-pack';
+
+const PRIORITY = {
+  HARD_OVERRIDE:    100,
+  EXERCISE_LOCK:     95,
+  FIRST_TURN:        90,
+  SEMANTIC_OP:       85,
+  CURRICULUM:        80,
+  FAST_PATH:         70,
+  PEDAGOGICAL:       60,
+  DEFAULT:           10,
+} as const;
+
+type SemanticOperation = 'package_session' | 'export_artifact' | null;
+
+const SESSION_REF_PATTERNS = [
+  /lo que (hemos?|acabamos de|vimos?|trabajamos?|hicimos?)/i,
+  /esta sesi[oó]n/i,
+  /los materiales? de (hoy|esta clase|esta sesi[oó]n)/i,
+  /todo lo (visto|trabajado|generado|que hemos?)/i,
+  /empaquetar? (la sesi[oó]n|los materiales?|todo)/i,
+  /pack(age)? (this )?session/i,
+  /everything (we('ve)? (done|covered|worked on))/i,
+  /what we (did|covered|learned) today/i,
+  /materials? from (today|this session)/i,
+];
+
+const ARTIFACT_SPECIFIC_PATTERNS = [
+  /exporta? (esta|este|la|el) (tabla|esquema|matriz|quiz|gr[aá]fica)/i,
+  /export (this|the) (table|schema|matrix|quiz|chart|artifact)/i,
+  /descargar? (esta|este)/i,
+  /download (this|the) (table|schema|matrix)/i,
+];
+
+function resolveSemanticOperation(ctx: OrchestrationContext): SemanticOperation {
+  const msg = ctx.message?.trim() ?? '';
+  const hasArtifacts = (ctx.state.artifactRegistry?.length ?? 0) > 0;
+  if (ARTIFACT_SPECIFIC_PATTERNS.some(p => p.test(msg))) return 'export_artifact';
+  if (hasArtifacts && SESSION_REF_PATTERNS.some(p => p.test(msg))) return 'package_session';
+  return null;
+}
+
+const SELF_REFERENTIAL_TERMS = [
+  'pdf', 'crear un pdf', 'hacer un pdf', 'curso completo', 'un curso',
+  'el curso', 'cómo crear', 'cómo hacer', 'diseñar', 'maquetación',
+  'maquetacion', 'exportar', 'exportación', 'exportacion', 'formato',
+  'documento', 'presentación profesional', 'presentacion profesional',
+  'redaccion', 'redacción', 'portada', 'índice', 'indice',
+] as const;
+
+function isSelfReferential(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return SELF_REFERENTIAL_TERMS.some(ref => norm.includes(ref));
+}
+
+const NON_DOMAIN_TERMS = [
+  'structured', 'structure', 'interacción inteligente', 'interact', 'interactive',
+  'free', 'free conversation', 'pdf_course', 'pdf course',
+  'schema', 'table', 'matrix', 'quiz', 'roadmap', 'lesson', 'guide',
+  'conversation', 'mode', 'general', 'standard', 'default', 'basic', 'onboarding',
+] as const;
+
+function isNonDomainTopic(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return NON_DOMAIN_TERMS.some(
+    t => norm === t || norm.startsWith(t + ' ') || norm.endsWith(' ' + t),
+  );
+}
+
+const META_GOAL_TERMS = [
+  'aprender rápido', 'aprender rapido', 'learn fast', 'learn quickly',
+  'improve quickly', 'improve fast', 'mejorar rápido', 'mejorar rapido',
+  'quiero aprender', 'quiero mejorar', 'want to learn', 'want to improve',
+  'empezar', 'comenzar', 'start learning', 'beginner help',
+  'practice more', 'más práctica', 'mas practica', 'quick learning',
+] as const;
+
+function isMetaGoal(topic: string): boolean {
+  const norm = topic.toLowerCase().trim();
+  return META_GOAL_TERMS.some(
+    t => norm === t || norm.startsWith(t + ' ') || norm.endsWith(' ' + t),
+  );
+}
+
+function isInvalidCourseTopic(topic: string): boolean {
+  return isSelfReferential(topic) || isNonDomainTopic(topic) || isMetaGoal(topic);
+}
+
+function extractCourseTopic(message: string): string | undefined {
+  const norm = message.toLowerCase();
+  const sobreM = norm.match(/\b(?:sobre|acerca\s+de)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (sobreM) {
+    const candidate = sobreM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  // DAE fix (AE-02) — "tema: X" / "tema X" is the exact construction from
+  // AE's own worked first-message example ("Hazme un curso PDF. Nivel A1.
+  // Tema: SER y ESTAR.") and matched none of the three existing patterns
+  // (none require "sobre"/"acerca de", none require a "curso/pdf/..."
+  // noun phrase ending in a second "de", and the CEFR-level pattern
+  // requires "de|sobre|en" right after the level token, not a sentence
+  // break). Because extractCourseTopic() is the single shared primitive
+  // used by classifyDocumentTurn(), the !existing (first-message) branch
+  // of buildDocumentContractGate(), AND the existing (continuation)
+  // branch, adding this one pattern here — rather than patching any of
+  // its three call sites separately — fixes AE-02 (first message) and
+  // strengthens the already-fixed H1/H1b continuation path at the same
+  // root, with no call-site changes needed.
+  // Colon is mandatory, not optional: "tema: X" is a declaration, but
+  // "tema" appears in plenty of ordinary sentences that are NOT declaring
+  // one ("no tengo tema todavía", "¿qué tema prefieres?") — a bare
+  // "tema <word>" match without the colon would misread those as topic
+  // declarations too. Matches AE's own worked example exactly ("Tema: SER
+  // y ESTAR" has the colon) while staying precise about what counts as
+  // an actual declaration.
+  const temaM = norm.match(/\btema\s*:\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (temaM) {
+    const candidate = temaM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  const deM = norm.match(
+    /\b(?:curso|pdf|material|guía|guia)\s+(?:[abc][012]\s+)?(?:de\s+)?(?:[a-záéíóúñü]+\s+){0,2}de\s+([a-záéíóúñü][^,.;?!\n]{2,60})/,
+  );
+  if (deM) {
+    const candidate = deM[1].trim().replace(/\s+en\s+(español|pdf).*$/, '').trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  const levelM = norm.match(/\b[abc][012]\s+(?:de|sobre|en)\s+([a-záéíóúñü][^,.;?!\n]{2,60})/);
+  if (levelM) {
+    const candidate = levelM[1].trim();
+    if (candidate.length > 2 && !isSelfReferential(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+const CONTRACT_EXPIRY_TURNS = 15;
+
+type DocumentTurnClass = 'level_input' | 'topic_input' | 'confirmation' | 'cancellation' | 'task_switch' | 'other';
+
+// DAE fix (AE-01) — Explicit withdrawal of an open document request
+// ("Olvídalo.", "No, gracias.", "Cancela.", "Forget it.") is a real,
+// distinct state-cycle event, not noise and not a topic. AE's instruction
+// was explicit: "El problema no se resuelve añadiendo cada nueva expresión
+// a ORCH_NOISE: necesitamos distinguir una continuación válida de una
+// retirada de la solicitud." ORCH_NOISE intentionally stays untouched by
+// this fix — a cancellation is classified and handled as its own turn
+// class, upstream of both the topic fallback and ORCH_NOISE, so the fix
+// does not depend on ever-expanding a noise list.
+const CANCELLATION_PATTERNS = [
+  /^olv[ií]dal?o$/i,
+  /^olv[ií]delo$/i,
+  /^cancela(r|lo)?$/i,
+  /^d[ée]jalo( as[ií])?$/i,
+  /^mejor no$/i,
+  /^ya no( quiero)?$/i,
+  /^no\s*,?\s*gracias$/i,
+  /^no\s+quiero(\s+(el|un|hacer)?\s*(curso|pdf))?$/i,
+  /^nada(\s+m[aá]s)?$/i,
+  /^olv[ií]date( de ello)?$/i,
+  /^forget\s+it$/i,
+  /^never\s*mind$/i,
+  /^cancel(\s+it)?$/i,
+  /^no\s+thanks?$/i,
+  /^no\s+thank\s+you$/i,
+  /^don'?t\s+bother$/i,
+] as const;
+
+function normalizeForClassification(message: string): string {
+  return (message ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[.!?¡¿]+$/g, '')
+    .trim();
+}
+
+function isCancellationMessage(message: string): boolean {
+  const norm = normalizeForClassification(message);
+  if (!norm) return false;
+  return CANCELLATION_PATTERNS.some(p => p.test(norm));
+}
+
+// DAE fix (AE-04) — AE resolución 16.10.2026 (segunda ronda sobre PR #10):
+// "Un contrato PDF pendiente no puede convertirse en propietario de los
+// siguientes mensajes." Concrete case AE traced through this file: a
+// contract is open awaiting topic (level already known, e.g. A1). The
+// user writes "Cambiemos de tema" — not a withdrawal (they may still want
+// the PDF, just not on whatever topic was implied before), and not a
+// level/CEFR answer, and not recognized by any of extractCourseTopic's
+// connector patterns. That left it falling through to H1b's bare-topic
+// fallback below, which strips recognized level/CEFR tokens from the raw
+// message and accepts whatever text remains as the topic — "tema" gets
+// stripped, leaving "cambiemos de", which the fallback then accepted as a
+// real topic and queued for PDF generation. This is the same root failure
+// as AE-01 (the pending contract outranking explicit user intent), but
+// for a *redirect* rather than a *withdrawal* — doctrine's ordering
+// ("intención explícita del usuario → modo activo → fase pedagógica →
+// contexto legado") means the contract (contexto legado) must not get to
+// reinterpret a message that is itself an explicit instruction about the
+// conversation, regardless of what's left over after stripping level
+// words.
+//
+// AE explicitly rejected solving this by growing CANCELLATION_PATTERNS
+// with more idioms. This is deliberately a SEPARATE, grammatically bounded
+// turn class, not an expansion of that list: a redirect act ("let's talk
+// about something else") is a different speech act from a withdrawal
+// ("never mind, forget the whole PDF") — the underlying document request
+// may still be wanted, just not on the half-specified topic. The patterns
+// below match a closed set of exhortative/imperative redirect VERBS
+// (cambiar/hablar/pasar, in nosotros or imperative form) combined with an
+// explicit "to something/somewhere else" object, not an open-ended list of
+// synonyms for "stop" — and are checked as their own category, never
+// folded into isCancellationMessage.
+const TASK_SWITCH_PATTERNS = [
+  /\b(cambiemos|cambia(mos)?|cambiar)\s+(de\s+(tema|asunto|curso|idea)|a\s+otr[oa])\b/i,
+  /\b(hablemos|hablar|habla)\s+(de\s+otra\s+cosa|de\s+otro\s+tema|sobre\s+otra\s+cosa)\b/i,
+  /\b(pasemos|pasar|pasa)\s+a\s+otr[oa]\s+(tema|cosa|asunto)\b/i,
+  /\b(volvamos|volver|vuelve)\s+(a\s+otro\s+tema|despu[eé]s(\s+a\s+esto)?)\b/i,
+  /\bmejor\s+(hablemos|cambiemos|pasamos)\b/i,
+  /\bprefiero\s+(hablar|otro\s+tema)\b/i,
+  /\bchange\s+(the\s+)?(subject|topic)\b/i,
+  /\bswitch\s+topics?\b/i,
+  /\blet'?s\s+talk\s+about\s+something\s+else\b/i,
+  /\blet'?s\s+switch\s+(to\s+)?something\s+else\b/i,
+] as const;
+
+function isTaskSwitchMessage(message: string): boolean {
+  const norm = normalizeForClassification(message);
+  if (!norm) return false;
+  return TASK_SWITCH_PATTERNS.some(p => p.test(norm));
+}
+
+function classifyDocumentTurn(message: string): DocumentTurnClass {
+  const norm = message.toLowerCase().trim();
+  // DAE fix (AE-01) — checked FIRST: a cancellation phrase must never be
+  // reachable by the level/topic/confirmation checks below it, so it can
+  // never be misclassified into a path that reads it as course content.
+  if (isCancellationMessage(message)) {
+    return 'cancellation';
+  }
+  // DAE fix (AE-04) — checked SECOND, still ahead of level/topic/
+  // confirmation, for the same reason as cancellation: a redirect
+  // instruction must never reach extractCourseTopic() or the H1b
+  // fallback, which is exactly what let "Cambiemos de tema" degrade into
+  // the bogus topic "cambiemos de".
+  if (isTaskSwitchMessage(message)) {
+    return 'task_switch';
+  }
+  if (/^(sí|si|yes|ok|vale|listo|genera|generate|proceed|adelante|go ahead|hazlo|claro)$/i.test(norm)) {
+    return 'confirmation';
+  }
+  if (/\b(a0|a1|a2|b1|b2|c1|c2|principiante|beginner|intermedio|intermediate|avanzado|advanced|básico|basic|elemental|universitario|experto)\b/i.test(norm)) {
+    return 'level_input';
+  }
+  const t = extractCourseTopic(message);
+  if (t && !isInvalidCourseTopic(t)) return 'topic_input';
+  return 'other';
+}
+
+function extractDocumentLevel(message: string): string | null {
+  const norm = message.toUpperCase();
+  const cefrM = norm.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/);
+  if (cefrM) return cefrM[1];
+  if (/\bUNIVERSITARIO\b/i.test(norm)) return 'Universitario';
+  if (/\bEXPERTO\b/i.test(norm)) return 'C2';
+  if (/\bAVANZADO\b|ADVANCED/i.test(norm)) return 'C1-C2';
+  if (/\bINTERMEDIO\b|INTERMEDIATE/i.test(norm)) return 'B1-B2';
+  if (/\bPRINCIPIANTE\b|BEGINNER|ELEMENTAL|BÁSICO|BASIC\b/i.test(norm)) return 'A1-A2';
+  return null;
+}
+
+function buildDocumentContractGate(ctx: OrchestrationContext): ExecutionPlan {
+  const tokens = ctx.state.tokens ?? 0;
+  const existing = ctx.state.pendingDocumentRequest as PendingDocumentRequest | undefined;
+  const turnClass = classifyDocumentTurn(ctx.message);
+  if (existing && (tokens - existing.openedAtToken) > CONTRACT_EXPIRY_TURNS) {
+    return buildOpenContractPlan(ctx, null, null);
+  }
+  if (!existing) {
+    const levelFromMsg = extractDocumentLevel(ctx.message);
+    const topicRaw = extractCourseTopic(ctx.message);
+    const validTopic = (topicRaw && !isInvalidCourseTopic(topicRaw)) ? topicRaw : null;
+    return buildOpenContractPlan(ctx, levelFromMsg, validTopic);
+  }
+  // DAE fix (AE-01) — a cancellation turn against an open contract must
+  // clear the contract and acknowledge the withdrawal, and must do so
+  // BEFORE level/topic extraction or the H1b fallback run at all — not as
+  // an extra exclusion bolted onto those checks. See buildCancelContractPlan().
+  if (turnClass === 'cancellation') {
+    return buildCancelContractPlan(ctx);
+  }
+  // DAE fix (AE-04) — same rationale as AE-01's early return, for the
+  // redirect case: must run BEFORE level/topic extraction and the H1b
+  // fallback, or the stripped leftover of a redirect sentence ("Cambiemos
+  // de tema" → "cambiemos de" once "tema" is stripped) gets accepted as a
+  // topic by H1b. See buildTaskSwitchPlan().
+  if (turnClass === 'task_switch') {
+    return buildTaskSwitchPlan(ctx);
+  }
+  let { level, topic } = existing;
+  // DAE fix (H1) — AE resolución 16.10.2026: classifyDocumentTurn picks ONE
+  // exclusive category per turn, checking the level regex before topic
+  // extraction. A continuation turn that states both in one message
+  // ("A1, sobre ser y estar", or "Nivel A1. Tema: SER y ESTAR") was
+  // classified only as level_input, so the topic branch never ran and the
+  // topic was silently dropped — the gate then re-asked for information
+  // the user had just given. Level and topic are now extracted
+  // independently from the SAME message every continuation turn, instead
+  // of being mutually exclusive by turnClass.
+  const levelFound = extractDocumentLevel(ctx.message);
+  if (levelFound) level = levelFound;
+  const topicFound = extractCourseTopic(ctx.message);
+  if (topicFound && !isInvalidCourseTopic(topicFound)) topic = topicFound;
+  // DAE fix (H1b) — a bare topic with no recognized connector ("Ser y
+  // estar", without "sobre"/"de") matches none of extractCourseTopic's
+  // patterns and previously fell through as turnClass 'other', re-asking
+  // for the topic. The original version of this fallback only fired when
+  // turnClass === 'other', which missed AE's own worked example ("Nivel
+  // A1. Tema: SER y ESTAR") — that message DOES contain a CEFR level
+  // token, so classifyDocumentTurn returns 'level_input', not 'other',
+  // and the fallback never ran even though the topic ("Tema: SER y
+  // ESTAR") has no "sobre"/"de" connector either. Verified by direct
+  // execution of the real extraction functions against that exact
+  // string (see tests/h1_test.js) before this correction. Fixed by (1)
+  // gating on turnClass !== 'confirmation' instead of turnClass ===
+  // 'other' — so a message that states level AND an unconnected topic in
+  // the same turn is covered, not just a bare topic-only turn — and (2)
+  // stripping recognized level-framing words/tokens ("nivel", "tema",
+  // "A1", etc.) from the raw message before treating the remainder as
+  // the topic, so the level declaration itself is never mistaken for the
+  // topic ("Nivel A1" alone strips to nothing and sets no topic — a bare
+  // level statement is never turned into a course topic, preserving AE's
+  // "No convertir cualquier mensaje en un tema de curso"). AE-02's fix to
+  // extractCourseTopic() above now already catches "Tema: SER y ESTAR"
+  // directly (topicFound, a few lines up), so this fallback is now the
+  // residual path for topics with NEITHER a "sobre/de" connector NOR a
+  // "tema:" prefix (e.g. a genuinely bare "Ser y estar"). The
+  // turnClass === 'cancellation' / 'task_switch' branches above mean this
+  // code can never run for a withdrawal or redirect message — there is
+  // nothing further to exclude here for AE-01 or AE-04 by turnClass alone.
+  if (!topic && level && level !== 'General' && turnClass !== 'confirmation') {
+    const raw = ctx.message?.trim();
+    const stripped = raw
+      ? raw.toLowerCase()
+          .replace(/\b(nivel|level|tema|topic)\b/g, ' ')
+          .replace(/\b(a0|a1|a2|b1|b2|c1|c2|principiante|beginner|intermedio|intermediate|avanzado|advanced|básico|basic|elemental|universitario|experto)\b/g, ' ')
+          .replace(/[.,;:]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      : '';
+    // DAE fix (AE-04) — defense in depth, structural rather than another
+    // phrase list: no genuine topic noun phrase ends in a bare, dangling
+    // preposition/connector. "Cambiemos de tema" strips (via the nivel/
+    // tema removal above) to "cambiemos de" — turnClass already routes
+    // this to 'task_switch' before reaching here, but this guard also
+    // catches any redirect phrasing TASK_SWITCH_PATTERNS doesn't name
+    // explicitly, without adding yet another enumerated expression list.
+    const endsInDanglingConnector = /\b(de|en|a|con|por|para|sobre|y|o)$/i.test(stripped);
+    if (
+      stripped &&
+      stripped.length >= 3 &&
+      stripped.length <= 80 &&
+      !isInvalidCourseTopic(stripped) &&
+      !ORCH_NOISE.test(stripped) &&
+      !endsInDanglingConnector
+    ) {
+      topic = stripped;
+    }
+  }
+  const hasLevel = !!(level && level !== 'General');
+  if (hasLevel && topic) {
+    return buildGeneratePdfPlan(ctx, topic, level!);
+  }
+  return buildCollectingPlan(ctx, { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: existing.openedAtToken });
+}
+
+function buildOpenContractPlan(
+  ctx: OrchestrationContext,
+  level: string | null,
+  topic: string | null,
+): ExecutionPlan {
+  const contract: PendingDocumentRequest = { type: 'course_pdf', level, topic, status: 'collecting', openedAtToken: ctx.state.tokens ?? 0 };
+  if (level && level !== 'General' && topic) {
+    return buildGeneratePdfPlan(ctx, topic, level);
+  }
+  const lang = ctx.interfaceLanguage;
+  const askMsgs: Record<string, string> = {
+    es: '¿Para qué nivel quieres el curso? (A1, A2, B1, B2, C1 o C2)',
+    en: 'What level do you need the course for? (A1, A2, B1, B2, C1 or C2)',
+    no: 'Hvilket nivå vil du ha kurset for? (A1, A2, B1, B2, C1 eller C2)',
+    de: 'Für welches Niveau möchten Sie den Kurs? (A1, A2, B1, B2, C1 oder C2)',
+    fr: 'Pour quel niveau voulez-vous le cours? (A1, A2, B1, B2, C1 ou C2)',
+    it: 'Per quale livello vuoi il corso? (A1, A2, B1, B2, C1 o C2)',
+    pt: 'Para qual nível quer o curso? (A1, A2, B1, B2, C1 ou C2)',
+    nl: 'Voor welk niveau wil je de cursus? (A1, A2, B1, B2, C1 of C2)',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:opened — awaiting level. lastConcept not consulted.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'openDocumentContract', timeout: 8000,
+      params: { clarificationMessage: lang ? (askMsgs[lang] ?? askMsgs['en']) : askMsgs['en'], pendingDocumentRequest: contract } }],
+  };
+}
+
+function buildCollectingPlan(ctx: OrchestrationContext, contract: PendingDocumentRequest): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: contract.level ? '¿Sobre qué tema quieres el curso? O confirma el nivel para un curso general de español.' : '¿Para qué nivel? (A1, A2, B1, B2, C1 o C2)',
+    en: contract.level ? 'What topic? Or confirm the level for a general Spanish course.' : 'What level? (A1, A2, B1, B2, C1 or C2)',
+    no: contract.level ? 'Hvilket tema? Eller bekreft nivå for et generelt spansk kurs.' : 'Hvilket nivå? (A1, A2, B1, B2, C1 eller C2)',
+    de: contract.level ? 'Welches Thema? Oder bestätigen Sie das Niveau.' : 'Welches Niveau? (A1, A2, B1, B2, C1 oder C2)',
+    fr: contract.level ? 'Quel sujet? Ou confirmez le niveau.' : 'Quel niveau? (A1, A2, B1, B2, C1 ou C2)',
+    it: contract.level ? 'Che argomento? O conferma il livello.' : 'Che livello? (A1, A2, B1, B2, C1 o C2)',
+    pt: contract.level ? 'Qual tema? Ou confirme o nível.' : 'Qual nível? (A1, A2, B1, B2, C1 ou C2)',
+    nl: contract.level ? 'Welk onderwerp? Of bevestig het niveau.' : 'Welk niveau? (A1, A2, B1, B2, C1 of C2)',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: `document_contract:collecting — level=${contract.level ?? 'null'}, topic=${contract.topic ?? 'null'}`,
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], pendingDocumentRequest: contract } }],
+  };
+}
+
+// DAE fix (AE-01) — the contract-withdrawal plan. Reuses the 'mentor'
+// executor and the already-wired 'collectDocumentParameter' contract
+// clarification bypass (execution-engine.ts dispatchToExecutor) so no new
+// action name, no new executor branch and no mentor LLM call are needed —
+// only clearDocumentContract: true is new, and it is the SAME flag already
+// used (and tested) by the generateCoursePdf success path, extended by
+// this fix's execution-engine.ts change to also apply here. Deliberately
+// does NOT pass pendingDocumentRequest, and passes no topic/level derived
+// from the cancellation message — a withdrawal produces no course content,
+// by construction.
+function buildCancelContractPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: 'Entendido, dejamos el curso en PDF por ahora. ¿En qué más te puedo ayudar?',
+    en: 'Got it — I will drop the PDF course request for now. What else can I help with?',
+    no: 'Forstått, jeg lar PDF-kursforespørselen ligge for nå. Hva annet kan jeg hjelpe med?',
+    de: 'Verstanden, ich lasse die PDF-Kursanfrage vorerst ruhen. Wobei kann ich sonst helfen?',
+    fr: "Compris, j'abandonne la demande de cours PDF pour l'instant. Autre chose ?",
+    it: 'Capito, lascio la richiesta del corso PDF per ora. Altro?',
+    pt: 'Entendido, deixo o pedido do curso em PDF por agora. Em que mais posso ajudar?',
+    nl: 'Begrepen, ik laat het PDF-cursusverzoek voor nu rusten. Waarmee kan ik verder helpen?',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:cancelled — user withdrew the course-PDF request; pendingDocumentRequest cleared, no topic/level inferred from the cancellation message.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], clearDocumentContract: true } }],
+  };
+}
+
+// DAE fix (AE-04) — the redirect plan. AE's doctrine ordering (intención
+// explícita del usuario → modo activo → fase pedagógica → contexto
+// legado) means a half-specified pending contract must not get to decide
+// what a redirect message means. This clears pendingDocumentRequest via
+// the SAME clearDocumentContract flag and the SAME collectDocumentParameter
+// bypass already used by buildCancelContractPlan (AE-01) — no new action
+// name, no new executor, no mentor LLM call — but the acknowledgement is
+// deliberately worded for a redirect, not a withdrawal: it invites the
+// user to say what they want instead of announcing that the PDF request
+// was dropped outright, since a redirect ("let's talk about something
+// else") does not necessarily mean the user no longer wants a course —
+// only that the contract cannot keep guessing on their behalf. Once
+// cleared, the user's actual next message is evaluated by the FULL
+// orchestrate() pipeline from a clean slate — not pre-owned by the stale
+// contract — which is the concrete fix for "un contrato PDF pendiente no
+// puede convertirse en propietario de los siguientes mensajes."
+function buildTaskSwitchPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const lang = ctx.interfaceLanguage;
+  const msgs: Record<string, string> = {
+    es: 'Claro, dejamos ese tema a un lado. ¿De qué te gustaría hablar, o sobre qué tema prefieres el curso en PDF?',
+    en: 'Sure, let’s set that topic aside. What would you like to talk about, or what topic should the PDF course cover instead?',
+    no: 'Klart det, vi legger det temaet til side. Hva vil du snakke om, eller hvilket tema vil du at PDF-kurset skal dekke i stedet?',
+    de: 'Klar, lassen wir das Thema erst mal. Worüber möchtest du sprechen, oder welches Thema soll der PDF-Kurs stattdessen behandeln?',
+    fr: "D'accord, laissons ce sujet de côté. De quoi veux-tu parler, ou quel sujet veux-tu pour le cours en PDF ?",
+    it: 'Certo, lasciamo quel tema da parte. Di cosa vuoi parlare, o quale argomento preferisci per il corso in PDF?',
+    pt: 'Claro, deixamos esse tema de lado. Sobre o que gostaria de falar, ou qual tema prefere para o curso em PDF?',
+    nl: 'Oké, laten we dat onderwerp even opzij zetten. Waarover wil je praten, of welk onderwerp moet de PDF-cursus behandelen?',
+  };
+  return {
+    executor: 'mentor', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'conversation', artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: 'document_contract:task_switch — user redirected away from the current half-specified topic; pendingDocumentRequest cleared so the next message is evaluated fresh by the full intent priority (explicit intent > active mode > pedagogical phase > legacy context), not pre-owned by the stale contract.',
+    resolvedTopic: undefined,
+    executionOrder: [{ order: 1, executor: 'mentor', action: 'collectDocumentParameter', timeout: 8000,
+      params: { clarificationMessage: lang ? (msgs[lang] ?? msgs['en']) : msgs['en'], clearDocumentContract: true } }],
+  };
+}
+
+function buildGeneratePdfPlan(ctx: OrchestrationContext, topic: string, level: string): ExecutionPlan {
+  return {
+    executor: 'tool_pdf', priority: PRIORITY.HARD_OVERRIDE, blocking: true,
+    pedagogicalAction: 'generate_course_pdf', artifacts: ['course_pdf'],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'CURRICULUM_PRESENTER_DIRECTIVE', ctx),
+    commercial: undefined, skipPhaseAdvance: true,
+    reason: `document_contract:ready — topic="${topic}", level="${level}". Sovereign: pendingDocumentRequest. lastConcept not read.`,
+    resolvedTopic: topic,
+    executionOrder: [{ order: 1, executor: 'tool_pdf', action: 'generateCoursePdf', timeout: 120000,
+      params: { topic, level, clearDocumentContract: true } }],
+  };
+}
+
+// DAE fix (H1 regression guard) — "continuar" (infinitive) was missing from
+// this list; only "continúa"/"continua" (imperative) were covered, so a
+// plain "continuar" reply fell through as non-noise and, via the new H1b
+// topic fallback in buildDocumentContractGate(), could be misread as a
+// course topic — exactly the regression AE's "No convertir cualquier
+// mensaje en un tema de curso" warns against. Caught by direct test
+// execution (tests/h1_test.js, case H1-6), not by inspection. Added here
+// rather than only in the fallback's own filter because ORCH_NOISE is
+// shared with resolveCurrentTopic(), where the same gap applies.
+// AE-01 note: cancellation phrases are deliberately NOT added to this
+// list — AE explicitly rejected growing ORCH_NOISE as the fix for
+// cancellation. They are handled upstream as their own turn class
+// (see CANCELLATION_PATTERNS / classifyDocumentTurn above), which runs
+// before this list is ever consulted for a document-contract turn.
+const ORCH_NOISE = /^(continúa|continua|continuar|siguiente|next|ok|sí|si|yes|no|vale|listo|bien|ready|start|más|mas|seguir|continue|adelante|proceed|claro|entendido|understood)$/i;
+
+function resolvePedagogicalMode(
+  message: string,
+  state: import('../../lib/contracts').SessionState,
+): import('../../lib/contracts').PedagogicalMode {
+  const t = message.toLowerCase().trim();
+  if (/\besquema\b|\bschema\b|\bresumen\s+visual|\bstructured\s+summary\b|\bstructure\s+this\b|\borganize\s+this\b/i.test(t)) return 'schema';
+  if (/\btabla\b|\bmatriz\b|\btable\b|\bmatrix\b|\bcompar[ae]/i.test(t) &&
+      !/\btabla.*de\s+contenido/i.test(t)) return 'table';
+  if (state.pedagogicalMode === 'schema') return 'schema';
+  if (state.pedagogicalMode === 'table') return 'table';
+  if (state.activeMode === 'free') return 'conversation';
+  return 'explanation';
+}
+
+function resolveCurrentTopic(state: import('../../lib/contracts').SessionState, message: string): string {
+  if (state.currentLessonTopic?.trim()) return state.currentLessonTopic;
+  const clean = message?.trim();
+  const EXACT_REFERENTIAL = /^(este tema|this topic|lo mismo|the same|eso|that|esto|this|el mismo|same|continuar|continue|lo anterior|el tema|the topic|más sobre|more on)$/i;
+  const SEMANTIC_REFERENTIAL = /\b(hazme|dame|genera|crea|muéstrame|show me|give me|make|create|generate|convierte|convert|exporta|export)\b.{0,60}\b(este|esto|eso|ese|el mismo|el tema|this|that|it|the same)\b/i;
+  const isReferential =
+    !clean ||
+    clean.length < 30 ||
+    EXACT_REFERENTIAL.test(clean) ||
+    SEMANTIC_REFERENTIAL.test(clean);
+  if (!isReferential && clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
+  if (state.lastConcept?.trim())   return state.lastConcept;
+  if (state.lastUserGoal?.trim())  return state.lastUserGoal;
+  if (state.curriculumPlan?.topic) return state.curriculumPlan.topic;
+  if (clean && clean.length > 4 && !ORCH_NOISE.test(clean)) return clean;
+  return 'Spanish grammar';
+}
+
+function ttsEnabled(): boolean {
+  return process.env.LINGORA_TTS_ENABLED === 'true';
+}
+
+function withoutAudioSteps(plan: ExecutionPlan): ExecutionPlan {
+  if (ttsEnabled()) return plan;
+  // P15 — was `s.executor !== 'tool_audio' && s.action !== 'generateTTS'`
+  // (AND of two negations): that removes EVERY tool_audio step, including
+  // transcribeAudio, whenever TTS is disabled — not just generateTTS steps.
+  // That silently broke the hard_override transcribe path (step 1 removed)
+  // and pronunciation_eval (step 2 evaluatePronunciation depends on step 1
+  // transcribeAudio, which was also being stripped, degrading the whole
+  // chain). Only generateTTS should be conditional on the TTS flag —
+  // transcription is input processing, not audio *output*, and must never
+  // depend on this flag.
+  const executionOrder = plan.executionOrder.filter(s => !(s.executor === 'tool_audio' && s.action === 'generateTTS'));
+  return {
+    ...plan,
+    artifacts: plan.artifacts.filter(a => a !== 'audio'),
+    executionOrder,
+  };
+}
+
+function isMentorFirstIntent(intent: import('../../lib/contracts').IntentResult): boolean {
+  return intent.type === 'learn' && intent.subtype !== 'curriculum_request';
+}
+
+function isCompoundPedagogicalAct(message: string): boolean {
+  const text = message.toLowerCase();
+  const teach =
+    /ens[eé][nñ]ame|expl[íi]came|teach me|quiero que me ense[nñ]es|introducci[oó]n seria|cambia de dominio|despu[eé]s cambia|como una profesora/;
+  const artifact = /\bpdf\b|artifact|curso de|genera dos|descargables|en pdf|exporta la sesi[oó]n|exporta la sesion/;
+  return teach.test(text) && artifact.test(text);
+}
+
+function buildMentorFirstPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const contextPack = buildContextPack({
+    interfaceLanguage: ctx.interfaceLanguage,
+    languageProficiency: ctx.state.confirmedLevel ?? ctx.state.userLevel,
+    message: ctx.message,
+    lastConcept: ctx.state.lastConcept,
+    lastUserGoal: ctx.state.lastUserGoal,
+    turnCount: ctx.state.tokens ?? 0,
+    activeMode: ctx.state.activeMode,
+  });
+  return withoutAudioSteps({
+    executor: 'mentor',
+    priority: PRIORITY.DEFAULT,
+    blocking: false,
+    pedagogicalAction: 'lesson',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: 's1_e01: mentor-first — learn/topic_lesson before first-turn and document gate. Artifact is a later side-effect. ContextPack transported as information.',
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'conversation', timeout: 180000,
+        params: { pedagogicalGoal: 'teach', artifactGoal: null, contextPack } },
+    ],
+  });
+}
+
+export function orchestrate(ctx: OrchestrationContext): ExecutionPlan {
+  const pedagogicalMode = resolvePedagogicalMode(ctx.message, ctx.state);
+  if (pedagogicalMode !== ctx.state.pedagogicalMode) {
+    ctx = { ...ctx, state: { ...ctx.state, pedagogicalMode } };
+  }
+  if (isMentorFirstIntent(ctx.intent) || isCompoundPedagogicalAct(ctx.message)) {
+    return buildMentorFirstPlan(ctx);
+  }
+  if (isHardOverride(ctx.intent)) {
+    return withoutAudioSteps(buildHardOverridePlan(ctx));
+  }
+  if (ctx.state.expectedResponseMode === 'exercise_answer' && ctx.state.currentExercise) {
+    return withoutAudioSteps(buildExerciseLockPlan(ctx));
+  }
+  if (ctx.state.pendingDocumentRequest?.status === 'collecting') {
+    return buildDocumentContractGate(ctx);
+  }
+  if (ctx.isFirstTurn) {
+    return withoutAudioSteps(buildFirstTurnPlan(ctx));
+  }
+  const semanticOp = resolveSemanticOperation(ctx);
+  if (semanticOp === 'package_session') {
+    return buildPackageSessionPlan(ctx);
+  }
+  if (semanticOp === 'export_artifact') {
+    return buildExportArtifactPlan(ctx);
+  }
+  if (isStrongCurriculumRequest(ctx.intent)) {
+    return buildCurriculumPlan(ctx);
+  }
+  if (isFastPathArtifact(ctx.intent)) {
+    return buildFastPathPlan(ctx);
+  }
+  if (ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course') {
+    return withoutAudioSteps(buildPedagogicalPlan(ctx));
+  }
+  return withoutAudioSteps(buildConversationPlan(ctx));
+}
+
+function buildHardOverridePlan(ctx: OrchestrationContext): ExecutionPlan {
+  const subtype = ctx.intent.subtype as IntentSubtype;
+  const overrideMap: Record<string, {
+    executor: ExecutorType | 'hybrid';
+    action: string;
+    pedagogicalAction: PedagogicalAction;
+    artifacts: ArtifactType[];
+  }> = {
+    translate: { executor: 'mentor', action: 'translateOnly', pedagogicalAction: 'translation_only', artifacts: [] },
+    correct: { executor: 'mentor', action: 'correctOnly', pedagogicalAction: 'correction_only', artifacts: [] },
+    transcribe: { executor: 'tool_audio', action: 'transcribeAudio', pedagogicalAction: 'transcription_only', artifacts: ['audio'] },
+    export_chat_pdf: { executor: 'tool_pdf', action: 'exportChatPdf', pedagogicalAction: 'export_chat_pdf', artifacts: ['pdf_chat'] },
+    generate_course_pdf: { executor: 'tool_pdf', action: 'generateCoursePdf', pedagogicalAction: 'generate_course_pdf', artifacts: ['course_pdf'] },
+    package_session: { executor: 'tool_pdf', action: 'packageSession', pedagogicalAction: 'package_session', artifacts: ['pdf_chat'] },
+    export_artifact: { executor: 'tool_pdf', action: 'exportArtifact', pedagogicalAction: 'export_artifact', artifacts: ['pdf'] },
+    pronunciation_eval: { executor: 'hybrid', action: 'evaluatePronunciation', pedagogicalAction: 'pronunciation_eval', artifacts: ['pronunciation_report', 'audio'] },
+  };
+  const config = overrideMap[subtype] ?? {
+    executor: 'mentor' as ExecutorType,
+    action: 'hardOverrideFallback',
+    pedagogicalAction: 'conversation' as PedagogicalAction,
+    artifacts: [] as ArtifactType[],
+  };
+  if (subtype === 'generate_course_pdf') {
+    return buildDocumentContractGate(ctx);
+  }
+  const step: ExecutionStep = {
+    order: 1,
+    executor: config.executor === 'hybrid' ? 'mentor' : config.executor,
+    action: config.action,
+    timeout: 15000,
+  };
+  return {
+    executor: config.executor,
+    priority: PRIORITY.HARD_OVERRIDE,
+    blocking: true,
+    pedagogicalAction: config.pedagogicalAction,
+    artifacts: config.artifacts,
+    mentor: (config.executor === 'mentor' || config.executor === 'hybrid')
+      ? buildMentorDirective(
+          ctx.state.mentorProfile,
+          subtype === 'translate'            ? 'TRANSLATION_ONLY_DIRECTIVE'
+          : subtype === 'correct'            ? 'CORRECTION_ONLY_DIRECTIVE'
+          : subtype === 'pronunciation_eval' ? 'PRONUNCIATION_EVAL_DIRECTIVE'
+          : 'RICH_CONTENT_DIRECTIVE',
+          ctx,
+        )
+      : undefined,
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `hard_override:${subtype} — user explicitly requested ${subtype}. Bypasses all pedagogy.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: buildHardOverrideSteps(subtype, step),
+  };
+}
+
+function buildHardOverrideSteps(subtype: string, step1: ExecutionStep): ExecutionStep[] {
+  if (subtype === 'transcribe') {
+    return [
+      step1,
+      { order: 2, executor: 'mentor' as ExecutorType, action: 'respondToTranscription', dependsOn: 1, timeout: 12000 },
+      { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 10000 },
+    ];
+  }
+  if (subtype === 'pronunciation_eval') {
+    return [
+      { order: 1, executor: 'tool_audio' as ExecutorType, action: 'transcribeAudio', timeout: 10000 },
+      { order: 2, executor: 'mentor' as ExecutorType, action: 'evaluatePronunciation', dependsOn: 1, timeout: 12000 },
+      { order: 3, executor: 'tool_audio' as ExecutorType, action: 'generateTTS', dependsOn: 2, timeout: 8000 },
+    ];
+  }
+  return [step1];
+}
+
+function buildPackageSessionPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const artifactCount = ctx.state.artifactRegistry?.length ?? 0;
+  return {
+    executor: 'mentor',
+    priority: PRIORITY.SEMANTIC_OP,
+    blocking: true,
+    pedagogicalAction: 'package_session',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `semantic_op:package_session — user wants session materials packaged. artifactRegistry has ${artifactCount} entries. exportSessionStudyPdf available in SEEK 4.2. Honest mentor response.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'packageSessionHonestResponse', timeout: 12000,
+        params: { artifactCount, availableIn: 'SEEK 4.2' } },
+    ],
+  };
+}
+
+function buildExportArtifactPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return {
+    executor: 'mentor',
+    priority: PRIORITY.SEMANTIC_OP,
+    blocking: true,
+    pedagogicalAction: 'export_artifact',
+    artifacts: [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `semantic_op:export_artifact — user wants individual artifact exported. Per-artifact export buttons available in SEEK 4.2.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'exportArtifactHonestResponse', timeout: 12000,
+        params: { availableIn: 'SEEK 4.2' } },
+    ],
+  };
+}
+
+function buildExerciseLockPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return {
+    executor: 'hybrid',
+    priority: PRIORITY.EXERCISE_LOCK,
+    blocking: false,
+    pedagogicalAction: 'feedback',
+    artifacts: ['audio'],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'EXERCISE_FEEDBACK_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: false,
+    reason: `exercise_lock:priority_95 — user answering active exercise "${ctx.state.currentExercise?.substring(0, 60) ?? 'unknown'}".`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'evaluateExerciseResponse', timeout: 15000 },
+      { order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 10000 },
+    ],
+  };
+}
+
+function buildFirstTurnPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const isStructured = ctx.state.activeMode === 'structured' || ctx.state.activeMode === 'pdf_course';
+  const steps: ExecutionStep[] = [
+    { order: 1, executor: 'mentor', action: 'firstTurnGreeting', timeout: 12000 },
+  ];
+  if (isStructured) {
+    steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
+  }
+  return {
+    executor: isStructured ? 'hybrid' : 'mentor',
+    priority: PRIORITY.FIRST_TURN,
+    // P18 — FIRST-TURN STREAMING. Root gap: this plan was unconditionally
+    // blocking:true, so route.ts's `STREAMING_ENABLED && !plan.blocking`
+    // check always sent the first interact/free turn through the
+    // non-streaming JSON path — even though the frontend, for those two
+    // modes, never called this plan at all (it inserted a hardcoded static
+    // GREETINGS[] string with zero API call — see use-beta-page.ts P18
+    // fix). Now that the frontend actually calls through for the first
+    // turn, it must stream like every later turn does, or "thinking then
+    // progressive response" is impossible. structured/pdf_course keeps
+    // blocking:true unchanged — that path already works as designed and
+    // was not part of the reported defect.
+    blocking: isStructured,
+    pedagogicalAction: 'first_turn_greeting',
+    artifacts: isStructured ? ['audio'] : [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'FIRST_TURN_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: false,
+    reason: `first_turn — tokens=0, session start.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: steps,
+  };
+}
+
+function buildCurriculumPlan(ctx: OrchestrationContext): ExecutionPlan {
+  return buildDocumentContractGate(ctx);
+}
+
+function buildFastPathPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const subtype = ctx.intent.subtype;
+  type ArtifactConfig = { executor: ExecutorType; action: string; artifact: ArtifactType };
+  const artifactMap: Record<string, ArtifactConfig> = {
+    table_matrix: { executor: 'tool_schema', action: 'generateTableMatrix', artifact: 'table_matrix' },
+    schema_pro:   { executor: 'tool_schema', action: 'generateSchemaPro',   artifact: 'schema_pro' },
+    table:        { executor: 'tool_schema', action: 'generateTable',        artifact: 'table' },
+    schema:       { executor: 'tool_schema', action: 'generateSchema',       artifact: 'schema' },
+    quiz:         { executor: 'tool_schema', action: 'generateQuiz',         artifact: 'quiz' },
+    illustration: { executor: 'tool_image',  action: 'generateIllustration', artifact: 'illustration' },
+    roadmap:      { executor: 'tool_schema', action: 'buildRoadmapArtifact', artifact: 'roadmap' },
+  };
+  const config: ArtifactConfig = artifactMap[subtype ?? ''] ?? { executor: 'tool_schema', action: 'generateSchema', artifact: 'schema' };
+  return {
+    executor: 'hybrid',
+    priority: PRIORITY.FAST_PATH,
+    blocking: false,
+    pedagogicalAction: 'lesson',
+    artifacts: [config.artifact],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, 'RICH_CONTENT_DIRECTIVE', ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `fast_path:${subtype ?? 'schema'} — explicit artifact request.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: config.executor, action: config.action, timeout: 12000 },
+      { order: 2, executor: 'mentor', action: 'briefArtifactIntro', dependsOn: 1, timeout: 8000 },
+    ],
+  };
+}
+
+function buildPedagogicalPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const { tutorPhase, activeMode } = ctx.state;
+  type PhaseConfig = { pedagogicalAction: PedagogicalAction; artifact?: ArtifactType; directive: MentorDirective['directive']; producesArtifact: boolean };
+  const phaseMap: Record<TutorPhase, PhaseConfig> = {
+    guide:        { pedagogicalAction: 'guide',        directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    lesson:       { pedagogicalAction: 'lesson',       directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    schema:       { pedagogicalAction: 'schema',       artifact: 'schema', directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: true },
+    quiz:         { pedagogicalAction: 'quiz',         artifact: 'quiz',   directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: true },
+    feedback:     { pedagogicalAction: 'feedback',     directive: 'STRUCTURED_COURSE_DIRECTIVE', producesArtifact: false },
+    conversation: { pedagogicalAction: 'conversation', directive: 'FREE_CONVERSATION_DIRECTIVE',  producesArtifact: false },
+  };
+  const config = phaseMap[tutorPhase] ?? phaseMap['guide'];
+  const steps: ExecutionStep[] = [];
+  if (config.producesArtifact && config.artifact) {
+    steps.push({ order: 1, executor: 'tool_schema', action: config.artifact === 'schema' ? 'generateSchema' : 'generateQuiz', timeout: 12000 });
+    steps.push({ order: 2, executor: 'mentor', action: 'deliverArtifactWithLesson', dependsOn: 1, timeout: 10000 });
+  } else {
+    steps.push({ order: 1, executor: 'mentor', action: `phase_${tutorPhase}`, timeout: 15000 });
+    steps.push({ order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 });
+  }
+  return {
+    executor: 'hybrid',
+    priority: PRIORITY.PEDAGOGICAL,
+    blocking: false,
+    pedagogicalAction: config.pedagogicalAction,
+    artifacts: config.artifact ? [config.artifact] : [],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, config.directive, ctx),
+    commercial: undefined,
+    skipPhaseAdvance: false,
+    reason: `pedagogical_phase:${tutorPhase} — mode=${activeMode}.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: steps,
+  };
+}
+
+function buildConversationPlan(ctx: OrchestrationContext): ExecutionPlan {
+  const directive = ctx.state.activeMode === 'free' ? 'FREE_CONVERSATION_DIRECTIVE' : 'RICH_CONTENT_DIRECTIVE';
+  return {
+    executor: 'hybrid',
+    priority: PRIORITY.DEFAULT,
+    blocking: false,
+    pedagogicalAction: 'conversation',
+    artifacts: ['audio'],
+    mentor: buildMentorDirective(ctx.state.mentorProfile, directive, ctx),
+    commercial: undefined,
+    skipPhaseAdvance: true,
+    reason: `default_conversation — fallthrough from all branches. mode=${ctx.state.activeMode}.`,
+    resolvedTopic: resolveCurrentTopic(ctx.state, ctx.message),
+    executionOrder: [
+      { order: 1, executor: 'mentor', action: 'conversation', timeout: 15000 },
+      { order: 2, executor: 'tool_audio', action: 'generateTTS', dependsOn: 1, timeout: 8000 },
+    ],
+  };
+}
+
+function buildMentorDirective(
+  profile: MentorProfile | undefined,
+  directive: MentorDirective['directive'],
+  ctx: OrchestrationContext,
+): MentorDirective {
+  const resolvedProfile: MentorProfile = profile ?? 'Alex';
+  return {
+    profile: resolvedProfile,
+    directive,
+    injectContinuity: !!(ctx.state.lastConcept || ctx.state.lastUserGoal),
+    injectErrorMemory: !!(ctx.state.errorMemory && (ctx.state.errorMemory.grammar.length > 0 || ctx.state.errorMemory.vocabulary.length > 0)),
+    cognitiveStructure: directive === 'STRUCTURED_COURSE_DIRECTIVE' || directive === 'FREE_CONVERSATION_DIRECTIVE',
+    ...(directive === 'EXERCISE_FEEDBACK_DIRECTIVE' && {
+      activeExercise: ctx.state.currentExercise,
+      activeTopic:    ctx.state.currentLessonTopic ?? ctx.state.lastConcept,
+    }),
+  };
+}
