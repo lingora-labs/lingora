@@ -201,7 +201,7 @@ function resolveOutputBudget(plan?: ExecutionPlan, pack?: ContextPack): number {
   )
   const raw = step?.params?.outputBudget
   if (typeof raw === 'number' && raw > 0) return raw
-  if (pack?.compoundPedagogicalAct) return COMPOUND_MAX_OUTPUT_TOKENS
+  if (pack?.compoundPedagogicalAct || pack?.artifactDepth === 'comprehensive') return COMPOUND_MAX_OUTPUT_TOKENS
   return MENTOR_MAX_OUTPUT_TOKENS
 }
 function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
@@ -402,9 +402,33 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           console.warn('[7.1] invalid tutor tool arguments', error instanceof Error ? error.message : error)
         }
       }
-      // An artifact must have actual content. Do not materialize an empty
-      // assistant message and pretend a document was produced.
-      if (!taught.trim() && signals.length) signals.splice(0)
+      // Tool-only model turns are valid OpenAI behavior. If the tutor first
+      // requested a file without writing content, let the SAME tutor finish
+      // its answer (one cognitive authority; not a second artifact decider).
+      if (!taught.trim() && signals.length) {
+        try {
+          const continuation = await openai.chat.completions.create({
+            ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
+            messages: [
+              { role: 'system', content: system + '\nThe artifact request from your previous step has been captured but NOT executed. Complete the student-facing material now in full, as ordinary text. Never claim that a file already exists. The deterministic runtime will attempt to render it after you finish.' },
+              ...normalized.history,
+              { role: 'user', content: user },
+            ],
+          })
+          const completed = continuation.choices?.[0]?.message?.content?.trim() ?? ''
+          if (completed) {
+            taught = completed
+            yield completed
+          }
+        } catch (error) {
+          console.warn('[7.1] tutor continuation failed', error instanceof Error ? error.message : error)
+        }
+      }
+      if (!taught.trim() && signals.length) {
+        // Honest failure; never emit an empty/placeholder artifact.
+        signals.splice(0)
+        yield FALLBACKS[resolveInterfaceLanguage(normalized.state)] ?? FALLBACKS.en
+      }
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals

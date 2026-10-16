@@ -304,8 +304,58 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     // A genuine UI command has its own typed transport. The student has
     // already clicked the export action; do not re-interpret it as prose.
-    if (body.uiAction && body.uiAction !== 'export_chat_pdf') {
+    if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio'] as string[]).includes(body.uiAction)) {
       return errorResponse(400, 'Unsupported UI operation', state);
+    }
+    // 7.1 — direct touch actions need no cognitive routing or extra model.
+    // Their source is the actual visible tutor message, not a generated promise.
+    if (body.uiAction === 'download_pdf' || body.uiAction === 'hear_audio') {
+      const sourceText = body.materialText?.trim() ?? '';
+      const subject = body.uiAction === 'download_pdf' ? 'PDF del material' : 'Respuesta hablada';
+      const sourceLimit = body.uiAction === 'download_pdf' ? 50000 : 3000;
+      if (!sourceText || sourceText.length > sourceLimit) {
+        return NextResponse.json({
+          message: !sourceText
+            ? 'No hay material disponible para esta acción.'
+            : 'El material supera el límite de esta operación. Selecciona un fragmento más corto.',
+          state, suggestedActions: [], artifactFailures: [{ subject }],
+        }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+      }
+      try {
+        if (body.uiAction === 'download_pdf') {
+          const { generatePDF } = await import('../../../server/tools/pdf-generator');
+          const result = await generatePDF({
+            title: 'LINGORA — Material de estudio', content: sourceText,
+            filename: `lingora-material-${Date.now()}`,
+          });
+          if (result.success && result.url) {
+            return NextResponse.json({
+              message: 'Material generado en PDF.',
+              state, suggestedActions: [],
+              artifact: { type: 'pdf', title: 'LINGORA — Material de estudio', url: result.url },
+            }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+          }
+        } else {
+          const { generateSpeech } = await import('../../../server/tools/audio-toolkit');
+          const voice = ({ sarah: 'shimmer', alex: 'fable', nick: 'onyx' } as Record<string, string>)[
+            String(state.mentorProfile ?? 'alex').toLowerCase()
+          ] ?? 'fable';
+          const result = await generateSpeech(sourceText, { voice });
+          if (result.success && result.url) {
+            return NextResponse.json({
+              message: 'Audio preparado.',
+              state, suggestedActions: [],
+              artifact: { type: 'audio', dataUrl: result.url },
+            }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+          }
+        }
+      } catch (error) {
+        console.error('[7.1] explicit UI action failed', error instanceof Error ? error.message : error);
+      }
+      return NextResponse.json({
+        message: 'No pude completar la operación solicitada.',
+        state, suggestedActions: [], artifactFailures: [{ subject }],
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
     }
     if (body.uiAction === 'export_chat_pdf' && !body.exportTranscript?.trim()) {
       return NextResponse.json({

@@ -217,6 +217,11 @@ export function useBetaPage() {
       if (actionKey === 'export_chat_pdf') {
         const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
         callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
+      } else if (actionKey === 'download_pdf' || actionKey === 'hear_audio') {
+        // Instrumental touch actions operate on the tutor content already on
+        // screen. They do not inject an artificial student utterance.
+        const material = [...msgs].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln' && m.text?.trim())
+        callAPI({ message: msg, uiAction: actionKey, materialText: material?.text ?? '' })
       } else {
         callAPI({ message: msg })
       }

@@ -14,7 +14,7 @@ import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
 import { CANONICAL_PRODUCT_URL } from '../../lib/product';
 
-function toPdfSafeText(s: string, maxLen: number = 400): string {
+function toPdfSafeText(s: string, maxLen: number = Number.MAX_SAFE_INTEGER): string {
   return String(s ?? '')
     .replace(/◆/g, '-')
     .replace(/▶/g, '>')
@@ -127,47 +127,93 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
 async function generatePlainTextPdf(title: string, content: string): Promise<Uint8Array> {
   const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
 
-  const doc     = await PDFDocument.create();
-  const bold    = await doc.embedFont(StandardFonts.HelveticaBold);
+  const doc = await PDFDocument.create();
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
-  const page    = doc.addPage([595.28, 841.89]);
-  const { height } = page.getSize();
+  const PAGE_W = 595.28;
+  const PAGE_H = 841.89;
+  const LEFT = 48;
+  const MAX_WIDTH = PAGE_W - 2 * LEFT;
 
-  const NAVY    = rgb(0.05, 0.10, 0.16);
-  const TEAL    = rgb(0.00, 0.79, 0.66);
-  const DKGRAY  = rgb(0.20, 0.25, 0.30);
+  const NAVY = rgb(0.05, 0.10, 0.16);
+  const TEAL = rgb(0.00, 0.79, 0.66);
+  const DKGRAY = rgb(0.20, 0.25, 0.30);
   const MIDGRAY = rgb(0.78, 0.84, 0.90);
-  const WHITE   = rgb(1, 1, 1);
+  const WHITE = rgb(1, 1, 1);
 
-  page.drawRectangle({ x: 0, y: height - 56, width: 595.28, height: 56, color: NAVY });
-  page.drawText('LINGORA', { x: 48, y: height - 34, size: 16, font: bold, color: WHITE });
-  page.drawText(toPdfSafeText(title, 70), { x: 48, y: height - 50, size: 9, font: regular, color: TEAL });
+  // Every page has a genuine header/footer; no first-page-only rendering.
+  function newPage() {
+    const page = doc.addPage([PAGE_W, PAGE_H]);
+    page.drawRectangle({ x: 0, y: PAGE_H - 56, width: PAGE_W, height: 56, color: NAVY });
+    page.drawText('LINGORA', { x: LEFT, y: PAGE_H - 34, size: 16, font: bold, color: WHITE });
+    page.drawText(toPdfSafeText(title, 70), { x: LEFT, y: PAGE_H - 50, size: 9, font: regular, color: TEAL });
+    page.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: 26, color: NAVY });
+    page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - Exportado desde LINGORA`, {
+      x: LEFT, y: 9, size: 7.5, font: regular, color: MIDGRAY,
+    });
+    return page;
+  }
 
-  const lines = String(content).split('\n');
-  let y = height - 72;
-  for (const rawLine of lines) {
-    if (y < 40) break;
-    const line      = toPdfSafeText(rawLine.slice(0, 88));
-    const isHeader  = rawLine.startsWith('══') || rawLine.startsWith('──');
-    const isMentor  = rawLine.startsWith('◆');
+  // Measure glyph widths, not arbitrary character counts. Long unbroken
+  // tokens are split across lines without discarding any of their characters.
+  function wrap(raw: string, size: number, useBold: boolean): string[] {
+    const cleaned = toPdfSafeText(raw, Number.MAX_SAFE_INTEGER);
+    if (!cleaned.trim()) return [''];
+    const font = useBold ? bold : regular;
+    const words = cleaned.trim().split(/\s+/);
+    const lines: string[] = [];
+    let line = '';
+    for (const word of words) {
+      const parts: string[] = [];
+      let segment = '';
+      for (const char of word) {
+        if (segment && font.widthOfTextAtSize(segment + char, size) > MAX_WIDTH) {
+          parts.push(segment);
+          segment = char;
+        } else segment += char;
+      }
+      if (segment) parts.push(segment);
+      for (const part of parts) {
+        const next = line ? line + ' ' + part : part;
+        if (line && font.widthOfTextAtSize(next, size) > MAX_WIDTH) {
+          lines.push(line);
+          line = part;
+        } else {
+          line = next;
+        }
+      }
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [''];
+  }
+
+  let page = newPage();
+  let y = PAGE_H - 72;
+  const ensureLine = () => {
+    if (y < 46) {
+      page = newPage();
+      y = PAGE_H - 72;
+    }
+  };
+  for (const rawLine of String(content ?? '').split('\n')) {
+    const isHeader = rawLine.startsWith('══') || rawLine.startsWith('──');
+    const isMentor = rawLine.startsWith('◆');
     const isStudent = rawLine.startsWith('▶');
-
     if (isHeader) {
-      page.drawLine({ start: { x: 48, y: y - 4 }, end: { x: 548, y: y - 4 }, thickness: 0.5, color: TEAL });
+      ensureLine();
+      page.drawLine({ start: { x: LEFT, y: y - 4 }, end: { x: PAGE_W - LEFT, y: y - 4 }, thickness: 0.5, color: TEAL });
       y -= 10;
       continue;
     }
-    page.drawText(line, {
-      x: 48, y,
-      size:  isMentor || isStudent ? 9.5 : 9,
-      font:  isMentor || isStudent ? bold : regular,
-      color: isMentor ? NAVY : DKGRAY,
-    });
-    y -= 13;
+    const size = isMentor || isStudent ? 9.5 : 9;
+    const font = isMentor || isStudent ? bold : regular;
+    const color = isMentor ? NAVY : DKGRAY;
+    for (const line of wrap(rawLine, size, isMentor || isStudent)) {
+      ensureLine();
+      if (line) page.drawText(line, { x: LEFT, y, size, font, color });
+      y -= 13;
+    }
   }
-
-  page.drawRectangle({ x: 0, y: 0, width: 595.28, height: 26, color: NAVY });
-  page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - Exportado desde LINGORA`, { x: 48, y: 9, size: 7.5, font: regular, color: MIDGRAY });
 
   return doc.save();
 }
