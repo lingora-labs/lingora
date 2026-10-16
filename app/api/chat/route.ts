@@ -17,6 +17,7 @@ import {
   validateStateInvariants,
   repairState,
   mergeStatePatch,
+  toWireState,
 } from '../../../server/core/state-manager';
 
 import { classifyIntent } from '../../../server/core/intent-router';
@@ -402,13 +403,27 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
+    // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
+    // mergeStatePatch() above already translated this turn's null-as-clear
+    // sentinel into `undefined` on updatedState (correct for the server's
+    // OWN in-memory SessionState — used for evaluateCommercial just above,
+    // which needs a real SessionState, not a wire-shaped one). Sending
+    // updatedState directly in the JSON response would let
+    // NextResponse.json's JSON.stringify drop that now-bare undefined key
+    // again — the same loss defect C exploited, one level deeper, hiding
+    // underneath the new null-sentinel mechanism. toWireState() re-applies
+    // the explicit null from the ORIGINAL statePatch onto a wire-only copy.
+    // Same shared function the streaming path (execution-engine-stream.ts)
+    // now calls — one mechanism for both transports, not two.
+    const wireState = toWireState(updatedState, result.statePatch);
+
     const response: ChatResponse = {
       message: commercialSuffix
         ? `${result.message}\n\n${commercialSuffix}`
         : result.message,
       artifact:         resultArtifact,
       ...(blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
-      state:            updatedState,
+      state:            wireState,
       suggestedActions: result.suggestedActions,
       ...(!IS_PRODUCTION && DEBUG_TRACE && {
         executionTrace: {

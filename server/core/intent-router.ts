@@ -343,6 +343,29 @@ function isCompoundPedagogicalAct(message: string): boolean {
   return teachOrDomain.test(t) && artifact.test(t);
 }
 
+// DAE fix (AE-EXECUTE round, 2026-10-16, defect F) — PDF-REJECTION
+// PRECEDENCE. Work's real-UI QA: "En lugar del PDF, hazme una tabla
+// comparativa de ser/estar" was classified as hard_override/export_chat_pdf
+// instead of the table request, because HARD_OVERRIDE_RULES (checked first,
+// unconditionally, by the ALL_RULES loop below) contains broad PDF patterns
+// like /\bpdf\b.*(esto|este|esquema|tabla|resumen|output)\b/i that match
+// "PDF" and "tabla" appearing anywhere in the same message, with no regard
+// for an explicit rejection clause ("en lugar del", "instead of") sitting
+// between them. AE's framing: the student is not asking for a PDF — they
+// are explicitly declining one in favor of something else named in the same
+// breath. mentionsRejectedPdf() is checked once, up front; when it matches,
+// ONLY the two export_chat_pdf/generate_course_pdf hard-override rules are
+// filtered out of the pass for THIS message — every other rule (artifact,
+// learn, practice, diagnostic) still runs exactly as before, in the same
+// order, with the same confidence. Not a new cognitive layer, not a second
+// classifier: a precedence correction to the existing rule set.
+const PDF_REJECTION_PATTERNS: RegExp[] = [
+  /\b(en lugar del?|en vez del?|instead of|rather than)\b.{0,12}\bpdf\b/i,
+];
+function mentionsRejectedPdf(message: string): boolean {
+  return PDF_REJECTION_PATTERNS.some(p => p.test(message));
+}
+
 export function classifyIntent(
   message: string,
   state: SessionState,
@@ -380,7 +403,15 @@ export function classifyIntent(
     };
   }
 
-  for (const rule of ALL_RULES) {
+  const rejectsPdf = mentionsRejectedPdf(message);
+  const rulesToEvaluate = rejectsPdf
+    ? ALL_RULES.filter(r => !(
+        r.type === 'hard_override'
+        && (r.subtype === 'export_chat_pdf' || r.subtype === 'generate_course_pdf')
+      ))
+    : ALL_RULES;
+
+  for (const rule of rulesToEvaluate) {
     if (rule.onlyInModes && !rule.onlyInModes.includes(state.activeMode)) {
       continue;
     }

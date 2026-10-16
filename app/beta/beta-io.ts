@@ -1,4 +1,33 @@
 import { BACKEND_LANG, type Msg, type SS } from './beta-model'
+import { CLEARABLE_FIELDS } from '../../lib/contracts'
+
+// DAE fix (AE-EXECUTE round, defect C) — the client half of the SAME shared,
+// typed delete-semantics mechanism as the server's mergeStatePatch()/
+// toWireState() (server/core/state-manager.ts). The server now sends an
+// explicit `null` (not a dropped key) whenever it means "clear this field" —
+// null is the only CLEARABLE_FIELDS value that survives JSON.stringify/parse
+// intact. use-beta-page.ts's client-side state merge must honor that same
+// sentinel: a naive `{ ...prev, ...incoming }` spread would keep `null`
+// itself as the field's value (wrong — the client's own SS type does not
+// expect null there either, and downstream code checking `if (x.foo)` would
+// still treat null as falsy today, but any strict-equality/typed consumer
+// would not), instead of actually deleting the key the way "cleared" means
+// everywhere else in this codebase. applyServerStatePatch deletes the key
+// outright on null, otherwise behaves exactly like the spread it replaces.
+export function applyServerStatePatch<T extends object>(
+  prev: T,
+  incoming: Record<string, unknown> | null | undefined,
+): T {
+  const merged: Record<string, unknown> = { ...(prev as Record<string, unknown>), ...(incoming ?? {}) }
+  if (incoming) {
+    for (const field of CLEARABLE_FIELDS) {
+      if ((incoming as Record<string, unknown>)[field] === null) {
+        delete merged[field]
+      }
+    }
+  }
+  return merged as unknown as T
+}
 
 export function doExportTxt(msgs: Msg[]) {
   const ts = new Date().toISOString().slice(0,10)

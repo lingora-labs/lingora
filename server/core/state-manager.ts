@@ -16,13 +16,36 @@
 //   Persistence chain: compileResult writes artifactRegistry to statePatch →
 //   mergeStatePatch spreads it into updatedState → route.ts returns updatedState
 //   to client → client sends state back in next request → registry survives.
+//
+//   DAE fix (AE-EXECUTE round, 2026-10-16, defect C) — SHARED DOCUMENT-
+//   CONTRACT CLEAR MECHANISM + WIRE STATE. mergeStatePatch's null-as-clear
+//   translation generalizes from a single hardcoded requestedOperation check
+//   to a loop over lib/contracts.ts's CLEARABLE_FIELDS, so pendingDocumentRequest
+//   gets the exact same safe-delete semantics requestedOperation already had.
+//   Two NEW exports complete the mechanism:
+//     - clearDocumentContractIfRequested(plan): the ONE place that turns
+//       ExecutionPlan.clearDocumentContract into the null sentinel, called
+//       identically by execution-engine.ts (blocking) and
+//       execution-engine-stream.ts (streaming) — not two independently
+//       maintained copies of the same `if` check.
+//     - toWireState(state, patch): after mergeStatePatch has already
+//       translated this turn's null sentinel into `undefined` on the
+//       server's OWN in-memory SessionState (required — SessionState's
+//       type forbids null), toWireState re-applies the explicit null from
+//       the ORIGINAL, pre-merge patch onto a SEPARATE wire-only copy, so
+//       JSON.stringify (NextResponse.json in route.ts, the `data: ...` SSE
+//       frame in execution-engine-stream.ts) does not drop the delete
+//       signal a second time, one level deeper than defect C originally
+//       exploited. The server's own updatedState object is never mutated
+//       with null — only the wire copy carries it.
 // =============================================================================
 
 import {
   SessionState,
   StatePatch,
   StateValidationResult,
-  RequestedOperation,
+  ExecutionPlan,
+  CLEARABLE_FIELDS,
   CONTINUITY_FIELDS,
   INVARIANT_FIELDS,
   DEFAULT_SESSION_STATE,
@@ -139,31 +162,85 @@ export function repairState(state: SessionState, errors: string[]): SessionState
 // STATE MERGE — CONSTITUTIONAL TRANSLATION LAYER
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// StatePatch allows requestedOperation?: RequestedOperation | null
-//   null = explicit clear sentinel (set by execution-engine after hard overrides)
+// StatePatch allows the CLEARABLE_FIELDS (requestedOperation,
+//   pendingDocumentRequest) as `| null` — null = explicit clear sentinel.
 //
-// SessionState allows requestedOperation?: RequestedOperation
-//   null is not valid here — only undefined or a RequestedOperation value
+// SessionState does not allow null on these fields — only undefined or a
+//   real value.
 //
 // mergeStatePatch is the only place where StatePatch becomes SessionState.
-// It must translate null -> undefined before returning.
+// It must translate null -> undefined before returning, for EVERY field in
+// CLEARABLE_FIELDS, not just requestedOperation (DAE fix, AE-EXECUTE round).
 //
 // SEEK 4.1a — PERSISTENCE CONTRACT:
 // { ...current, ...patch } spread preserves ALL patch fields, including
 // artifactRegistry (undeclared in StatePatch type but valid at runtime).
-// No pick(), no whitelist, no filter beyond the requestedOperation sentinel.
+// No pick(), no whitelist, no filter beyond the CLEARABLE_FIELDS sentinel.
 
 export function mergeStatePatch(current: SessionState, patch: StatePatch): SessionState {
-  const merged = { ...current, ...patch } as SessionState & {
-    requestedOperation?: RequestedOperation | null;
-  };
+  const merged = { ...current, ...patch } as SessionState & Record<string, unknown>;
 
-  // Constitutional translation: null-as-clear -> undefined
-  if (patch.requestedOperation === null) {
-    merged.requestedOperation = undefined;
+  // Constitutional translation: null-as-clear -> undefined, for every
+  // clearable field, not a single hardcoded check.
+  for (const field of CLEARABLE_FIELDS) {
+    if ((patch as Record<string, unknown>)[field] === null) {
+      (merged as Record<string, unknown>)[field] = undefined;
+    }
   }
 
   return merged as SessionState;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED DOCUMENT-CONTRACT CLEAR MECHANISM (DAE fix, AE-EXECUTE round, defect H)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The ONE place that turns ExecutionPlan.clearDocumentContract (set by
+// orchestrator.ts's buildTaskSwitchContinuationPlan, among others) into the
+// null-as-clear sentinel for pendingDocumentRequest. Work's real-UI QA
+// proved execution-engine-stream.ts never called any equivalent of this at
+// all — the blocking path's compileResult() had its own inline version,
+// the streaming path had none. Both now call this single function (AE:
+// "preferiblemente con un mecanismo de actualización compartido en vez de
+// duplicar reglas") instead of maintaining two copies of the same `if`.
+
+export function clearDocumentContractIfRequested(
+  plan: Pick<ExecutionPlan, 'clearDocumentContract'>,
+): Pick<StatePatch, 'pendingDocumentRequest'> {
+  return plan.clearDocumentContract === true
+    ? { pendingDocumentRequest: null }
+    : {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WIRE STATE (DAE fix, AE-EXECUTE round, defect C — completing the fix)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// mergeStatePatch() above already translated this turn's null-as-clear
+// sentinel into `undefined` on the returned SessionState — correct, because
+// SessionState (the server's own in-memory type) forbids null. But sending
+// that same object directly over the wire (NextResponse.json in route.ts,
+// or the `data: ${JSON.stringify(...)}` SSE frame in
+// execution-engine-stream.ts) would let JSON.stringify silently drop the
+// now-bare `undefined` key again — the exact loss defect C exploited, one
+// level deeper, surviving underneath the new null-sentinel mechanism.
+//
+// toWireState re-applies the explicit null, read from the ORIGINAL
+// (pre-merge) patch, onto a SEPARATE copy intended only for serialization.
+// It never mutates the server's own SessionState object, and it never
+// introduces null into any type that forbids it outside of this wire copy.
+
+export function toWireState(
+  state: SessionState,
+  patch: StatePatch,
+): SessionState & Record<string, unknown> {
+  const wire = { ...state } as SessionState & Record<string, unknown>;
+  for (const field of CLEARABLE_FIELDS) {
+    if ((patch as Record<string, unknown>)[field] === null) {
+      (wire as Record<string, unknown>)[field] = null;
+    }
+  }
+  return wire;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,7 +409,11 @@ export function getNextUnlockedModule(state: SessionState): number | undefined {
 
 // =============================================================================
 // COMMIT:
-// fix(state-manager): normalize requestedOperation null->undefined in
-// mergeStatePatch — constitutional translation layer between StatePatch
-// (allows null-as-clear) and SessionState (requires undefined or value)
+// fix(state-manager): generalize null->undefined translation to every
+// CLEARABLE_FIELDS entry (not just requestedOperation); add
+// clearDocumentContractIfRequested() as the single shared mechanism behind
+// ExecutionPlan.clearDocumentContract for both the blocking and streaming
+// execution engines; add toWireState() so the explicit null clear sentinel
+// survives JSON.stringify on the way out, instead of being silently dropped
+// a second time underneath the new sentinel mechanism.
 // =============================================================================
