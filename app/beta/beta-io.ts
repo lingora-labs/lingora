@@ -1,4 +1,33 @@
 import { BACKEND_LANG, type Msg, type SS } from './beta-model'
+import { CLEARABLE_FIELDS } from '../../lib/contracts'
+
+// DAE fix (AE-EXECUTE round, defect C) — the client half of the SAME shared,
+// typed delete-semantics mechanism as the server's mergeStatePatch()
+// (server/core/state-manager.ts). `data.state` coming back from /api/chat —
+// whether the blocking JSON response or an SSE `done` event's `state` field
+// — may carry an explicit `null` for any field in CLEARABLE_FIELDS. ONLY
+// `null` survives JSON.stringify/JSON.parse; a field the server meant to
+// clear via bare `undefined` would simply be ABSENT from `data.state`, and
+// the naive spread `{ ...prevSession, ...data.state }` then silently keeps
+// whatever stale value prevSession already had — this is exactly how a
+// cancelled or redirected document contract resurrected itself after
+// "Olvídalo." (AE/Work defect C). use-beta-page.ts calls this ONE function
+// from both the blocking and the streaming merge sites, instead of two
+// independent copies of the same spread.
+export function applyServerStatePatch<T extends object>(
+  prev: T,
+  incoming: Record<string, unknown> | null | undefined,
+): T {
+  const merged: Record<string, unknown> = { ...(prev as Record<string, unknown>), ...(incoming ?? {}) }
+  if (incoming) {
+    for (const field of CLEARABLE_FIELDS) {
+      if ((incoming as Record<string, unknown>)[field] === null) {
+        delete merged[field]
+      }
+    }
+  }
+  return merged as unknown as T
+}
 
 export function doExportTxt(msgs: Msg[]) {
   const ts = new Date().toISOString().slice(0,10)
