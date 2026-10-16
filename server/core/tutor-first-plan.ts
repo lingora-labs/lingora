@@ -57,7 +57,7 @@ export function buildTutorFirstPlan(
         executor: 'mentor',
         action: 'conversation',
         timeout: 180000,
-        params: { pedagogicalGoal: 'teach', artifactGoal: null, contextPack },
+        params: { contextPack },
       },
     ],
   };
