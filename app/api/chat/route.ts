@@ -25,6 +25,7 @@ import { orchestrate }    from '../../../server/core/orchestrator';
 import { executePlan }    from '../../../server/core/execution-engine';
 import { executePlanStream } from '../../../server/core/execution-engine-stream';
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
+import { buildTutorFirstPlan } from '../../../server/core/tutor-first-plan';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 300;
@@ -135,7 +136,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         commitHint:        COMMIT_HINT,
         sourceOfTruth:     'code+vercel-auto',
         timestamp:         new Date().toISOString(),
-        orchestratorActive: true,
+        orchestratorActive: false,
         stateValidation:   stateValidationStatus,
         streamingEnabled:  STREAMING_ENABLED,
         debugTrace:        DEBUG_TRACE,
@@ -144,7 +145,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         tutorPhase:        state.tutorPhase,
         mentorProfile:     state.mentorProfile ?? 'Alex',
         runtimeFeatures:   RUNTIME_FEATURES,
-        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto.`,
+        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto. 7.1: orchestrator retired from product path.`,
       };
       const diagResponse = IS_PRODUCTION
         ? {
@@ -229,6 +230,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         runtimeBaseline:       RUNTIME_BASELINE,
         experiment:            RUNTIME_EXPERIMENT,
         timestamp:             new Date().toISOString(),
+        note: 'diagnostic only — product path does not call classifyIntent or orchestrate',
       };
 
       return NextResponse.json(
@@ -259,23 +261,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
 
-    // P15 — AUDIO INPUT RECOVERY.
-    // Root gap: audioDataUrl reached this route and was carried into
-    // ChatRequest, but was never transcribed before reaching the mentor in
-    // the streaming path (the one actually serving /beta traffic). The
-    // mentor received a bare "[Audio input]" placeholder — the user's
-    // spoken content was silently dropped. Also, the mentor-first plan
-    // (the most common plan branch) never included a transcription step at
-    // all, independent of the withoutAudioSteps flag bug fixed in
-    // orchestrator.ts.
-    // Fix: transcribe centrally, once, before intent classification — so
-    // EVERY downstream branch (intent routing, orchestration, streaming and
-    // non-streaming mentor calls) sees the same real text a typed message
-    // would have produced. This is pre-processing, not a pedagogical
-    // decision: Tutor Core still decides everything about how to respond —
-    // this only restores what it can read. No new capability: reuses the
-    // existing, unmodified transcribeAudio() already relied on by the
-    // non-streaming execution-engine.ts audio path.
     let audioTranscript: string | null = null;
     if (hasAudio && audioDataUrl) {
       try {
@@ -293,12 +278,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
-    // P16-T6 — STT FAILURE TRUTH. Previously: on failed/empty transcription,
-    // an EMPTY message fell through to intent classification and the
-    // mentor, producing a confused or generic reply instead of a truthful
-    // "please try again". Voice input with no usable transcript must never
-    // silently continue as if the user said nothing — session/state is
-    // still preserved (not touched below), only this one turn short-circuits.
     if (hasAudio && audioDataUrl && !audioTranscript) {
       const lang = state.interfaceLanguage ?? 'en';
       const retryMsgs: Record<string, string> = {
@@ -320,20 +299,14 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const normalizedMessage = audioTranscript || rawMessageForNormalization;
 
-    const intent = classifyIntent(normalizedMessage, state, hasFiles, hasAudio);
-
-    const ctx: OrchestrationContext = {
-      message:           normalizedMessage,
+    // 7.1 — conversational turns go to the Tutor Maestro.
+    // No intent classification. No orchestrator decision.
+    // ContextPack is information. Explicit UI actions are not classified here.
+    const plan = buildTutorFirstPlan(
+      normalizedMessage,
       state,
-      intent,
-      files,
-      hasAudio,
-      isFirstTurn:       state.tokens === 0,
-      interfaceLanguage: state.interfaceLanguage ?? 'en',
-      timestamp:         Date.now(),
-    };
-
-    const plan = orchestrate(ctx);
+      state.interfaceLanguage ?? 'en',
+    );
 
     const chatRequest: ChatRequest = {
       message: normalizedMessage,
@@ -342,17 +315,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioDataUrl,
       audioMimeType,
       exportTranscript: body.exportTranscript,
-      // BASE-MODEL-PARITY — root cause found by direct code inspection:
-      // this object literal explicitly reconstructs ChatRequest field by
-      // field. conversationHistory arrives correctly in `body` (the parsed
-      // request JSON — confirmed present, sent by use-beta-page.ts's
-      // callAPI and by the base_model_parity_test harness) but was never
-      // copied into THIS narrower object, so it silently never reached
-      // executePlan/executePlanStream → mentor-engine.ts, no matter how
-      // correct the rest of the plumbing was. Production evidence: the
-      // v2 memory test failed with the model explicitly stating "No tengo
-      // esos datos en esta conversación todavía" — it genuinely never saw
-      // turn 1. This is the actual reason the earlier fix had no effect.
       conversationHistory: body.conversationHistory,
     };
 
@@ -363,17 +325,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const result       = await executePlan(plan, chatRequest, state);
     const updatedState = mergeStatePatch(state, result.statePatch);
 
-    // P16 — VOICE CONVERSATION (blocking/non-streaming path parity).
-    // Blocking plans (first turn, hard overrides, document-contract gates,
-    // structured pedagogical phases) go through executePlan() here, not the
-    // SSE stream — execution-engine-stream.ts's auto-speak-on-voice-turn
-    // fix never runs for them. Verified in production (voice_loop harness):
-    // turn 1 (first turn, blocking) produced no audio while turn 2+
-    // (streaming) did. Mirror the same transport-level decision here: if
-    // this turn started as voice and the plan did not already produce its
-    // own artifact, speak the SAME text Tutor Core just produced. No second
-    // brain, no new capability — same generateSpeech already relied on
-    // elsewhere.
     let resultArtifact = result.artifact;
     let blockingArtifactFailures: { subject: string }[] | undefined;
     if (hasAudio && audioDataUrl && result.message.trim().length > 0 && !resultArtifact) {
@@ -403,18 +354,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
-    // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
-    // mergeStatePatch() above already translated this turn's null-as-clear
-    // sentinel into `undefined` on updatedState, which is correct for the
-    // server's OWN in-memory SessionState (used for evaluateCommercial
-    // just above). Sending updatedState directly in the JSON response
-    // would let NextResponse.json's JSON.stringify drop that now-bare
-    // undefined key again — the same loss defect C exploited, one level
-    // deeper, surviving underneath the new null-sentinel mechanism.
-    // toWireState() re-applies the explicit null from the ORIGINAL
-    // statePatch onto a wire-only copy. Same shared function the streaming
-    // path (execution-engine-stream.ts) now calls — one mechanism for both
-    // transports.
     const wireState = toWireState(updatedState, result.statePatch);
 
     const response: ChatResponse = {
@@ -428,7 +367,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       ...(!IS_PRODUCTION && DEBUG_TRACE && {
         executionTrace: {
           requestId:         `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          intentResult:      intent,
+          intentResult:      null,
           executionPlan:     plan,
           stepResults:       result.stepResults,
           totalDurationMs:   result.totalDurationMs,
