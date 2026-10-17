@@ -301,7 +301,13 @@ export function buildMentorPrompt(params: {
     ? baseModeInstructions + '\n\n[OVERRIDE ACTIVE] An explicit artifact was requested. Deliver it now.'
     : baseModeInstructions
   const pack = resolveTurnContextPack(params.message, state, params.plan)
-  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
+  // A runtime milestone, not an independent pedagogical brain. The tutor
+  // writes the actual review content through the same typed turn closure.
+  const milestone = (state.tokens ?? 0) > 0 && ((state.tokens ?? 0) + 1) % 5 === 0
+    && state.activeMode !== 'free'
+    ? '\n\nVISUAL REVIEW MILESTONE: This is the fifth study exchange. In addition to the requested answer, provide one brief, meaningful schema_pro native artifact that reviews actual subject matter already taught. Use at least two accurate concept/flow/highlight blocks grounded in the conversation. No PDF, unless independently requested. If the student explicitly forbids visual extras, obey the student.'
+    : ''
+  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 

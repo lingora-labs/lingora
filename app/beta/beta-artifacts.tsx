@@ -8,10 +8,10 @@ export function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
-  if (a.type === 'table_matrix') return <MatrixTableBlock content={a as unknown as Record<string, unknown>} />
+  if (a.type === 'table_matrix') return <MatrixTableBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'quiz') {
     type QuizOption = string | { text: string; correct?: boolean }
-    type QuizQuestion = { question: string; options: QuizOption[]; correct?: number }
+    type QuizQuestion = { question: string; options: QuizOption[]; correct?: number; explanation?: string }
     const qa = a as unknown as { title?: string; questions?: QuizQuestion[]; content?: Record<string, unknown> }
     const contentObj = qa.content && typeof qa.content === 'object' ? qa.content : undefined
     const raw = qa.questions ?? (Array.isArray(contentObj?.questions) ? contentObj?.questions as QuizQuestion[] : [])
@@ -19,6 +19,7 @@ export function ArtifactRender({ a }: { a: Artifact }) {
       question: typeof q.question === 'string' ? q.question : '',
       options: Array.isArray(q.options) ? q.options.map((o) => typeof o === 'object' && o && 'text' in o ? String((o as {text:string}).text) : String(o)) : [],
       correct: typeof q.correct === 'number' ? q.correct : Array.isArray(q.options) ? q.options.findIndex((o) => typeof o === 'object' && o && 'correct' in o && Boolean((o as {correct?: boolean}).correct)) : 0,
+      explanation: typeof q.explanation === 'string' ? q.explanation : undefined,
     }))
     const title = typeof qa.title === 'string' ? qa.title : typeof contentObj?.title === 'string' ? contentObj.title : 'Simulacro'
     return (

@@ -134,8 +134,9 @@ export async function fulfillArtifactSignals(
   // Runtime enforces the explicit-request declaration and per-turn side-effect
   // budget. PDF materialization is never automatic after a normal lesson.
   const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
+  const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
-  if (pdfs.length === 0 && audioSignals.length === 0) return { artifacts: [], failures: [] };
+  if (pdfs.length === 0 && audioSignals.length === 0 && native.length === 0) return { artifacts: [], failures: [] };
 
   const { generatePDF } = await import('../tools/pdf-generator')
   const { composeDocumentFromTaught } = await import('../tools/pdf/composeArtifactDocument')
@@ -149,6 +150,18 @@ export async function fulfillArtifactSignals(
 
   const artifacts: ArtifactPayload[] = []
   const failures: ArtifactFailure[] = []
+
+  // The SAME tutor closure delivers typed native UI artifacts alongside PDFs.
+  // Validation is deterministic; no second model, markdown-to-HTML parsing,
+  // fabricated exercise or automatic file is involved.
+  if (native.length) {
+    const { materializeNativeArtifact } = await import('./native-artifact')
+    for (const signal of native) {
+      const payload = materializeNativeArtifact(signal)
+      if (payload) artifacts.push(payload)
+      else failures.push({ subject: `Componente interactivo no válido: ${signal.subject}` })
+    }
+  }
 
   for (const signal of pdfs) {
     const otherSubjects = allSubjects.filter((s) => s !== signal.subject)

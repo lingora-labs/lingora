@@ -43,7 +43,7 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
           {resolveMsgArtifactFailures(msg).map((f, i) => (
             <div key={`artifact-failure-${msg.id}-${i}`}
               style={{ padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:320 }}>
-              No se pudo generar este material descargable{f.subject ? ` (${f.subject})` : ''}. Intenta de nuevo.
+              {f.subject?.startsWith('Componente interactivo') || f.subject?.startsWith('Refuerzo visual') ? 'No se pudo mostrar el componente interactivo solicitado' : 'No se pudo generar este material descargable'}{f.subject ? ` (${f.subject})` : ''}. Intenta de nuevo.
             </div>
           ))}
           {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}

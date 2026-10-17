@@ -155,7 +155,7 @@ export default function BetaPageView() {
               <div style={{ fontSize:9, color:'var(--dim)' }}>nivel</div>
             </div>
             <div style={{ position:'relative' }}>
-              <button onClick={() => setShowExport(v => !v)} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Export</button>
+              <button onClick={() => setShowExport(v => !v)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Export</button>
               {showExport && (
                 <div style={{ position:'absolute', top:'115%', right:0, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:12, padding:'5px 0', zIndex:50, minWidth:160 }}>
                   <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar TXT</button>
@@ -177,7 +177,7 @@ export default function BetaPageView() {
                 </div>
               )}
             </div>
-            <button onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, padding:'5px 10px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
+            <button onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
             <span title="Los documentos se conservan en este navegador mediante IndexedDB. Reset los elimina. No se sincronizan entre dispositivos." style={{ fontSize:10, color:'var(--dim)' }}>Local</span>
             {(exportStatus || persistWarning) && (
               <div role="status" aria-live="polite" style={{ fontSize:10, maxWidth:260, color:'var(--teal)' }}>
@@ -192,8 +192,8 @@ export default function BetaPageView() {
           </div>
           <div style={{ textAlign:'center', fontSize:11, color:'var(--dim)' }}>{copy.hint}</div>
           <div style={{ borderTop:'1px solid var(--border)', padding:'9px 12px 13px', display:'flex', alignItems:'flex-end', gap:8 }}>
-            <button onClick={toggleRec} style={{ width:38, height:38, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', cursor:'pointer' }}>{recording ? 'Stop' : 'Mic'}</button>
-            <label style={{ width:38, height:38, borderRadius:'50%', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'var(--muted)' }}>
+            <button onClick={toggleRec} style={{ width:44, height:44, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', cursor:'pointer' }}>{recording ? 'Stop' : 'Mic'}</button>
+            <label style={{ width:44, height:44, borderRadius:'50%', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'var(--muted)' }}>
               +
               <input ref={fileInputRef} type="file" accept="image/*,application/pdf,text/*,audio/*" onChange={handleFile} style={{ display:'none' }} />
             </label>
@@ -204,7 +204,7 @@ export default function BetaPageView() {
               style={{ flex:1, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:14, padding:'10px 14px', fontSize:14, color:'var(--silver)', resize:'none', maxHeight:120, fontFamily:'inherit' }}
             />
             <button onClick={() => void sendComposer()} disabled={loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0)}
-              style={{ width:38, height:38, borderRadius:'50%', border:'none', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', cursor:'pointer' }}>Go</button>
+              style={{ width:44, height:44, borderRadius:'50%', border:'none', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', cursor:'pointer' }}>Go</button>
           </div>
           {pendingAudioUrl && <audio controls src={pendingAudioUrl} style={{ margin:'0 12px 8px', height:28 }} />}
         </div>

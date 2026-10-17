@@ -94,6 +94,23 @@ export function executePlanStream(
 
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        // Mode phases are observable state, not a separate pedagogical model.
+        // A native tutor-authored quiz opens the exercise phase; after the
+        // student's tactile answers the following turn gives feedback.
+        if (state.activeMode === 'structured') {
+          if (artifacts.some(a => a.type === 'quiz')) patch.tutorPhase = 'quiz'
+          else if (state.tutorPhase === 'feedback') {
+            patch.tutorPhase = 'lesson'
+          }
+        }
+        // SEEK Article 27 milestone: never claim a visual was shown if the
+        // tutor failed to deliver one. The student's content is not replaced.
+        const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
+          (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
+          !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
+        if (visualDue && !artifacts.some(a => a.type === 'schema_pro')) {
+          artifactFailures.push({ subject: 'Refuerzo visual del quinto turno' })
+        }
         // P17 Defect 4 — TOPIC CONTINUITY. Root cause: lastConcept was only
         // ever written in execution-engine.ts (the blocking path). Mentor-
         // first plans — the path for nearly all free-text teaching turns —

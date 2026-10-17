@@ -1,5 +1,5 @@
 'use client'
-import React, { type ReactNode } from 'react'
+import React, { useState, type ReactNode } from 'react'
 import { TableArtifactBlock } from './beta-schema-a'
 
 export function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
@@ -142,6 +142,7 @@ export function isValidSBlock(raw: unknown): raw is SBlock {
 }
 
 export function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({})
   const rawBlocks = Array.isArray(content.blocks) ? content.blocks : []
   const blocks    = rawBlocks.filter(isValidSBlock)
   if (!blocks.length) return null
@@ -159,7 +160,21 @@ export function SchemaProBlock({ content }: { content: Record<string, unknown> }
           <div style={{ fontSize:20, fontWeight:800, color:'#fff', lineHeight:1.2, fontFamily:'"DM Serif Display",serif' }}>{title}</div>
           {subtitle && <div style={{ fontSize:13, color:'var(--muted)', marginTop:4 }}>{subtitle}</div>}
         </div>
-        {blocks.map((b, i) => renderSBlock(b, i))}
+        <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+          <button type="button" onClick={() => setCollapsed(Object.fromEntries(blocks.map((_,i) => [i,true])))}
+            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Contraer todo</button>
+          <button type="button" onClick={() => setCollapsed({})}
+            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Expandir todo</button>
+        </div>
+        {blocks.map((b, i) => (
+          <div key={i}>
+            <button type="button" aria-expanded={!collapsed[i]} onClick={() => setCollapsed(p => ({...p,[i]:!p[i]}))}
+              style={{width:'100%', textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:'1px solid rgba(0,201,167,.20)', background:'rgba(0,201,167,.06)', color:'var(--teal)', fontWeight:700, cursor:'pointer'}}>
+              {collapsed[i] ? '▸' : '▾'} {b.type === 'concept' || b.type === 'bullets' ? b.title : b.type === 'highlight' ? (b.label || 'Idea esencial') : b.type === 'flow' ? 'Secuencia' : b.type === 'comparison' ? 'Comparación' : 'Tabla visual'}
+            </button>
+            {!collapsed[i] && renderSBlock(b, i)}
+          </div>
+        ))}
       </div>
     </div>
   )

@@ -15,7 +15,7 @@ export function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAc
         const s = toneStyle(a.tone)
         return (
           <button key={a.id ?? idx} onClick={() => onAction(a)}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 11px', borderRadius:20, border:`1px solid ${s.border}`, background:s.bg, color:s.color, fontSize:12, fontWeight:600, cursor:'pointer', transition:'all .15s' }}
+            style={{ display:'flex', alignItems:'center', gap:5, minHeight:44, padding:'10px 13px', borderRadius:20, border:`1px solid ${s.border}`, background:s.bg, color:s.color, fontSize:12, fontWeight:600, cursor:'pointer', transition:'all .15s' }}
             onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}>
             {a.emoji && <span style={{ fontSize:13 }}>{a.emoji}</span>}
@@ -36,7 +36,7 @@ export function CopyBlock({ text, children }: { text: string; children: React.Re
     <div style={{ position:'relative', width:'100%' }}>
       {children}
       <button onClick={copy} title="Copiar"
-        style={{ position:'absolute', top:6, right:6, padding:'3px 8px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)', background:'rgba(0,201,167,.08)', color:'var(--teal)', fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4, transition:'all .15s', opacity: copied ? 1 : 0.7 }}>
+        style={{ position:'absolute', top:4, right:4, minHeight:40, padding:'9px 10px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)', background:'rgba(0,201,167,.08)', color:'var(--teal)', fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4, transition:'all .15s', opacity: copied ? 1 : 0.7 }}>
         {copied ? '✓ Copiado' : '⎘ Copiar'}
       </button>
     </div>

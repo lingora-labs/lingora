@@ -306,6 +306,26 @@ export function useBetaPage() {
     window.addEventListener('lingora-step-select', handler)
     return () => window.removeEventListener('lingora-step-select', handler)
   }, [loading, addMsg, callAPI])
+  // Real quiz controls close the structured study loop. Quiz scores are
+  // computed from the tutor-authored answer key; the mentor explains the
+  // student's actual selections on the following conversational turn.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const responses = (e as CustomEvent).detail?.responses as Array<{question:string;chosen:string;correct:boolean}> | undefined
+      if (sessionRef.current.activeMode !== 'structured' || loading ||
+          !responses || responses.length === 0) return
+      const summary = responses.map((r,i) => `${i+1}. ${r.question} → ${r.chosen}`).join('\n')
+      const score = responses.filter(r=>r.correct).length
+      const text = `He completado el quiz: ${score}/${responses.length} aciertos. Mis respuestas:\n${summary}\nCorrige mis errores, explica el porqué y guía mi siguiente paso.`
+      const next = {...sessionRef.current,tutorPhase:'feedback'}
+      sessionRef.current = next
+      setSession(next)
+      addMsg({sender:'user',text})
+      void callAPI({message:text})
+    }
+    window.addEventListener('lingora-quiz-completed',handler)
+    return () => window.removeEventListener('lingora-quiz-completed',handler)
+  }, [loading,addMsg,callAPI])
   const sendComposer = useCallback(async () => {
     const msg = input.trim()
     const hasText = msg.length > 0
@@ -370,42 +390,12 @@ export function useBetaPage() {
     setActiveMode(mode)
     setSession(s => { const n = { ...s, activeMode: mode }; sessionRef.current = n; return n })
     setPhase('chat')
-    const modeLabels: Record<ActiveMode, string> = {
-      interact: 'Interacción inteligente', structured: 'Curso estructurado', pdf_course: 'Curso PDF', free: 'Conversación libre',
-    }
-    if (mode === 'structured' || mode === 'pdf_course') {
-      // P18 (continuation) — same "no static bubble before thinking" fix
-      // as interact/free, applied here too. This branch stays on the
-      // blocking JSON path deliberately (not switched to streaming): its
-      // executionOrder includes a generateTTS step for a spoken welcome
-      // that only the blocking execution-engine.ts path executes —
-      // switching to streaming would silently drop that audio welcome.
-      // But there is no reason the response needs to appear instantly:
-      // the Typing indicator (loading && <Typing/>) already covers the
-      // wait, so the synthetic static placeholder — and the artificial
-      // 400ms delay that existed only to let it render before the real
-      // call — are removed. Same synthetic trigger message is kept: it
-      // is what seeds roadmap/course generation via intent classification,
-      // not just a first-turn greeting; only the visible bypass is gone.
-      setMsgs([])
-      void callAPI({ message: 'Modo seleccionado: ' + modeLabels[mode] + '. Tema: ' + topicRef.current + '. Nivel: ' + (sessionRef.current.level ?? 'A1') + '. Por favor muestra la hoja de ruta.', activeMode: mode })
-    } else {
-      // P18 — FIRST-TURN STREAMING. Root gap: this branch inserted a
-      // hardcoded, fully-formed GREETINGS[mentor][lang] string with zero
-      // API call, zero loading state, zero streaming — the mentor appeared
-      // pre-scripted before ever "thinking." Fix: clear the message list
-      // and call the SAME /api/chat pipeline every later turn uses, with
-      // no synthetic message text. The backend's own first-turn detection
-      // (state.tokens === 0) already produces a contextual greeting via
-      // FIRST_TURN_DIRECTIVE — using selected mentor, interfaceLanguage,
-      // topic and mode — and P18's orchestrator fix makes this specific
-      // plan stream instead of blocking, so the existing Typing indicator
-      // (loading && <Typing/>) shows until the first delta arrives, then
-      // the bubble grows progressively exactly like any other turn.
-      // No new first-message brain — one tutor pipeline, for every mentor.
-      setMsgs([])
-      void callAPI({ message: '', activeMode: mode })
-    }
+    // One mode-independent opening, using the real selected session state.
+    // DISCARDED: synthetic "Modo seleccionado... Nivel A1 ... hoja de ruta"
+    // requests. They were interpreted as consent to generate A0 PDFs.
+    msgsRef.current = []
+    setMsgs([])
+    void callAPI({message:'',activeMode:mode})
   }, [callAPI])
   const resetChat = useCallback(async () => {
     if (resetInProgressRef.current) return

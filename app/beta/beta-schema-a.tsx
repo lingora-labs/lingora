@@ -1,5 +1,5 @@
 'use client'
-import React, { useMemo, useState, type ReactNode } from 'react'
+import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TableRow, QuizQ, Sub, Norm } from './beta-model'
 
 export const ss = (v: unknown): string => typeof v === 'string' ? v : ''
@@ -82,6 +82,16 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
 
 export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
   const [ans, setAns] = useState<Record<number, number|null>>({})
+  const reported = useRef(false)
+  useEffect(() => {
+    if (reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
+    reported.current = true
+    const responses = quiz.map((q, i) => ({
+      question:q.question, chosen:q.options[ans[i] as number],
+      correct: ans[i] === q.correct,
+    }))
+    window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
+  }, [ans, quiz])
   if (!quiz.length) return null
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
@@ -99,7 +109,7 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
                   if (isOk)           { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
                   if (isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
                 }
-                return <button key={oi} disabled={done} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', padding:'9px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
+                return <button key={oi} disabled={done} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
               })}
             </div>
             {done && (

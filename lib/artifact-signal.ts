@@ -1,5 +1,5 @@
 // SEEK 5.0 E-06/P8 — structured artifact signal. Not inferred from pedagogical text.
-export type ArtifactSignalType = 'show_visual' | 'emit_pdf' | 'show_quiz' | 'emit_audio'
+export type ArtifactSignalType = 'show_visual' | 'emit_pdf' | 'show_quiz' | 'emit_audio' | 'table_matrix' | 'schema_pro' | 'quiz'
 export type ArtifactSignalTrigger = 'pedagogical_completion' | 'explicit_user_request'
 
 export interface ArtifactSignal {
@@ -7,6 +7,7 @@ export interface ArtifactSignal {
   trigger: ArtifactSignalTrigger
   subject: string
   format?: string
+  content?: Record<string, unknown>
 }
 
 export interface MentorTurnResult {
@@ -14,7 +15,7 @@ export interface MentorTurnResult {
   artifactSignals: ArtifactSignal[]
 }
 
-const TYPES: ArtifactSignalType[] = ['show_visual', 'emit_pdf', 'show_quiz', 'emit_audio']
+const TYPES: ArtifactSignalType[] = ['show_visual', 'emit_pdf', 'show_quiz', 'emit_audio', 'table_matrix', 'schema_pro', 'quiz']
 const TRIGGERS: ArtifactSignalTrigger[] = ['pedagogical_completion', 'explicit_user_request']
 
 export function parseArtifactSignal(raw: unknown): ArtifactSignal | null {
@@ -27,7 +28,8 @@ export function parseArtifactSignal(raw: unknown): ArtifactSignal | null {
   if (!TRIGGERS.includes(trigger as ArtifactSignalTrigger)) return null
   if (subject.length < 2) return null
   const format = typeof o.format === 'string' ? o.format : undefined
-  return { type: type as ArtifactSignalType, trigger: trigger as ArtifactSignalTrigger, subject, format }
+  const content = o.content && typeof o.content === 'object' && !Array.isArray(o.content) ? o.content as Record<string, unknown> : undefined
+  return { type: type as ArtifactSignalType, trigger: trigger as ArtifactSignalTrigger, subject, format, content }
 }
 
 export function dedupeSignals(signals: ArtifactSignal[]): ArtifactSignal[] {
@@ -103,7 +105,7 @@ TUTOR TURN CONTRACT:
 Make exactly one complete_tutor_turn call per response. It includes your complete pedagogical reply and an artifacts array.
 You alone decide which NEW deliverables the CURRENT student requested. Use artifacts: [] for ordinary questions, greetings and continuation of prior exercises without a new document request.
 When the student requests a PDF, printable learning sheet, take-away document or both PDF and web HTML, compose actual useful study content and declare emit_pdf with trigger explicit_user_request, subject specifying its contents, format pdf_html for both versions or pdf for PDF alone.
-Include all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio.
+Include all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For an explicitly requested visual matrix, schema or touch quiz, author the respective native artifact and a concise accompanying reply. In structured mode, a genuine study lesson contains a guide and explanation plus a native schema_pro and quiz; the quiz collects responses before feedback. In pdf_course mode, never create a PDF on mode selection alone.
 Do not claim files already exist: the runtime will materialize your choices or visibly report an execution failure. Do not emit raw tool metadata to the student.
 `
 
@@ -119,10 +121,11 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
         artifacts: { type: 'array', description: 'Only artifacts authorized by the current student message. [] when none.', items: {
           type: 'object', additionalProperties: false,
           properties: {
-            type: { type: 'string', enum: ['emit_pdf', 'emit_audio'] },
+            type: { type: 'string', enum: ['emit_pdf', 'emit_audio', 'table_matrix', 'schema_pro', 'quiz'] },
             trigger: { type: 'string', enum: ['explicit_user_request', 'pedagogical_completion'] },
             subject: { type: 'string' },
-            format: { type: 'string', enum: ['pdf', 'pdf_html', 'audio'] },
+            format: { type: 'string', enum: ['pdf', 'pdf_html', 'audio', 'native'] },
+            content: { type: 'object', description: 'Native only. table_matrix: {title,columns:[{key,label}],rows:[[ {text,tone:ok|warn|danger|info|neutral} ]]}. schema_pro: {title,subtitle,blocks:[{type:concept,title,body},{type:highlight,text,tone},{type:flow,steps:[...]},{type:table,columns:[...],rows:[[...]]}]}. quiz: {title,questions:[{question,options:[...],correct:0-based index,explanation}]}. Use meaningful source-grounded material.', additionalProperties: true },
           },
           required: ['type', 'trigger', 'subject', 'format'],
         } },
@@ -145,6 +148,8 @@ export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
       if (s.trigger !== 'explicit_user_request' || !['pdf', 'pdf_html'].includes(s.format ?? '')) return null
     } else if (s.type === 'emit_audio') {
       if (s.format !== 'audio') return null
+    } else if (s.type === 'table_matrix' || s.type === 'schema_pro' || s.type === 'quiz') {
+      if (s.format !== 'native' || !s.content) return null
     } else return null
     artifacts.push(s)
   }
