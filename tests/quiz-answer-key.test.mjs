@@ -56,6 +56,15 @@ fail('El tren ___ rápido.',['es','está','son'],0)
 fail('La película ___ interesante.',['es','está','son'],1)
 fail('María ___ en Madrid y Ana ___ cansada.',['es','está','son'],1)
 
+// A real Chromium session exposed prefixed model choices ("A) es").
+// Labels cannot bypass grammar verification or produce a false green grade.
+pass('La boda ___ en Madrid.',['A) es','B) está','C) somos'],0)
+fail('La boda ___ en Madrid.',['A) es','B) está','C) somos'],1)
+pass('María ___ en casa.',['A) es','B) está','C) son'],1)
+fail('María ___ en casa.',['A) es','B) está','C) son'],0)
+fail('La boda ___ en Madrid.',['A) está','B) están','C) somos'],0)
+fail('La boda ___ en Madrid.',['se celebrará','ocurrirá','será'],0)
+
 // Backward compatibility with other subjects: this contract is expressly scoped.
 pass('La capital de Francia es ___',['París','Roma'],0)
 pass('En 2020 España ___ un país...',['era','estaba'],0)
@@ -69,6 +78,10 @@ const quiz=(items)=>({
 const eventCorrect=question('La boda ___ en Madrid.',['es','está','somos'],0)
 const personCorrect=question('María ___ en casa.',['es','está','son'],1)
 assert.equal(materializeNativeArtifact(quiz([eventCorrect,personCorrect]))?.type,'quiz')
+assert.equal(materializeNativeArtifact(quiz([
+  question('La boda ___ en Madrid.',['A) es','B) está','C) somos'],1),
+  personCorrect
+])),null,'prefixed option labels must not bypass answer validation')
 assert.equal(materializeNativeArtifact(quiz([
   {...eventCorrect,correct:1},personCorrect
 ])),null,'reject wrong event key before scoring')

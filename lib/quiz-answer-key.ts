@@ -21,6 +21,8 @@ type Person = 0|1|2|3|4|5
 const normalize = (value:string):string => value.trim()
   .toLocaleLowerCase('es').normalize('NFC')
   .replace(/^[«"'¿¡(\s]+|[»"'.?!);\s]+$/gu,'').trim()
+const normalizeOption = (value:string):string =>
+  normalize(value.replace(/^\s*(?:[A-D]|[1-4])\s*[).:\-]\s*/iu,''))
 
 function personOf(subject:string):Person|null {
   const s=normalize(subject)
@@ -88,13 +90,16 @@ export function validateQuizAnswerKey(questions:Question[]):AnswerKeyAudit {
         q.options.some(x=>typeof x!=='string' || !x.trim())) {
       return {ok:false,reason:'invalid_answer_key:'+i}
     }
-    const choices=q.options.map(normalize)
+    const choices=q.options.map(normalizeOption)
     if(new Set(choices).size!==choices.length) return {ok:false,reason:'duplicate_options:'+i}
-    if (!choices.some(x=>copulas.has(x))) continue
     const gaps=[...q.question.matchAll(/_{2,}|\.{3,}|…/gu)]
     if (!gaps.length) continue // Outside present-tense cloze scope.
-    if (gaps.length!==1) return {ok:false,reason:'compound_copula_cloze:'+i}
+    // Never let model-authored option labels ("A) es") bypass validation.
+    // The grammatical construction itself can establish the supported scope,
+    // regardless of how choices are decorated.
     const expected=expectedSerEstarForm(q.question)
+    if (expected===null && !choices.some(x=>copulas.has(x))) continue
+    if (gaps.length!==1) return {ok:false,reason:'compound_copula_cloze:'+i}
     if (!expected) return {ok:false,reason:'unverified_copula_cloze:'+i}
     const match=choices.map((v,k)=>v===expected?k:-1).filter(k=>k!==-1)
     if (match.length!==1) return {ok:false,reason:'missing_or_ambiguous_correct_option:'+i}
