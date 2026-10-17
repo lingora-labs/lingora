@@ -16,7 +16,7 @@ const m = new Module(filename)
 m.filename = filename
 m.paths = Module._nodeModulePaths(path.dirname(filename))
 m._compile(js, filename)
-const { normalizeQuizEvidence, formatQuizEvidence } = m.exports
+const { normalizeQuizEvidence, formatQuizEvidence, disclosedQuizSelections } = m.exports
 
 const quiz = {
   responses: [
@@ -39,6 +39,11 @@ assert.ok(context.includes('correct_answer="está"'))
 assert.ok(context.includes('result=INCORRECT'))
 assert.ok(context.includes('Cansada hoy describe un estado físico temporal.'))
 assert.ok(context.includes('Score: 2/3.'))
+const disclosure = disclosedQuizSelections(quiz, 'Explícame por qué mi primera respuesta fue incorrecta.')
+assert.ok(disclosure.includes('elegiste «es»'))
+assert.ok(disclosure.includes('correcta era «está»'))
+assert.ok(disclosure.includes('María ___ cansada hoy.'))
+assert.equal(disclosedQuizSelections(quiz,'Ahora, ¿por qué el cielo se ve azul?'),'')
 assert.equal(context.includes('identidad o característica'),false,
   'cannot invent a different grammar explanation')
 assert.equal(formatQuizEvidence({ responses:[{ question:'X', chosen:'es' }] }), '')
@@ -47,9 +52,14 @@ assert.equal(normalizeQuizEvidence({ responses:Array(9).fill(quiz.responses[0]) 
 const frontend = fs.readFileSync(fileURLToPath(new URL('../app/beta/use-beta-page.ts',import.meta.url)), 'utf8')
 const mentor = fs.readFileSync(fileURLToPath(new URL('../server/mentors/mentor-engine.ts',import.meta.url)), 'utf8')
 const quizComponent = fs.readFileSync(fileURLToPath(new URL('../app/beta/beta-schema-a.tsx',import.meta.url)), 'utf8')
-assert.ok(frontend.includes('quizEvidence: evidence'))
-assert.ok(frontend.indexOf('quizEvidence: evidence') < frontend.indexOf("if (mode !== 'structured' || loading) return"),
-  'all modes save quiz evidence BEFORE the optional structured feedback')
+assert.ok(frontend.includes('quizEvidence:evidence'))
+assert.ok(frontend.includes('pendingQuizFeedbackRef.current = evidence'))
+assert.ok(frontend.includes('useEffect(() => { flushStructuredQuizFeedback() }'))
+assert.ok(frontend.includes('sessionRef.current = selected'))
+assert.ok(!frontend.includes("if (mode !== 'structured' || loading) return"),
+  'structured completion must be queued even while another request loads')
 assert.ok(mentor.includes('formatQuizEvidence(state.quizEvidence)'))
 assert.ok(quizComponent.includes('expected:q.options[q.correct]'))
-console.log('PASS — A5 quiz evidence retained across modes and grounded in the exact wrong answer')
+const artifactSource = fs.readFileSync(fileURLToPath(new URL('../server/core/native-artifact.ts',import.meta.url)), 'utf8')
+assert.ok(artifactSource.includes('single answer-key'))
+console.log('PASS — exact selection disclosure, structured feedback queue, and quiz shape safeguard')

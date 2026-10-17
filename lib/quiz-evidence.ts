@@ -67,3 +67,26 @@ export function formatQuizEvidence(raw: unknown): string {
     'repeat the answer already provided. For unrelated turns, do not introduce the quiz.',
   ].join('\n')
 }
+
+
+/**
+ * Render a provable selection fact when a student explicitly asks about the
+ * completed quiz. The tutor remains responsible for the explanation; the
+ * runtime owns the UI evidence. No fact is added to unrelated conversations.
+ */
+export function disclosedQuizSelections(raw: unknown, message: string): string {
+  const evidence = normalizeQuizEvidence(raw)
+  if (!evidence || !/\b(quiz|cuestionario|ejercicios?|preguntas?|respuestas?|opci[oó]n|answer|questions?|wrong|incorrect[ao]?|error del quiz)\b/i.test(message)) return ''
+  const normalized = message.toLocaleLowerCase()
+  const ordinal = /\b(primer[ao]?|first|1\.?ª?)\b/.test(normalized) ? 0
+    : /\b(segund[ao]?|second|2\.?ª?)\b/.test(normalized) ? 1
+    : /\b(tercer[ao]?|third|3\.?ª?)\b/.test(normalized) ? 2 : -1
+  const selected = ordinal >= 0 && evidence.responses[ordinal]
+    ? [evidence.responses[ordinal]]
+    : evidence.responses.filter(r => !r.correct)
+  if (!selected.length) return ''
+  return selected.map(r =>
+    'Registro del quiz: en «' + r.question + '» elegiste «' + r.chosen +
+    '». La opción correcta era «' + r.expected + '».',
+  ).join('\n') + '\n\n'
+}

@@ -45,6 +45,13 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
   }
   if (signal.type === 'quiz') {
     if (!Array.isArray(c.questions) || c.questions.length < 2 || c.questions.length > 8) return null
+    // QA13: a multi-gap compound item cannot be certified by one answer-key
+    // index when none of the combined options is fully grammatical. Fail
+    // closed before rendering or scoring; don't award false points.
+    // One independent blank per item is the canonical testable contract.
+    if ((c.questions as unknown[]).some(q =>
+      obj(q) && ((String(q.question).match(/_{2,}/g) ?? []).length > 1 ||
+      (String(q.question).match(/\.{3,}/g) ?? []).length > 1))) return null
     const ok = (c.questions as unknown[]).every(q => obj(q) && str(q.question) &&
       strings(q.options, 2, 4) && typeof q.correct === 'number' &&
       Number.isInteger(q.correct) && q.correct >= 0 &&

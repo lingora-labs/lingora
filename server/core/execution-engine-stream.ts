@@ -47,7 +47,13 @@ export function executePlanStream(
           plan,
           action: plan.executionOrder[0]?.action,
         })
-        let fullText = ''
+        // The UI already graded the student's clicked answers. Disclose exact
+        // selections for a quiz-specific follow-up; the Tutor Maestro provides
+        // the explanation, never an inferred substitute for those selections.
+        const { disclosedQuizSelections } = await import('../../lib/quiz-evidence')
+        const quizFact = disclosedQuizSelections(state.quizEvidence, request.message)
+        let fullText = quizFact
+        if (quizFact) emit({ delta: quizFact })
         for await (const delta of stream) {
           fullText += delta
           emit({ delta })

@@ -5,7 +5,7 @@ import {
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
-import { normalizeQuizEvidence } from '../../lib/quiz-evidence'
+import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
 export function useBetaPage() {
@@ -34,6 +34,7 @@ export function useBetaPage() {
     commercialOffers: [], lastTask: null, lastArtifact: null,
   })
   const sessionRef = useRef<SS>(session)
+  const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
   const mentorRef = useRef<MK>(mentor)
@@ -307,37 +308,45 @@ export function useBetaPage() {
     window.addEventListener('lingora-step-select', handler)
     return () => window.removeEventListener('lingora-step-select', handler)
   }, [loading, addMsg, callAPI])
-  // QA12 P1 — the tutor cannot refer to UI-selected quiz answers unless the
-  // actual selections are carried into its next turn. Store grounded evidence
-  // for EVERY mode. Automatic quiz completion is exclusive to structured;
-  // interactive/free conversations wait for the student's next message.
+  // Feedback is a queued state transition, not an event that can be lost
+  // merely because a response is still finishing or the mode is updating.
+  const flushStructuredQuizFeedback = useCallback(() => {
+    if (loading || sessionRef.current.activeMode !== 'structured') return
+    const evidence = pendingQuizFeedbackRef.current
+    if (!evidence) return
+    pendingQuizFeedbackRef.current = null // exactly once, before async fetch
+    const details = evidence.responses.map((r,i) =>
+      String(i+1) + '. ' + r.question +
+      ' | elegí ' + JSON.stringify(r.chosen) +
+      ' | correcta ' + JSON.stringify(r.expected) +
+      ' | resultado ' + (r.correct ? 'acierto' : 'error'),
+    ).join('\n')
+    const message = 'He completado el quiz: ' + evidence.correctCount +
+      '/' + evidence.total + '. Mis selecciones:\n' + details +
+      '\nEvalúa los errores registrados y guía el siguiente paso.'
+    addMsg({sender:'user', text:message})
+    void callAPI({message})
+  }, [loading, addMsg, callAPI])
+  useEffect(() => { flushStructuredQuizFeedback() }, [flushStructuredQuizFeedback])
   useEffect(() => {
     const handler = (e: Event) => {
       const evidence = normalizeQuizEvidence((e as CustomEvent).detail)
       if (!evidence) return
       const mode = sessionRef.current.activeMode
       const next: SS = {
-        ...sessionRef.current,
-        quizEvidence: evidence,
+        ...sessionRef.current, quizEvidence:evidence,
         ...(mode === 'structured' ? {tutorPhase:'feedback'} : {}),
       }
       sessionRef.current = next
       setSession(next)
-      if (mode !== 'structured' || loading) return
-      const details = evidence.responses.map((r,i) =>
-        String(i+1) + '. ' + r.question + ' | elegí ' + JSON.stringify(r.chosen) +
-        ' | correcta ' + JSON.stringify(r.expected) +
-        ' | resultado ' + (r.correct ? 'acierto' : 'error')
-      ).join('\n')
-      const text = 'He completado el quiz: ' + evidence.correctCount +
-        '/' + evidence.total + '. Mis respuestas:\n' + details +
-        '\nCorrige mis errores reales y guíame al siguiente paso.'
-      addMsg({sender:'user',text})
-      void callAPI({message:text})
+      if (mode === 'structured') {
+        pendingQuizFeedbackRef.current = evidence
+        flushStructuredQuizFeedback()
+      }
     }
-    window.addEventListener('lingora-quiz-completed',handler)
-    return () => window.removeEventListener('lingora-quiz-completed',handler)
-  }, [loading,addMsg,callAPI])
+    window.addEventListener('lingora-quiz-completed', handler)
+    return () => window.removeEventListener('lingora-quiz-completed', handler)
+  }, [flushStructuredQuizFeedback])
   const sendComposer = useCallback(async () => {
     const msg = input.trim()
     const hasText = msg.length > 0
@@ -400,7 +409,11 @@ export function useBetaPage() {
   }, [])
   const selectMode = useCallback((mode: ActiveMode) => {
     setActiveMode(mode)
-    setSession(s => { const n = { ...s, activeMode: mode }; sessionRef.current = n; return n })
+    // Set authoritative transport state BEFORE the opening request.
+    const selected: SS = { ...sessionRef.current, activeMode: mode, tutorPhase:'guide' }
+    sessionRef.current = selected
+    pendingQuizFeedbackRef.current = null
+    setSession(selected)
     setPhase('chat')
     // One mode-independent opening, using the real selected session state.
     // DISCARDED: synthetic "Modo seleccionado... Nivel A1 ... hoja de ruta"
@@ -414,6 +427,7 @@ export function useBetaPage() {
     resetInProgressRef.current = true
     // Invalidate prior debounced writes before clearing the serialized queue.
     resetGenerationRef.current += 1
+    pendingQuizFeedbackRef.current = null
     setPersistWarning('Eliminando los materiales locales…')
     const cleared = await clearBetaSession()
     if (!cleared) {
