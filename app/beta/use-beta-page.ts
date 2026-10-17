@@ -6,6 +6,7 @@ import {
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
+import { isConversationPdfExportRequest } from '../../lib/pdf-intent-authorization'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
 export function useBetaPage() {
@@ -362,10 +363,17 @@ export function useBetaPage() {
     }
     const payload: Record<string, unknown> = {}
     if (hasText) payload.message = msg
-    const EXPORT_RE = /\bexport(a|ar)?\b.*\bpdf\b|\bexporta\b|export.*chat/i
-    if (hasText && EXPORT_RE.test(msg)) {
-      const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
+    // SEEK 2.7 T4: the student's typed export request is the SAME runtime
+    // operation as the already certified touch control, not a prompt to
+    // invent a new PDF about the lesson.
+    if (hasText && isConversationPdfExportRequest(msg)) {
+      const transcript = msgs.map(m => ({
+        sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
+        text: (m.text || '').trim(),
+      })).filter(l => l.text.length > 0)
+        .map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
       payload.exportTranscript = transcript
+      payload.uiAction = 'export_chat_pdf'
     }
     if (hasAudio) {
       const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno']

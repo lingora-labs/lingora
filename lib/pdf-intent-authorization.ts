@@ -18,3 +18,14 @@ export function isExplicitPdfRequest(message: string, activeMode?: string): bool
   if (/\b(?:pdf|archivo imprimible|documento descargable)\b.{0,60}\b(?:ahora|por favor|please|de este|del curso|completo)\b/iu.test(text)) return true
   return false
 }
+
+/** Route an explicit student command to export the ACTUAL chat transcript,
+ * not a new tutor-authored PDF about the last lesson. Shared by UI and API.
+ */
+export function isConversationPdfExportRequest(message:string):boolean {
+  const text=message.trim()
+  if (/^(?:no|sin|don't|do not)\b/iu.test(text)) return false
+  if (!/\bpdf\b/iu.test(text)) return false
+  if (!/\b(?:conversaci[oó]n|chat|historial|dialogo|di[aá]logo)\b/iu.test(text)) return false
+  return /\b(?:exporta(?:r)?|exportar|descarga(?:r)?|descargar|genera(?:r)?|crear?|prepara(?:r)?|convierte|quiero\s+exportar|necesito\s+exportar)\b/iu.test(text)
+}

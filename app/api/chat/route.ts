@@ -27,6 +27,7 @@ import { executePlan }    from '../../../server/core/execution-engine';
 import { executePlanStream } from '../../../server/core/execution-engine-stream';
 import { evaluateCommercial } from '../../../server/core/commercial-engine-adapter';
 import { buildTutorFirstPlan } from '../../../server/core/tutor-first-plan';
+import { isConversationPdfExportRequest } from '../../../lib/pdf-intent-authorization';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 300;
@@ -302,8 +303,18 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const normalizedMessage = audioTranscript || rawMessageForNormalization;
 
-    // A genuine UI command has its own typed transport. The student has
-    // already clicked the export action; do not re-interpret it as prose.
+    // A typed UI command OR an explicit natural-language student export
+    // instruction must converge on one existing pdf_chat execution path.
+    // Never route this through the tutor document composer.
+    if (!body.uiAction && isConversationPdfExportRequest(normalizedMessage)) {
+      body.uiAction = 'export_chat_pdf'
+      if (!body.exportTranscript?.trim() && body.conversationHistory?.length) {
+        body.exportTranscript = body.conversationHistory
+          .filter((turn) => typeof turn.content === 'string' && turn.content.trim())
+          .map((turn) => `[${turn.role === 'user' ? 'Student' : 'Tutor'}]: ${turn.content.trim()}`)
+          .join('\n\n')
+      }
+    }
     if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio'] as string[]).includes(body.uiAction)) {
       return errorResponse(400, 'Unsupported UI operation', state);
     }

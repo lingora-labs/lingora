@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 const require=createRequire(import.meta.url),ts=require('typescript')
 require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2017}}).outputText,file)
-const {isExplicitPdfRequest}=require('../lib/pdf-intent-authorization.ts')
+const {isExplicitPdfRequest,isConversationPdfExportRequest}=require('../lib/pdf-intent-authorization.ts')
 const accept=[
  'Quiero un PDF y HTML con la explicación y ejercicios',
  'Genera el PDF de esta lección',
@@ -28,4 +28,19 @@ assert.ok(!mentor.includes("throw Error('PDF requested without sufficient teachi
 assert.ok(mentor.includes("closure.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized)"))
 assert.ok(fulfillment.includes('if (pedagogicalContent.trim().length < 500)'))
 assert.ok(fulfillment.includes('failures.push('))
+for(const message of [
+ 'Exporta esta conversación a PDF',
+ 'Quiero exportar mi historial de chat a PDF',
+ 'Descarga el historial de esta conversación en PDF',
+]) assert.equal(isConversationPdfExportRequest(message),true,message)
+for(const message of [
+ 'No exportes esta conversación a PDF',
+ '¿Cómo se exporta un chat a PDF?',
+ 'Genera un PDF sobre SER y ESTAR',
+ 'Quiero un esquema en PNG y PDF',
+]) assert.equal(isConversationPdfExportRequest(message),false,message)
+const hook=fs.readFileSync(new URL('../app/beta/use-beta-page.ts',import.meta.url),'utf8')
+const route=fs.readFileSync(new URL('../app/api/chat/route.ts',import.meta.url),'utf8')
+assert.ok(hook.includes('payload.uiAction = \'export_chat_pdf\''),'text command must use certified pdf_chat executor')
+assert.ok(route.includes('isConversationPdfExportRequest(normalizedMessage)'),'API cannot bypass typed export for explicit chat PDF')
 console.log('PASS — PDF intent authority, native-artifact survival, and honest PDF failures')
