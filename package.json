@@ -5,6 +5,8 @@
   "description": "LINGORA — AI Cultural Immersion Platform for Spanish",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/prepare-arabic-font.cjs",
+    "predev": "node scripts/prepare-arabic-font.cjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
