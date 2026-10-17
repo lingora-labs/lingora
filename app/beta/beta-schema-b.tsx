@@ -1,5 +1,5 @@
 'use client'
-import React, { useState, type ReactNode } from 'react'
+import React, { useRef, useState, type ReactNode } from 'react'
 import { TableArtifactBlock } from './beta-schema-a'
 
 export function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
@@ -143,14 +143,71 @@ export function isValidSBlock(raw: unknown): raw is SBlock {
 
 export function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({})
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportError, setExportError] = useState('')
+  const exportRef = useRef<HTMLDivElement>(null)
   const rawBlocks = Array.isArray(content.blocks) ? content.blocks : []
   const blocks    = rawBlocks.filter(isValidSBlock)
   if (!blocks.length) return null
   const title    = typeof content.title    === 'string' ? content.title    : 'Schema'
   const subtitle = typeof content.subtitle === 'string' ? content.subtitle : undefined
   const level    = typeof content.level    === 'string' ? content.level    : undefined
+  // Art. 27: actual color-rich visual document from the rendered schema,
+  // not an LLM-produced promise or a plain-text PDF masquerading as a graphic.
+  async function exportVisual(format:'png'|'pdf') {
+    if (!exportRef.current || exportBusy) return
+    setExportBusy(true)
+    setExportError('')
+    const previous = collapsed
+    try {
+      setCollapsed({})
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      if (!exportRef.current) throw new Error('Visual schema missing')
+      const { toPng } = await import('html-to-image')
+      const dataUrl = await toPng(exportRef.current,{
+        backgroundColor:'#0b1728',
+        pixelRatio:Math.min(2,window.devicePixelRatio||1),
+        cacheBust:true,
+        skipFonts:true,
+        filter:(node) => !(node instanceof HTMLElement && node.hasAttribute('data-export-ignore')),
+      })
+      const slug = title.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,48) || 'esquema'
+      if(format==='png') {
+        const a=document.createElement('a'); a.href=dataUrl
+        a.download='lingora-'+slug+'.png';a.click()
+      } else {
+        const { PDFDocument } = await import('pdf-lib')
+        const pdf=await PDFDocument.create()
+        const image=new Image(); image.src=dataUrl; await image.decode()
+        const pw=595.28, ph=841.89, margin=32, scale=(pw-2*margin)/image.width
+        const chunkSize=Math.max(1,Math.floor((ph-2*margin)/scale))
+        for(let offset=0;offset<image.height;offset+=chunkSize){
+          const chunkHeight=Math.min(chunkSize,image.height-offset)
+          const canvas=document.createElement('canvas')
+          canvas.width=image.width;canvas.height=chunkHeight
+          const ctx=canvas.getContext('2d')
+          if(!ctx) throw new Error('Visual export canvas unavailable')
+          ctx.drawImage(image,0,offset,image.width,chunkHeight,0,0,image.width,chunkHeight)
+          const imageBytes=await pdf.embedPng(canvas.toDataURL('image/png'))
+          const page=pdf.addPage([pw,ph])
+          page.drawImage(imageBytes,{x:margin,y:ph-margin-chunkHeight*scale,width:image.width*scale,height:chunkHeight*scale})
+        }
+        const bytes=await pdf.save()
+        const url=URL.createObjectURL(new Blob([bytes as BlobPart],{type:'application/pdf'}))
+        const a=document.createElement('a');a.href=url;a.download='lingora-'+slug+'.pdf';a.click()
+        window.setTimeout(()=>URL.revokeObjectURL(url),30_000)
+      }
+    } catch(e) {
+      console.error('[schema export]', e)
+      setExportError('No se pudo exportar este esquema. Vuelve a intentarlo.')
+    } finally {
+      setCollapsed(previous)
+      setExportBusy(false)
+    }
+  }
   return (
-    <div style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:20, overflow:'hidden', background:'linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018))', border:'1px solid var(--border)', boxShadow:'0 12px 36px rgba(0,0,0,.22)' }}>
+    <div ref={exportRef} style={{ marginTop:10, width:'100%', maxWidth:580, borderRadius:20, overflow:'hidden', background:'linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018))', border:'1px solid var(--border)', boxShadow:'0 12px 36px rgba(0,0,0,.22)' }}>
       <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.02)', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:10, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Schema Pro</span>
         {level && <span style={{ fontSize:10, padding:'2px 7px', borderRadius:999, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.2)', color:'var(--teal)', marginLeft:'auto' }}>{level}</span>}
@@ -160,12 +217,20 @@ export function SchemaProBlock({ content }: { content: Record<string, unknown> }
           <div style={{ fontSize:20, fontWeight:800, color:'#fff', lineHeight:1.2, fontFamily:'"DM Serif Display",serif' }}>{title}</div>
           {subtitle && <div style={{ fontSize:13, color:'var(--muted)', marginTop:4 }}>{subtitle}</div>}
         </div>
-        <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+        <div data-export-ignore="true" style={{display:'flex', gap:8, flexWrap:'wrap'}}>
           <button type="button" onClick={() => setCollapsed(Object.fromEntries(blocks.map((_,i) => [i,true])))}
             style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Contraer todo</button>
           <button type="button" onClick={() => setCollapsed({})}
             style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Expandir todo</button>
         </div>
+        <div data-export-ignore="true" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button type="button" disabled={exportBusy} onClick={()=>void exportVisual('png')}
+            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(0,201,167,.08)',color:'var(--teal)',cursor:'pointer'}}>↓ Descargar PNG</button>
+          <button type="button" disabled={exportBusy} onClick={()=>void exportVisual('pdf')}
+            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(245,200,66,.08)',color:'var(--gold)',cursor:'pointer'}}>↓ Descargar PDF</button>
+          {exportBusy && <span role="status">Preparando archivo visual…</span>}
+        </div>
+        {exportError && <div role="alert" data-export-ignore="true" style={{color:'var(--coral)',fontSize:12}}>{exportError}</div>}
         {blocks.map((b, i) => (
           <div key={i}>
             <button type="button" aria-expanded={!collapsed[i]} onClick={() => setCollapsed(p => ({...p,[i]:!p[i]}))}

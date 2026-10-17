@@ -5,11 +5,12 @@
   "description": "LINGORA — AI Cultural Immersion Platform for Spanish",
   "scripts": {
     "dev": "next dev",
-    "build": "node tests/quiz-answer-key.test.mjs && node tests/direct-intent-contract.test.mjs && next build",
+    "build": "node tests/quiz-answer-key.test.mjs && node tests/direct-intent-contract.test.mjs && node tests/visual-export-contract.test.mjs && next build",
     "start": "next start",
     "lint": "next lint",
     "test:quiz": "node tests/quiz-answer-key.test.mjs",
-    "test:direct": "node tests/direct-intent-contract.test.mjs"
+    "test:direct": "node tests/direct-intent-contract.test.mjs",
+    "test:visual": "node tests/visual-export-contract.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.540.0",
@@ -20,7 +21,8 @@
     "pdf-lib": "^1.17.1",
     "puppeteer-core": "24.40.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "html-to-image": "^1.11.13"
   },
   "devDependencies": {
     "@types/node": "^20",
