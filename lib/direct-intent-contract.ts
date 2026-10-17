@@ -9,7 +9,7 @@ export function directFormatFor(message:string):DirectFormat|null {
   if (/^(?:corrige\s+(?:esto|esta\s+frase|este\s+texto)|correct\s+(?:this|the\s+following))\s*:\s*\S/iu.test(v)) return 'correction'
   return null
 }
-const tidy=(s:string)=>s.replace(/^\s+|\s+$/g,'').replace(/^["“”«](.*)["“”»]$/s,'$1').trim()
+const tidy=(s:string)=>s.replace(/^\s+|\s+$/g,'').replace(/^["“”«]([\s\S]*)["“”»]$/,'$1').trim()
 /**
  * Short explicit transformations must not retain model-authored wrappers,
  * lesson notes or unsolicited content. Only this bounded format is trimmed;
