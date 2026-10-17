@@ -84,6 +84,7 @@
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 import type { DocumentIntent } from './brand'
+import { auditDocumentFidelity, sourceToDocumentBlocks } from './documentFidelity'
 
 const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
   'heading', 'paragraph', 'bullets', 'numbered', 'table', 'callout', 'quote',
@@ -163,12 +164,50 @@ export type ComposeResult =
 // DISCARDED: unconditionally attaching the complete tutor answer after a
 // successfully composed document (duplicated lessons and scientific dossiers).
 
+// Single-source recovery: never copy the full source *after* a styled
+// document. Replace an unfaithful document with this one lossless rendering.
+// Multi-subject requests cannot safely share the entire answer; fail honestly.
+function faithfulSourceDocument(
+  params: ComposeParams, reason: string, metadata?: Record<string, unknown>,
+): ComposeResult {
+  if (params.otherSubjects.length > 0) {
+    return { ok: false, reason: 'unsafe_multi_subject_source_fallback:' + reason }
+  }
+  const blocks = sourceToDocumentBlocks(params.fullContent)
+  if (!blocks.some(b => b.type === 'heading')) {
+    blocks.unshift({ type: 'heading', level: 1, content: params.subject })
+  }
+  const audit = auditDocumentFidelity(params.fullContent, blocks)
+  if (!audit.ok) return { ok: false, reason: 'source_content_incomplete:' + audit.reason }
+  const intent = normalizeIntent(metadata?.documentIntent ?? 'reference')
+  const type = metadata?.documentType ? normalizeArtifactType(metadata.documentType)
+    : 'reference'
+  console.warn('[document-fidelity] source-based materialization; reason=' + reason)
+  return {
+    ok: true,
+    content: {
+      title: typeof metadata?.title === 'string' && metadata.title.trim()
+        ? metadata.title : 'LINGORA — ' + params.subject,
+      subtitle: typeof metadata?.subtitle === 'string' ? metadata.subtitle : undefined,
+      documentIntent: intent,
+      documentType: type,
+      level: params.level,
+      mentorName: params.mentorName,
+      nativeLanguage: params.nativeLanguage,
+      studentName: 'Estudiante',
+      blocks,
+      nextStep: '',
+      generatedAt: new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' }),
+    },
+  }
+}
+
 export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
   if (!params.fullContent?.trim()) return { ok: false, reason: 'empty_body' }
   // The composer has a bounded budget. Oversize input must use the FULL
   // original response in the paginated fallback, not a silently cut source.
   if (params.fullContent.length > MAX_FULL_CONTENT_CHARS) {
-    return { ok: false, reason: 'full_content_exceeds_composer_budget' }
+    return faithfulSourceDocument(params, 'full_content_exceeds_composer_budget')
   }
 
   try {
@@ -260,17 +299,17 @@ Return ONLY this JSON:
     })
 
     const raw = completion.choices?.[0]?.message?.content ?? ''
-    if (!raw.trim()) return { ok: false, reason: 'empty_completion' }
+    if (!raw.trim()) return faithfulSourceDocument(params, 'empty_completion')
 
     let parsed: Record<string, unknown>
     try {
       parsed = JSON.parse(raw) as Record<string, unknown>
     } catch (parseErr) {
-      return { ok: false, reason: `json_parse_failed:${parseErr instanceof Error ? parseErr.message.slice(0, 120) : 'unknown'}` }
+      return faithfulSourceDocument(params, 'json_parse_failed')
     }
 
     const rawBlocks = Array.isArray(parsed.blocks) ? (parsed.blocks as Array<Record<string, unknown>>) : []
-    if (rawBlocks.length === 0) return { ok: false, reason: 'no_blocks_in_response' }
+    if (rawBlocks.length === 0) return faithfulSourceDocument(params, 'no_blocks_in_response', parsed)
 
     const blocks: DocumentBlock[] = rawBlocks.map((b) => ({
       type: (typeof b.type === 'string' && VALID_BLOCK_TYPES.has(b.type as DocumentBlockType) ? b.type : 'paragraph') as DocumentBlockType,
@@ -284,10 +323,15 @@ Return ONLY this JSON:
     }))
 
     const hasContent = blocks.length >= 2 && blocks.some((b) => (b.type === 'heading' || b.type === 'paragraph') && !!b.content)
-    if (!hasContent) return { ok: false, reason: `insufficient_content_blocks:${blocks.length}` }
+    if (!hasContent) return faithfulSourceDocument(params, 'insufficient_content_blocks', parsed)
 
-    // One finished document per request: these blocks are the deliverable.
-    // Avoid replaying the same lesson as a second unabridged appendix.
+    // Never accept a valid JSON skeleton as a completed document. QA8
+    // returned 6 chapter titles without contents and passed hasContent.
+    const fidelity = auditDocumentFidelity(params.fullContent, blocks)
+    if (!fidelity.ok) {
+      return faithfulSourceDocument(params,
+        fidelity.reason + ':coverage=' + fidelity.coverage.toFixed(2), parsed)
+    }
 
     return {
       ok: true,
@@ -306,6 +350,7 @@ Return ONLY this JSON:
       },
     }
   } catch (e) {
-    return { ok: false, reason: `exception:${e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160)}` }
+    console.error('[document-fidelity] composer failed:', e instanceof Error ? e.message : e)
+    return faithfulSourceDocument(params, 'composer_exception')
   }
 }
