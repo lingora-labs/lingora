@@ -10,9 +10,9 @@ for (const signal of [
  "pdf.embedPng(","↓ Descargar PNG","↓ Descargar PDF",
  "setCollapsed({})","setCollapsed(previous)","data-export-ignore",
  "new Blob([bytes as BlobPart]","role=\"alert\"",
- "const captureWidth = 580","captureNode = exportRef.current.cloneNode(true)",
- "document.body.appendChild(captureNode)","width:captureWidth","captureNode?.remove()",
+ "const captureWidth = 580","toPng(exportRef.current", "width:captureWidth", "style:{width:captureWidth",
 ]) assert.ok(view.includes(signal),'missing export mechanism: '+signal)
+assert.ok(!view.includes("'-10000px'"),'offscreen foreignObject clone can export empty color-only raster')
 assert.ok(pkg.dependencies['html-to-image'],'missing renderer dependency')
 assert.ok(plan.includes('freeOpeningGreeting'),'first real free learner greeting must get first-turn treatment')
 assert.ok(plan.includes("? 'FIRST_TURN_DIRECTIVE'"),'free greeting must reach the Tutor Maestro')

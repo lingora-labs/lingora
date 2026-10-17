@@ -159,31 +159,20 @@ export function SchemaProBlock({ content }: { content: Record<string, unknown> }
     setExportBusy(true)
     setExportError('')
     const previous = collapsed
-    let captureNode: HTMLDivElement | null = null
     try {
       setCollapsed({})
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
       if (!exportRef.current) throw new Error('Visual schema missing')
-      // Never capture the narrow live chat bubble: its intrinsic width
-      // can be as small as 108px, yielding unusable PNG and PDF exports.
-      // Build a temporary snapshot at a document-appropriate fixed width.
+      // Capture the VISIBLE, populated React component, without an offscreen
+      // clone (which can render only background through SVG foreignObject).
+      // Export at a stable document width independently of chat-bubble width.
       const captureWidth = 580
-      captureNode = exportRef.current.cloneNode(true) as HTMLDivElement
-      captureNode.style.position = 'fixed'
-      captureNode.style.left = '-10000px'
-      captureNode.style.top = '0'
-      captureNode.style.width = captureWidth + 'px'
-      captureNode.style.minWidth = captureWidth + 'px'
-      captureNode.style.maxWidth = 'none'
-      captureNode.style.height = 'auto'
-      captureNode.style.overflow = 'visible'
-      document.body.appendChild(captureNode)
-      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
       const { toPng } = await import('html-to-image')
-      const dataUrl = await toPng(captureNode,{
+      const dataUrl = await toPng(exportRef.current,{
         backgroundColor:'#0b1728',
         width:captureWidth,
         pixelRatio:2,
+        style:{width:captureWidth+'px',minWidth:captureWidth+'px',maxWidth:'none'},
         cacheBust:true,
         skipFonts:true,
         filter:(node) => !(node instanceof HTMLElement && node.hasAttribute('data-export-ignore')),
@@ -219,7 +208,6 @@ export function SchemaProBlock({ content }: { content: Record<string, unknown> }
       console.error('[schema export]', e)
       setExportError('No se pudo exportar este esquema. Vuelve a intentarlo.')
     } finally {
-      captureNode?.remove()
       setCollapsed(previous)
       setExportBusy(false)
     }
