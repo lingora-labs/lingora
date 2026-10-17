@@ -1,68 +1,106 @@
-// LINGORA — quiz answer-key validation at materialization boundary.
-// A model-authored key is not automatically a grammatically valid answer.
-// The deterministic checks below cover the finite SER/ESTAR cloze class
-// exercised in QA14. Other linguistic domains require independent coverage;
-// this module never claims to be a universal grammar checker.
-type Question = {question:string;options:string[];correct:number;explanation?:string}
-const normal = (value:string):string => value.trim().toLocaleLowerCase('es').replace(/[¡!?.]+$/g,'').trim()
-const finiteSer = new Set(['soy','eres','es','somos','sois','son'])
-const finiteEstar = new Set(['estoy','estás','está','estamos','estáis','están'])
-const copulas = new Set([...finiteSer,...finiteEstar,'ser','estar'])
-const infinitiveLicense = /(?:(?:^|\s)(?:quiero|quieres|quiere|queremos|queréis|quieren|puedo|puedes|puede|podemos|pueden|debo|debes|debe|debemos|deben|necesito|necesita|necesitamos|prefiero|prefiere|deseo|desea|voy a|vas a|va a|vamos a|van a|para|sin|antes de|después de|al|a|de)\s*)$/iu
-const eventSubject = /\b(?:fiesta|boda|reunión|concierto|clase|conferencia|examen|partido|evento|ceremonia|festival|acto|presentación)\b/iu
+// LINGORA — independently verifiable answer-key contract for the closed
+// present-tense SER / ESTAR cloze domain.
+//
+// A model's "correct" index is evidence of intent, NEVER proof of correctness.
+// For this defined domain, infer the unique expected grammatical form from
+// explicit subject, syntax and lesson semantics; decline to score unproven
+// items. No question, choice or answer is silently rewritten.
+//
+// Other subject domains retain their existing structural contract. This is
+// deliberately not advertised as universal linguistic verification.
+type Question = { question:string; options:string[]; correct:number; explanation?:string }
+export type AnswerKeyAudit = { ok:boolean; reason?:string }
 
-export function validateQuizAnswerKey(questions:Question[]):{ok:boolean;reason?:string} {
-  for (const [index,q] of questions.entries()) {
-    if (!q || typeof q.question !== 'string' || !Array.isArray(q.options) ||
-        !Number.isInteger(q.correct) || q.correct < 0 || q.correct >= q.options.length) {
-      return {ok:false,reason:'invalid_answer_key:'+index}
+const serForms = ['soy','eres','es','somos','sois','son'] as const
+const estarForms = ['estoy','estás','está','estamos','estáis','están'] as const
+const copulas = new Set<string>(['ser','estar',...serForms,...estarForms])
+const finiteSer = new Set<string>(serForms)
+const finiteEstar = new Set<string>(estarForms)
+type Person = 0|1|2|3|4|5
+
+const normalize = (value:string):string => value.trim()
+  .toLocaleLowerCase('es').normalize('NFC')
+  .replace(/^[«"'¿¡(\s]+|[»"'.?!);\s]+$/gu,'').trim()
+
+function personOf(subject:string):Person|null {
+  const s=normalize(subject)
+  // This recognises explicit subjects only. Avoid assigning a person where
+  // syntax is unknown; absence of proof must not grant a mark.
+  const explicit:Record<string,Person>={
+    yo:0, tú:1, tu:1, él:2, ella:2, usted:2,
+    nosotros:3, nosotras:3, vosotros:4, vosotras:4,
+    ellos:5, ellas:5, ustedes:5,
+  }
+  if (Object.prototype.hasOwnProperty.call(explicit,s)) return explicit[s]
+  if (/^(?:mis|tus|sus|nuestros|nuestras|los|las|unos|unas)\s+\p{L}+(?:\s+\p{L}+)?$/u.test(s)) return 5
+  // A single named entity or a simple singular noun phrase.
+  if (/^\p{Lu}\p{L}+(?:\s+\p{Lu}\p{L}+)?$/u.test(subject.trim())) return 2
+  if (/^(?:el|la|un|una|mi|tu|su|nuestro|nuestra)\s+\p{L}+(?:\s+\p{L}+)?$/u.test(s)) return 2
+  return null
+}
+
+const eventHead = /^(?:(?:el|la|un|una|mi|tu|su|nuestra|nuestro)\s+)?(?:boda|fiesta|reunión|concierto|clase|conferencia|examen|partido|evento|ceremonia|festival|acto|presentación)(?:\s+\p{L}+)?$/u
+const location = /^(?:en\s+\S+|aquí\b|allí\b|ahí\b|cerca de\b|lejos de\b|dentro de\b)/u
+const origin = /^de\s+\S+/u
+const eventTime = /^(?:mañana\b|hoy\b|el\s+(?:lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b|a\s+las\s+\d)/u
+const transient = /^(?:cansad[oa]s?|nervios[oa]s?|enferm[oa]s?|preocupad[oa]s?|agotad[oa]s?|content[oa]s?|abiert[oa]s?|cerrad[oa]s?|trist[ei]s?|felic(?:es)?|list[oa]s?|ocupad[oa]s?)\b/u
+const identity = /^(?:médic[oa]s?|doctor(?:a|es|as)?|profesor(?:a|es|as)?|ingenier[oa]s?|estudiant(?:e|es)|simpátic[oa]s?|inteligent(?:e|es)|alt[oa]s?|grand(?:e|es)|pequeñ[oa]s?|español(?:a|es|as)?|azul(?:es)?|importante(?:s)?|abogad[oa]s?)\b/u
+const infinitiveGovernor = /(?:^|\s)(?:quiero|quieres|quiere|queremos|quieren|puedo|puedes|puede|podemos|pueden|necesito|necesita|necesitamos|prefiero|prefiere|debo|debes|debe|debemos|deben|para|sin|al|antes de|después de|voy a|vas a|va a|vamos a|van a)\s*$/u
+
+/**
+ * If a copular cloze is in the explicitly supported grammar domain, return
+ * the UNIQUE grammatically expected answer. If not, return null: never
+ * confuse the model-provided index with a checked answer.
+ */
+function expectedSerEstarForm(question:string):string|null {
+  const gaps=[...question.matchAll(/_{2,}|\.{3,}|…/gu)]
+  if (gaps.length !== 1) return null
+  const pos=gaps[0].index??0
+  const before=question.slice(0,pos).trim()
+  const after=normalize(question.slice(pos+gaps[0][0].length))
+  const subject=normalize(before)
+  const semantic: 'ser'|'estar'|null =
+    location.test(after) ? (eventHead.test(subject)?'ser':'estar')
+    : origin.test(after) ? 'ser'
+    : eventTime.test(after) && eventHead.test(subject) ? 'ser'
+    : transient.test(after) ? 'estar'
+    : identity.test(after.replace(/^(?:muy|bastante)\s+/u,'')) ? 'ser'
+    : null
+  if (!semantic) return null
+  if (infinitiveGovernor.test(subject)) return semantic
+  const person=personOf(before)
+  if (person === null) return null
+  return semantic === 'ser'?serForms[person]:estarForms[person]
+}
+
+/**
+ * Reject the whole quiz if even one SER/ESTAR cloze lacks an independently
+ * established and uniquely offered correct answer.
+ *
+ * Non-copular questions are kept backward compatible, but their accuracy is
+ * NOT independently verified by this Spanish-specific contract.
+ */
+export function validateQuizAnswerKey(questions:Question[]):AnswerKeyAudit {
+  if (!Array.isArray(questions) || questions.length===0) return {ok:false,reason:'empty_quiz'}
+  for (const [i,q] of questions.entries()) {
+    if (!q || typeof q.question!=='string' || !Array.isArray(q.options) ||
+        !Number.isInteger(q.correct) || q.correct<0 || q.correct>=q.options.length ||
+        q.options.some(x=>typeof x!=='string' || !x.trim())) {
+      return {ok:false,reason:'invalid_answer_key:'+i}
     }
-    const options = q.options.map(normal)
-    if (new Set(options).size !== options.length) {
-      return {ok:false,reason:'duplicate_options:'+index}
-    }
-    const chosen = options[q.correct]
-    if (!copulas.has(chosen)) continue
-    const gaps = [...q.question.matchAll(/_{2,}|\.{3,}|…/gu)]
-    if (gaps.length !== 1) continue // Compound gaps rejected by the enclosing contract
-    const before = q.question.slice(0,gaps[0].index).trim()
-    const after = q.question.slice((gaps[0].index ?? 0)+gaps[0][0].length).trim()
-    const licensedInfinitive = infinitiveLicense.test(before)
-    // A free-standing finite predicate cannot be completed with a lemma.
-    // Example: María ___ en casa -> "estar" is NOT "está".
-    if ((chosen === 'ser' || chosen === 'estar') && !licensedInfinitive) {
-      return {ok:false,reason:'infinitive_in_finite_slot:'+index}
-    }
-    if (licensedInfinitive) continue
-    // For an explicit Spanish present-tense subject, the answer must agree
-    // with the subject. Unknown/plural noun phrases are left to the tutor;
-    // ambiguous cases are not silently rewritten.
-    const subject = before.toLocaleLowerCase('es')
-    const pronoun = /(?:^|\s)(yo|tú|tu|él|ella|usted|nosotros|nosotras|vosotros|vosotras|ellos|ellas|ustedes)\s*$/u.exec(subject)?.[1]
-    const expectedForms:Record<string,Set<string>> = {
-      yo:new Set(['soy','estoy']),
-      tú:new Set(['eres','estás']), tu:new Set(['eres','estás']),
-      él:new Set(['es','está']), ella:new Set(['es','está']),
-      usted:new Set(['es','está']),
-      nosotros:new Set(['somos','estamos']), nosotras:new Set(['somos','estamos']),
-      vosotros:new Set(['sois','estáis']), vosotras:new Set(['sois','estáis']),
-      ellos:new Set(['son','están']), ellas:new Set(['son','están']),
-      ustedes:new Set(['son','están']),
-    }
-    if (pronoun && !expectedForms[pronoun]?.has(chosen)) {
-      return {ok:false,reason:'person_agreement:'+index}
-    }
-    // Spatial location with SER is valid for events ("La boda es en Madrid"),
-    // but not the location of a person, place or ordinary object.
-    const temporaryState = /^(?:cansad[oa]s?|nervios[oa]s?|enferm[oa]s?|preocupad[oa]s?|agotad[oa]s?|content[oa]s?)\b/iu.test(after)
-      && /\b(?:hoy|ahora|esta mañana|en este momento)\b/iu.test(after)
-    if (temporaryState && finiteSer.has(chosen)) {
-      return {ok:false,reason:'ser_temporary_state:'+index}
-    }
-    const location = /^(?:en\s+\S+|aquí\b|allí\b|ahí\b|cerca de\b|lejos de\b)/iu.test(after)
-    if (location && finiteSer.has(chosen) && !eventSubject.test(before)) {
-      return {ok:false,reason:'ser_location_predicate:'+index}
-    }
+    const choices=q.options.map(normalize)
+    if(new Set(choices).size!==choices.length) return {ok:false,reason:'duplicate_options:'+i}
+    if (!choices.some(x=>copulas.has(x))) continue
+    const gaps=[...q.question.matchAll(/_{2,}|\.{3,}|…/gu)]
+    if (!gaps.length) continue // Outside present-tense cloze scope.
+    if (gaps.length!==1) return {ok:false,reason:'compound_copula_cloze:'+i}
+    const expected=expectedSerEstarForm(q.question)
+    if (!expected) return {ok:false,reason:'unverified_copula_cloze:'+i}
+    const match=choices.map((v,k)=>v===expected?k:-1).filter(k=>k!==-1)
+    if (match.length!==1) return {ok:false,reason:'missing_or_ambiguous_correct_option:'+i}
+    if (q.correct!==match[0]) return {ok:false,reason:'incorrect_model_answer_key:'+i}
+    // An unsupported alternative option such as an odd verb inflection cannot
+    // itself count as correct: all scoring references the verified single form.
   }
   return {ok:true}
 }
