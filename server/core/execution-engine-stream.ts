@@ -15,6 +15,7 @@ import { mergeStatePatch, clearDocumentContractIfRequested, toWireState } from '
 import { evaluateCommercial } from './commercial-engine-adapter'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
+import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -52,13 +53,21 @@ export function executePlanStream(
         // the explanation, never an inferred substitute for those selections.
         const { disclosedQuizSelections } = await import('../../lib/quiz-evidence')
         const quizFact = disclosedQuizSelections(state.quizEvidence, request.message)
+        const directFormat = directFormatFor(request.message)
         let fullText = quizFact
-        if (quizFact) emit({ delta: quizFact })
+        if (quizFact && !directFormat) emit({ delta: quizFact })
         for await (const delta of stream) {
           fullText += delta
-          emit({ delta })
+          // Buffer only strict direct transformations; otherwise retain
+          // progressive SSE streaming without altering tutoring or artifacts.
+          if (!directFormat) emit({ delta })
         }
-        const signals: ArtifactSignal[] = stream.artifactSignals ?? []
+        if (directFormat) {
+          fullText = formatDirectAnswer(directFormat, fullText)
+          if (fullText) emit({ delta: fullText })
+        }
+        // Direct transformation is user authority for text alone.
+        const signals: ArtifactSignal[] = directFormat ? [] : (stream.artifactSignals ?? [])
         let artifacts: ArtifactPayload[] = []
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
