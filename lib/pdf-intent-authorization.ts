@@ -25,6 +25,9 @@ export function isExplicitPdfRequest(message: string, activeMode?: string): bool
 export function isConversationPdfExportRequest(message:string):boolean {
   const text=message.trim()
   if (/^(?:no|sin|don't|do not)\b/iu.test(text)) return false
+  // An informational question about HOW to export is not an authorization
+  // to produce a file and must preserve the user's explicit intent.
+  if (/^¿?\s*(?:c[oó]mo|cu[aá]l es la forma|d[oó]nde|qu[eé] pasos)\b/iu.test(text)) return false
   if (!/\bpdf\b/iu.test(text)) return false
   if (!/\b(?:conversaci[oó]n|chat|historial|dialogo|di[aá]logo)\b/iu.test(text)) return false
   return /\b(?:exporta(?:r)?|exportar|descarga(?:r)?|descargar|genera(?:r)?|crear?|prepara(?:r)?|convierte|quiero\s+exportar|necesito\s+exportar)\b/iu.test(text)
