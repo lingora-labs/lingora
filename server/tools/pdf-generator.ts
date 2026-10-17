@@ -12,21 +12,6 @@
 import { createHash } from 'crypto';
 import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
-import { CANONICAL_PRODUCT_URL } from '../../lib/product';
-
-function toPdfSafeText(s: string, maxLen: number = Number.MAX_SAFE_INTEGER): string {
-  return String(s ?? '')
-    .replace(/◆/g, '-')
-    .replace(/▶/g, '>')
-    .replace(/→/g, '->')
-    .replace(/[–—]/g, '-')
-    .replace(/[══]/g, '=')
-    .replace(/[──]/g, '-')
-    .replace(/💡/g, 'TIP')
-    .replace(/[·]/g, '.')
-    .replace(/[^ -~áéíóúüñ¿¡ÁÉÍÓÚÜÑàèìòùâêîôûçœæÀÈÌÒÙÂÊÎÔÛÇŒÆ]/g, ' ')
-    .slice(0, maxLen);
-}
 
 let uploadToS3: ((buf: Buffer, key: string, mime: string) => Promise<string | null>) | null = null;
 try {
@@ -72,25 +57,23 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
   try {
     let pdfBytes: Uint8Array;
 
-    const { containsArabic } = await import('./pdf/renderUnicodePdf');
-    if (params.courseContent && containsArabic(params.courseContent)) {
-      // One structured document source for HTML AND PDF. The browser
-      // supplies Arabic shaping/bidi; standard pdf-lib fonts cannot.
-      const { renderArtifactHtml } = await import('./web/renderArtifactHtml');
-      const { renderUnicodePdf } = await import('./pdf/renderUnicodePdf');
-      pdfBytes = await renderUnicodePdf(renderArtifactHtml(params.courseContent), true);
-    } else if (params.lessonContent) {
-      const { generateLessonPdf } = await import('./pdf/generateLessonPdf');
-      pdfBytes = await generateLessonPdf(params.lessonContent);
+    // One document pipeline for all languages, all product artifacts,
+    // lessons and verbatim conversation exports. Only HTML generation varies
+    // by document TYPE; PDF rendering never branches by writing system.
+    const { renderDocumentPdf, transcriptPrintHtml } = await import('./pdf/renderDocumentPdf');
+    let html: string;
+    if (params.lessonContent) {
+      const { renderLessonHtml } = await import('./pdf/generateLessonPdf');
+      html = renderLessonHtml(params.lessonContent);
     } else if (params.courseContent) {
-      const { renderCoursePdf } = await import('./pdf/generateCoursePdf');
-      pdfBytes = await renderCoursePdf(params.courseContent);
-    } else if (containsArabic(params.title + '\n' + params.content)) {
-      const { renderUnicodePdf, transcriptPrintHtml } = await import('./pdf/renderUnicodePdf');
-      pdfBytes = await renderUnicodePdf(transcriptPrintHtml(params.title, params.content), true);
+      const { renderArtifactHtml } = await import('./web/renderArtifactHtml');
+      html = renderArtifactHtml(params.courseContent);
     } else {
-      pdfBytes = await generatePlainTextPdf(params.title, params.content);
+      html = transcriptPrintHtml(params.title, params.content);
     }
+    pdfBytes = await renderDocumentPdf(html, {
+      layout: params.lessonContent ? 'lesson' : 'document',
+    });
 
     const validation = await validateRender(pdfBytes);
     if (!validation.ok) {
@@ -137,96 +120,3 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
   }
 }
 
-async function generatePlainTextPdf(title: string, content: string): Promise<Uint8Array> {
-  const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
-
-  const doc = await PDFDocument.create();
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const regular = await doc.embedFont(StandardFonts.Helvetica);
-  const PAGE_W = 595.28;
-  const PAGE_H = 841.89;
-  const LEFT = 48;
-  const MAX_WIDTH = PAGE_W - 2 * LEFT;
-
-  const NAVY = rgb(0.05, 0.10, 0.16);
-  const TEAL = rgb(0.00, 0.79, 0.66);
-  const DKGRAY = rgb(0.20, 0.25, 0.30);
-  const MIDGRAY = rgb(0.78, 0.84, 0.90);
-  const WHITE = rgb(1, 1, 1);
-
-  // Every page has a genuine header/footer; no first-page-only rendering.
-  function newPage() {
-    const page = doc.addPage([PAGE_W, PAGE_H]);
-    page.drawRectangle({ x: 0, y: PAGE_H - 56, width: PAGE_W, height: 56, color: NAVY });
-    page.drawText('LINGORA', { x: LEFT, y: PAGE_H - 34, size: 16, font: bold, color: WHITE });
-    page.drawText(toPdfSafeText(title, 70), { x: LEFT, y: PAGE_H - 50, size: 9, font: regular, color: TEAL });
-    page.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: 26, color: NAVY });
-    page.drawText(`${CANONICAL_PRODUCT_URL.replace('https://', '')} - Exportado desde LINGORA`, {
-      x: LEFT, y: 9, size: 7.5, font: regular, color: MIDGRAY,
-    });
-    return page;
-  }
-
-  // Measure glyph widths, not arbitrary character counts. Long unbroken
-  // tokens are split across lines without discarding any of their characters.
-  function wrap(raw: string, size: number, useBold: boolean): string[] {
-    const cleaned = toPdfSafeText(raw, Number.MAX_SAFE_INTEGER);
-    if (!cleaned.trim()) return [''];
-    const font = useBold ? bold : regular;
-    const words = cleaned.trim().split(/\s+/);
-    const lines: string[] = [];
-    let line = '';
-    for (const word of words) {
-      const parts: string[] = [];
-      let segment = '';
-      for (const char of word) {
-        if (segment && font.widthOfTextAtSize(segment + char, size) > MAX_WIDTH) {
-          parts.push(segment);
-          segment = char;
-        } else segment += char;
-      }
-      if (segment) parts.push(segment);
-      for (const part of parts) {
-        const next = line ? line + ' ' + part : part;
-        if (line && font.widthOfTextAtSize(next, size) > MAX_WIDTH) {
-          lines.push(line);
-          line = part;
-        } else {
-          line = next;
-        }
-      }
-    }
-    if (line) lines.push(line);
-    return lines.length ? lines : [''];
-  }
-
-  let page = newPage();
-  let y = PAGE_H - 72;
-  const ensureLine = () => {
-    if (y < 46) {
-      page = newPage();
-      y = PAGE_H - 72;
-    }
-  };
-  for (const rawLine of String(content ?? '').split('\n')) {
-    const isHeader = rawLine.startsWith('══') || rawLine.startsWith('──');
-    const isMentor = rawLine.startsWith('◆');
-    const isStudent = rawLine.startsWith('▶');
-    if (isHeader) {
-      ensureLine();
-      page.drawLine({ start: { x: LEFT, y: y - 4 }, end: { x: PAGE_W - LEFT, y: y - 4 }, thickness: 0.5, color: TEAL });
-      y -= 10;
-      continue;
-    }
-    const size = isMentor || isStudent ? 9.5 : 9;
-    const font = isMentor || isStudent ? bold : regular;
-    const color = isMentor ? NAVY : DKGRAY;
-    for (const line of wrap(rawLine, size, isMentor || isStudent)) {
-      ensureLine();
-      if (line) page.drawText(line, { x: LEFT, y, size, font, color });
-      y -= 13;
-    }
-  }
-
-  return doc.save();
-}

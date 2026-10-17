@@ -229,9 +229,11 @@ export function useBetaPage() {
       }
       const actionKey = a.action ?? a.type ?? ''
       const msg = actionMessages[actionKey] ?? a.label
-      addMsg({ sender: 'user', text: msg })
+      if (!['export_chat_pdf', 'download_pdf', 'hear_audio'].includes(actionKey)) {
+        addMsg({ sender: 'user', text: msg })
+      }
       if (actionKey === 'export_chat_pdf') {
-        const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
+        const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
         callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
       } else if (actionKey === 'download_pdf' || actionKey === 'hear_audio') {
         // Instrumental touch actions operate on the tutor content already on
@@ -272,7 +274,7 @@ export function useBetaPage() {
     if (hasText) payload.message = msg
     const EXPORT_RE = /\bexport(a|ar)?\b.*\bpdf\b|\bexporta\b|export.*chat/i
     if (hasText && EXPORT_RE.test(msg)) {
-      const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
+      const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
       payload.exportTranscript = transcript
     }
     if (hasAudio) {

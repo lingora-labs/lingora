@@ -47,7 +47,7 @@ export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExport
     .filter(m => m.sender !== 'ln')
     .map(m => ({
       sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
-      text: (m.text || '').replace(/<[^>]+>/g, ' ').trim(),
+      text: (m.text || '').trim(),
     }))
     .filter(l => l.text.length > 0)
   if (lines.length === 0) return { ok: false, message: 'Todavía no hay conversación para exportar.' }

@@ -1,6 +1,4 @@
 import { CANONICAL_PRODUCT_URL } from '../../../lib/product';
-import chromium from '@sparticuz/chromium';
-import puppeteer from 'puppeteer-core';
 
 export interface LessonContent {
   mentorName: string;
@@ -28,7 +26,7 @@ function escapeHtml(input: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function renderLessonHtml(content: LessonContent): string {
+export function renderLessonHtml(content: LessonContent): string {
   const nativeLabel =
     content.nativeLanguage === 'no'
       ? 'Norsk'
@@ -95,23 +93,8 @@ tbody tr:nth-child(odd) td { background: #f8fafc; }
 </style></head><body><div class="page"><div class="header"><div class="brand">LINGORA</div><div class="meta"><div>${escapeHtml(content.mentorName)} · Nivel ${escapeHtml(content.level)}</div><div>${host}</div></div><div class="topic">${escapeHtml(content.topicTitle)}</div></div><div class="content"><div class="section"><div class="section-title"><span class="tag">DEL 1</span><span class="label">Frases clave / Key phrases</span></div><div class="lead">Disse setningene er grunnlaget for alle profesjonelle introduksjoner på spansk.</div><table><thead><tr><th>Español</th><th>${escapeHtml(nativeLabel)}</th></tr></thead><tbody>${keyRows}</tbody></table></div><div class="section"><div class="section-title"><span class="tag">DEL 2</span><span class="label">Construye tu presentación</span></div>${buildRows}</div><div class="section"><div class="section-title"><span class="tag">DEL 3</span><span class="label">Completa los espacios</span></div>${wordBank.length ? `<div class="wordbank">[ ${wordBank.map(escapeHtml).join(' / ')} ]</div>` : ''}${gapRows}</div><div class="section page-break"><div class="section-title"><span class="tag">DEL 4</span><span class="label">Traduce al español</span></div>${transRows}</div><div class="section"><div class="section-title"><span class="tag">DEL 5</span><span class="label">Práctica de roleplay</span></div><div class="rolebox"><div>${escapeHtml(content.roleplay.scenario)}</div><div class="role-q">"${escapeHtml(content.roleplay.question)}"</div></div><div class="line-item"><span class="line-label">Tu respuesta:</span><span class="write-line long"></span></div><div class="line-item"><span class="write-line long"></span></div></div><div class="fasit"><div class="fasit-title">FASIT</div><div class="fasit-block"><div class="fasit-label">DEL 3</div><div>${fasitDel3}</div></div><div class="fasit-block"><div class="fasit-label">DEL 4</div>${fasitDel4}</div></div></div><div class="footer"><div>${host} · ${escapeHtml(content.topicTitle)} · ${escapeHtml(content.mentorName)} ${escapeHtml(content.level)}</div><div><strong>1 / 2</strong></div></div></div></body></html>`;
 }
 
-async function renderHtmlToPdf(html: string): Promise<Uint8Array> {
-  const browser = await puppeteer.launch({
-    args: chromium.args,
-    executablePath: await chromium.executablePath(),
-    headless: true
-  });
-  try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
-    return Uint8Array.from(pdf);
-  } finally {
-    await browser.close();
-  }
-}
-
+// Legacy direct callers use the same universal engine as generatePDF.
 export async function generateLessonPdf(content: LessonContent): Promise<Uint8Array> {
-  const html = renderLessonHtml(content);
-  return renderHtmlToPdf(html);
+  const { renderDocumentPdf } = await import('./renderDocumentPdf');
+  return renderDocumentPdf(renderLessonHtml(content), { layout: 'lesson' });
 }
