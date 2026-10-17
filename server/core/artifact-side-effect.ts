@@ -41,6 +41,7 @@
 // never both, never neither, never a partial success masked as a full one.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
+import { isExplicitPdfRequest } from '../../lib/pdf-intent-authorization'
 
 function excerptForSubject(content: string, subject: string): string {
   const text = content.trim()
@@ -127,13 +128,14 @@ export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
-  _userMessage: string = '',
+  userMessage: string = '',
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
   // 7.1: the tutor, not a regex over the user's words, decides the intent.
   // Runtime enforces the explicit-request declaration and per-turn side-effect
   // budget. PDF materialization is never automatic after a normal lesson.
-  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
+  const pdfAuthorized = isExplicitPdfRequest(userMessage, state.activeMode)
+  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request' && pdfAuthorized).slice(0, 3);
   const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
   if (pdfs.length === 0 && audioSignals.length === 0 && native.length === 0) return { artifacts: [], failures: [] };
@@ -164,6 +166,13 @@ export async function fulfillArtifactSignals(
   }
 
   for (const signal of pdfs) {
+    // Honest failure for an explicitly requested file: preserve the tutor
+    // response and other successful native artifacts rather than raising
+    // an exception that destroys the whole turn.
+    if (pedagogicalContent.trim().length < 500) {
+      failures.push({ subject: signal.subject + ' (PDF: explicación insuficiente)' })
+      continue
+    }
     const otherSubjects = allSubjects.filter((s) => s !== signal.subject)
 
     const composed = await composeDocumentFromTaught({

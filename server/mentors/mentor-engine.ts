@@ -95,6 +95,7 @@ import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
+import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -411,10 +412,11 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       if (!closure) throw Error('Tutor turn did not close with a valid artifact decision')
       if (!closure.reply.startsWith(emitted)) throw Error('Tutor streamed content mismatch')
       if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
-      if (closure.artifacts.some(s => s.type === 'emit_pdf') && closure.reply.trim().length < 500) {
-        throw Error('PDF requested without sufficient teaching content')
-      }
-      signals.push(...closure.artifacts)
+      // A PDF tool request is only authorized by the student's CURRENT
+      // explicit intent. A malformed/undersized PDF signal must never tear
+      // down an otherwise valid tutor turn or suppress its native schema.
+      const pdfAuthorized = isExplicitPdfRequest(n.message, n.state.activeMode)
+      signals.push(...closure.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals
