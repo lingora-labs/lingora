@@ -55,17 +55,13 @@ function esc(v: unknown): string {
 // escaped text, and only recognizes these two fixed patterns; nothing
 // else in the string can become a tag.
 function inline(v: unknown): string {
-  // Bidirectional isolation is typographic, not a translation or a second
-  // language pipeline. An Arabic/Hebrew phrase in Latin prose retains its
-  // original characters without displacing neighboring punctuation.
+  // Only isolate bidi text runs. Do not change their semantic content or
+  // subject them to a separate tutor/document generation branch.
   return esc(v)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
-    .replace(/[\u0590-\u08ff]+(?:\s+[\u0590-\u08ff]+)*/gu, '<bdi dir="rtl">function inline(v: unknown): string {
-  return esc(v)
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>');
-}</bdi>');
+    .replace(/[\u0590-\u08ff]+(?:\s+[\u0590-\u08ff]+)*/gu,
+      run => '<bdi dir="rtl">' + run + '</bdi>');
 }
 
 const ARTIFACT_TYPE_BADGE: Record<string, string> = {
