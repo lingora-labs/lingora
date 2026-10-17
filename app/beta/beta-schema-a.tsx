@@ -88,7 +88,8 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
     reported.current = true
     const responses = quiz.map((q, i) => ({
       question:q.question, chosen:q.options[ans[i] as number],
-      correct: ans[i] === q.correct,
+      expected:q.options[q.correct], correct: ans[i] === q.correct,
+      explanation:q.explanation ?? '',
     }))
     window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
   }, [ans, quiz])

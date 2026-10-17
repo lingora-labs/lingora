@@ -5,6 +5,7 @@ import {
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
+import { normalizeQuizEvidence } from '../../lib/quiz-evidence'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
 export function useBetaPage() {
@@ -306,20 +307,31 @@ export function useBetaPage() {
     window.addEventListener('lingora-step-select', handler)
     return () => window.removeEventListener('lingora-step-select', handler)
   }, [loading, addMsg, callAPI])
-  // Real quiz controls close the structured study loop. Quiz scores are
-  // computed from the tutor-authored answer key; the mentor explains the
-  // student's actual selections on the following conversational turn.
+  // QA12 P1 — the tutor cannot refer to UI-selected quiz answers unless the
+  // actual selections are carried into its next turn. Store grounded evidence
+  // for EVERY mode. Automatic quiz completion is exclusive to structured;
+  // interactive/free conversations wait for the student's next message.
   useEffect(() => {
     const handler = (e: Event) => {
-      const responses = (e as CustomEvent).detail?.responses as Array<{question:string;chosen:string;correct:boolean}> | undefined
-      if (sessionRef.current.activeMode !== 'structured' || loading ||
-          !responses || responses.length === 0) return
-      const summary = responses.map((r,i) => `${i+1}. ${r.question} → ${r.chosen}`).join('\n')
-      const score = responses.filter(r=>r.correct).length
-      const text = `He completado el quiz: ${score}/${responses.length} aciertos. Mis respuestas:\n${summary}\nCorrige mis errores, explica el porqué y guía mi siguiente paso.`
-      const next = {...sessionRef.current,tutorPhase:'feedback'}
+      const evidence = normalizeQuizEvidence((e as CustomEvent).detail)
+      if (!evidence) return
+      const mode = sessionRef.current.activeMode
+      const next: SS = {
+        ...sessionRef.current,
+        quizEvidence: evidence,
+        ...(mode === 'structured' ? {tutorPhase:'feedback'} : {}),
+      }
       sessionRef.current = next
       setSession(next)
+      if (mode !== 'structured' || loading) return
+      const details = evidence.responses.map((r,i) =>
+        String(i+1) + '. ' + r.question + ' | elegí ' + JSON.stringify(r.chosen) +
+        ' | correcta ' + JSON.stringify(r.expected) +
+        ' | resultado ' + (r.correct ? 'acierto' : 'error')
+      ).join('\n')
+      const text = 'He completado el quiz: ' + evidence.correctCount +
+        '/' + evidence.total + '. Mis respuestas:\n' + details +
+        '\nCorrige mis errores reales y guíame al siguiente paso.'
       addMsg({sender:'user',text})
       void callAPI({message:text})
     }

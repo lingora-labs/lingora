@@ -464,6 +464,7 @@ export interface SessionState {
   // SEEK 3.1 — SEMANTIC STATE (Fase 0-A)
   currentLessonTopic?: string;
   currentExercise?: string;
+  quizEvidence?: import('./quiz-evidence').QuizEvidence;
   expectedResponseMode?: 'exercise_answer' | 'free' | 'quiz_answer';
   _exerciseAttemptCount?: number;
   lastUserAudioTranscript?: string;

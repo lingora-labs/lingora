@@ -88,6 +88,7 @@ export interface SS {
   pdfCourseActive?:    boolean
   currentLessonTopic?:    string
   currentExercise?:       string
+  quizEvidence?: import('../../lib/quiz-evidence').QuizEvidence
   expectedResponseMode?:  'exercise_answer' | 'free' | 'quiz_answer'
   _exerciseAttemptCount?: number
 }

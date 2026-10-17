@@ -94,6 +94,7 @@ import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
+import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -307,7 +308,10 @@ export function buildMentorPrompt(params: {
     && state.activeMode !== 'free'
     ? '\n\nVISUAL REVIEW MILESTONE: This is the fifth study exchange. In addition to the requested answer, provide one brief, meaningful schema_pro native artifact that reviews actual subject matter already taught. Use at least two accurate concept/flow/highlight blocks grounded in the conversation. No PDF, unless independently requested. If the student explicitly forbids visual extras, obey the student.'
     : ''
-  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
+  // Data from completed UI quiz: actual selected, expected, and graded answers.
+  // This is context to inform Willy, never an independent answer generator.
+  const recentQuiz = formatQuizEvidence(state.quizEvidence)
+  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
