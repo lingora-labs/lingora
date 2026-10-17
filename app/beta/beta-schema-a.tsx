@@ -1,6 +1,7 @@
 'use client'
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TableRow, QuizQ, Sub, Norm } from './beta-model'
+import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
 
 export const ss = (v: unknown): string => typeof v === 'string' ? v : ''
 export const sa = (v: unknown): string[] => Array.isArray(v) ? v.map(ss).filter(Boolean) : []
@@ -94,6 +95,12 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
     window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
   }, [ans, quiz])
   if (!quiz.length) return null
+  const validity = validateQuizAnswerKey(quiz)
+  if (!validity.ok) return (
+    <div role="alert" style={{padding:14,border:'1px solid var(--coral)',borderRadius:12,color:'var(--coral)'}}>
+      Este quiz contiene una clave que no permite una corrección gramatical fiable. No se ha puntuado.
+    </div>
+  )
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {quiz.map((q, qi) => {

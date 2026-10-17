@@ -3,6 +3,7 @@
 // Reject ungrounded/empty/HTML-shaped artifacts rather than showing placebo.
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import type { ArtifactPayload } from '../../lib/contracts'
+import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
 
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -57,7 +58,15 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
       Number.isInteger(q.correct) && q.correct >= 0 &&
       q.correct < (q.options as string[]).length &&
       str(q.explanation))
-    return ok ? ({ type:'quiz', content:c } as unknown as ArtifactPayload) : null
+    if (!ok) return null
+    // Grading is a real student-facing side effect: semantic surface checks
+    // must pass BEFORE a key can color a button green or enter quiz memory.
+    const quality = validateQuizAnswerKey(c.questions as Array<{question:string;options:string[];correct:number;explanation?:string}>)
+    if (!quality.ok) {
+      console.warn('[quiz-quality] rejected ungradable question:', quality.reason)
+      return null
+    }
+    return { type:'quiz', content:c } as unknown as ArtifactPayload
   }
   return null
 }

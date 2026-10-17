@@ -5,9 +5,10 @@
   "description": "LINGORA — AI Cultural Immersion Platform for Spanish",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node tests/quiz-answer-key.test.mjs && next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:quiz": "node tests/quiz-answer-key.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.540.0",
