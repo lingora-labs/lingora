@@ -170,6 +170,10 @@ export async function fulfillArtifactSignals(
       failures.push({ subject: signal.subject })
       continue
     }
+    if (signal.format === 'pdf_html' && !composed.ok) {
+      failures.push({ subject: signal.subject + ' (PDF y HTML no disponibles)' })
+      continue
+    }
     const title = composed.ok ? composed.content.title : `LINGORA — ${signal.subject}`.slice(0, 80)
 
     const result = composed.ok
@@ -205,6 +209,10 @@ export async function fulfillArtifactSignals(
       }
     }
 
+    if (signal.format === 'pdf_html' && !webUrl) {
+      failures.push({ subject: signal.subject + ' (versión HTML no disponible)' })
+      continue
+    }
     const entry = buildFulfillmentEntry(signal.subject, title, composed, result, webUrl)
     if (entry.kind === 'artifact') artifacts.push(entry.payload)
     else failures.push(entry.failure)

@@ -186,7 +186,9 @@ export function executePlanStream(
         // Same wire/internal split as the success path above — see the
         // comment there for why toWireState() must run on top of
         // mergeStatePatch() rather than being skipped on this branch.
-        emit({ done: true, state: toWireState(fallbackState, fallbackPatch) })
+        emit({ delta: '\n\nNo pude completar esta entrega. Los materiales solicitados no están disponibles; inténtalo de nuevo.' })
+        emit({ done: true, state: toWireState(fallbackState, fallbackPatch),
+          artifactFailures: [{ subject: 'Entrega no completada en este turno' }] })
         controller.close()
       }
     },

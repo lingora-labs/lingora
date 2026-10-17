@@ -99,14 +99,80 @@ export const SIGNAL_ARTIFACT_TOOL = {
 // (the taught-length threshold gating whether the decision call even
 // runs) — see that file's P19-F note for the full picture.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
-ARTIFACT CHANNEL:
-You have a structured side-effect channel named signal_artifact.
-Teach or write the content in normal text first, then call signal_artifact in this same model turn when the student actually requested a deliverable.
-Only request emit_pdf when the student's CURRENT message explicitly asks for a PDF, printable material, or a take-away document. Use trigger explicit_user_request. You may offer a PDF in ordinary text when it was not requested, but do not generate one.
-If the student requested multiple distinct artifacts, emit one signal per requested subject. Subject must identify only the content it materializes. Avoid duplicates.
-Do not print JSON, tool names, or debug to the student.
-Do not call the tool before producing the substantive content. If the user asked ONLY for a document, create the document content directly; do not force an unrelated lesson or preliminary quiz.
-Do not call signal_artifact for a bare greeting, an opening question, or a diagnostic prompt with no substantive taught content yet — "pedagogical completion" means you actually taught something the student could study from, not that the turn is merely finished. A first-turn greeting or a request for a sample sentence is not, by itself, material worth a document.
-emit_pdf IS available in this runtime: you may truthfully offer a downloadable PDF, but must never claim one is already generated before execution succeeds. When the student requests a PDF, provide complete source content and emit the structured signal; the runtime handles the real file or an explicit failure.
-emit_audio IS available in this runtime: you may truthfully offer to speak what you taught aloud. This states the mechanism exists, not that audio has already been generated — never claim audio is ready before it actually is. Only offer or emit audio when it genuinely serves the student (e.g. pronunciation modeling, listening practice) — not by default on every turn.
+TUTOR TURN CONTRACT:
+Make exactly one complete_tutor_turn call per response. It includes your complete pedagogical reply and an artifacts array.
+You alone decide which NEW deliverables the CURRENT student requested. Use artifacts: [] for ordinary questions, greetings and continuation of prior exercises without a new document request.
+When the student requests a PDF, printable learning sheet, take-away document or both PDF and web HTML, compose actual useful study content and declare emit_pdf with trigger explicit_user_request, subject specifying its contents, format pdf_html for both versions or pdf for PDF alone.
+Include all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio.
+Do not claim files already exist: the runtime will materialize your choices or visibly report an execution failure. Do not emit raw tool metadata to the student.
 `
+
+export const COMPLETE_TUTOR_TURN_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'complete_tutor_turn',
+    description: 'The sole tutor turn closure. Give a substantive reply and zero or more newly requested deliverables. Always invoke once; artifacts: [] is normal conversation.',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        reply: { type: 'string', description: 'Complete student-facing answer; write the material itself, never an introductory promise.' },
+        artifacts: { type: 'array', description: 'Only artifacts authorized by the current student message. [] when none.', items: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            type: { type: 'string', enum: ['emit_pdf', 'emit_audio'] },
+            trigger: { type: 'string', enum: ['explicit_user_request', 'pedagogical_completion'] },
+            subject: { type: 'string' },
+            format: { type: 'string', enum: ['pdf', 'pdf_html', 'audio'] },
+          },
+          required: ['type', 'trigger', 'subject', 'format'],
+        } },
+      },
+      required: ['reply', 'artifacts'],
+    },
+  },
+}
+export interface ClosedTutorTurn { reply: string; artifacts: ArtifactSignal[] }
+export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.reply !== 'string' || !r.reply.trim()
+      || !Array.isArray(r.artifacts) || r.artifacts.length > 5) return null
+  const artifacts: ArtifactSignal[] = []
+  for (const item of r.artifacts) {
+    const s = parseArtifactSignal(item)
+    if (!s) return null
+    if (s.type === 'emit_pdf') {
+      if (s.trigger !== 'explicit_user_request' || !['pdf', 'pdf_html'].includes(s.format ?? '')) return null
+    } else if (s.type === 'emit_audio') {
+      if (s.format !== 'audio') return null
+    } else return null
+    artifacts.push(s)
+  }
+  return { reply: r.reply, artifacts: dedupeSignals(artifacts) }
+}
+/** Stream the tutor's reply string only, decoding complete JSON escape sequences. */
+export function streamedTutorReplyPrefix(json: string): string {
+  const marker = /"reply"\s*:\s*"/.exec(json)
+  if (!marker) return ''
+  const start = marker.index + marker[0].length
+  let end = start
+  for (let i = start; i < json.length; i++) {
+    const ch = json[i]
+    if (ch === '"') break
+    if (ch === '\\') {
+      const next = json[i + 1]
+      if (next === undefined) break
+      if (next === 'u') {
+        if (!/^[0-9a-fA-F]{4}$/.test(json.slice(i + 2, i + 6))) break
+        i += 5
+      } else i++
+      end = i + 1
+      continue
+    }
+    end = i + 1
+  }
+  try {
+    const result = JSON.parse('"' + json.slice(start, end) + '"') as string
+    return /[\uD800-\uDBFF]$/.test(result) ? result.slice(0, -1) : result
+  } catch { return '' }
+}

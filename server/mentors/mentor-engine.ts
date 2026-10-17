@@ -96,8 +96,9 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
-  SIGNAL_ARTIFACT_TOOL,
-  parseArtifactSignal,
+  COMPLETE_TUTOR_TURN_TOOL,
+  parseClosedTutorTurn,
+  streamedTutorReplyPrefix,
   type ArtifactSignal,
 } from '@/lib/artifact-signal'
 import type {
@@ -248,13 +249,13 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
   PDF_COURSE_DIRECTIVE: 'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained.',
   CORRECTION_ONLY_DIRECTIVE: 'The student asked for a correction. Correct exactly what they wrote. Do not teach a full lesson.',
   TRANSLATION_ONLY_DIRECTIVE: 'The student asked for a translation. Provide ONLY the translation.',
-  FIRST_TURN_DIRECTIVE: 'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet. Do not call signal_artifact on this turn — a greeting plus an opening question is not taught content, so there is nothing yet worth materializing as a document.',
+  FIRST_TURN_DIRECTIVE: 'This is the first message of the session. Greet the student warmly. Ask one concrete opening question. Do not give a lesson yet. Use artifacts: [] on this turn — a greeting plus an opening question is not taught content, so there is nothing yet worth materializing as a document.',
   CURRICULUM_PRESENTER_DIRECTIVE: 'Present a full, structured curriculum for the requested topic.',
   EXERCISE_FEEDBACK_DIRECTIVE: 'The student just responded to an active exercise. Evaluate that specific response only.',
   SCHEMA_DIRECTIVE: 'You are generating a LINGORA study schema. Use only plain text and standard markdown.',
   TABLE_DIRECTIVE: 'You are generating a comparison table. Columns: CONCEPT / CORRECT USE / COMMON ERROR / RISK / NOTE.',
   PRONUNCIATION_EVAL_DIRECTIVE: 'Evaluate pronunciation. Respond with JSON only.',
-  DIAGNOSTIC_FIRST_TURN_DIRECTIVE: 'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson. Do not call signal_artifact on this turn — a diagnostic prompt with no taught content yet is not worth materializing.',
+  DIAGNOSTIC_FIRST_TURN_DIRECTIVE: 'Level unknown. Greet and ask the student to write 2-3 sentences in Spanish. Do NOT start a lesson. Use artifacts: [] on this turn — a diagnostic prompt with no taught content yet is not worth materializing.',
 }
 
 function buildExecutionDirective(params: {
@@ -355,93 +356,64 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
 }
 
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
-  const normalized = normalizeRuntimeCall(params)
+  const n = normalizeRuntimeCall(params)
   const { system, user } = buildMentorPrompt({
-    message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
-    plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext,
+    message: n.message, state: n.state, systemDirective: n.systemDirective,
+    plan: n.plan, action: n.action, priorContext: n.priorContext,
   })
   const signals: ArtifactSignal[] = []
   try {
-    const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
-    const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
-    const stream = await openai.chat.completions.create({
-      ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
+    const model = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
+    const pack = resolveTurnContextPack(n.message, n.state, n.plan)
+    const response = await openai.chat.completions.create({
+      ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
       stream: true,
-      // 7.1: the Tutor Maestro alone chooses whether to request a real tool.
-      // Tool calls and teaching text are produced by the SAME model turn.
-      tools: [SIGNAL_ARTIFACT_TOOL],
-      tool_choice: 'auto',
-      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }],
+      tools: [COMPLETE_TUTOR_TURN_TOOL],
+      tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
+      messages: [{ role: 'system', content: system }, ...n.history, { role: 'user', content: user }],
     })
     const gen = (async function* () {
-      // OpenAI streams function-call arguments in fragments, keyed by tool index.
-      // Collect them while continuing to stream teaching text to the student.
       const calls = new Map<number, { name: string; args: string }>()
-      let taught = ''
-      for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta
-        if (delta?.content) {
-          taught += delta.content
-          yield delta.content
-        }
-        for (const tool of delta?.tool_calls ?? []) {
-          const previous = calls.get(tool.index) ?? { name: '', args: '' }
-          previous.name += tool.function?.name ?? ''
-          previous.args += tool.function?.arguments ?? ''
-          calls.set(tool.index, previous)
-        }
-      }
-      // Validate structured requests emitted by THIS tutor turn. Never run
-      // a second LLM to interpret the response or decide what it meant.
-      for (const [, call] of [...calls.entries()].sort(([a], [b]) => a - b)) {
-        if (call.name !== 'signal_artifact') continue
-        try {
-          const signal = parseArtifactSignal(JSON.parse(call.args))
-          if (signal) signals.push(signal)
-        } catch (error) {
-          console.warn('[7.1] invalid tutor tool arguments', error instanceof Error ? error.message : error)
-        }
-      }
-      // Tool-only model turns are valid OpenAI behavior. If the tutor first
-      // requested a file without writing content, let the SAME tutor finish
-      // its answer (one cognitive authority; not a second artifact decider).
-      const needsFullDocument = signals.some((signal) => signal.type === 'emit_pdf')
-        && taught.trim().length < 500
-      if (needsFullDocument || (!taught.trim() && signals.length)) {
-        try {
-          const continuation = await openai.chat.completions.create({
-            ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-            messages: [
-              { role: 'system', content: system + '\nThe artifact request from your previous step has been captured but NOT executed. Your previous response was only an introductory promise or an empty tool call, NOT a usable document. Now AUTHOR the full substantial student-facing content in the requested language, covering every requested section, examples and exercises (with answer key when requested). Do not repeat a promise or say you will prepare it later. Do not claim that a PDF already exists. The runtime will render your content afterward.' },
-              ...normalized.history,
-              { role: 'user', content: user },
-            ],
-          })
-          const completed = continuation.choices?.[0]?.message?.content?.trim() ?? ''
-          if (completed) {
-            taught = completed
-            yield '\n\n' + completed
+      let emitted = ''
+      for await (const chunk of response) {
+        for (const item of chunk.choices?.[0]?.delta?.tool_calls ?? []) {
+          const prior = calls.get(item.index) ?? { name: '', args: '' }
+          prior.name += item.function?.name ?? ''
+          prior.args += item.function?.arguments ?? ''
+          calls.set(item.index, prior)
+          if (prior.name === 'complete_tutor_turn') {
+            const candidate = streamedTutorReplyPrefix(prior.args)
+            if (candidate.startsWith(emitted) && candidate.length > emitted.length) {
+              const delta = candidate.slice(emitted.length)
+              emitted = candidate
+              yield delta
+            }
           }
-        } catch (error) {
-          console.warn('[7.1] tutor continuation failed', error instanceof Error ? error.message : error)
         }
       }
-      if (signals.some((signal) => signal.type === 'emit_pdf') && taught.trim().length < 500) {
-        // Content integrity gate: a one-paragraph promise is not a PDF.
-        signals.splice(0)
-        yield '\n\nNo pude completar el contenido necesario para el documento. Inténtalo de nuevo.'
-      } else if (!taught.trim() && signals.length) {
-        signals.splice(0)
-        yield FALLBACKS[resolveInterfaceLanguage(normalized.state)] ?? FALLBACKS.en
+      if (calls.size !== 1) throw Error('Tutor closure count invalid')
+      const call = [...calls.values()][0]
+      if (call.name !== 'complete_tutor_turn') throw Error('Tutor closure type invalid')
+      let decoded: unknown
+      try { decoded = JSON.parse(call.args) }
+      catch { throw Error('Tutor closure JSON invalid') }
+      const closure = parseClosedTutorTurn(decoded)
+      if (!closure) throw Error('Tutor turn did not close with a valid artifact decision')
+      if (!closure.reply.startsWith(emitted)) throw Error('Tutor streamed content mismatch')
+      if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
+      if (closure.artifacts.some(s => s.type === 'emit_pdf') && closure.reply.trim().length < 500) {
+        throw Error('PDF requested without sufficient teaching content')
       }
+      signals.push(...closure.artifacts)
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals
     return wrapped
-  } catch (error: unknown) {
-    console.warn('[MENTOR] Streaming unavailable, falling back:', error instanceof Error ? error.message : error)
-    const fallbackText = await getMentorResponse(params)
-    const gen = (async function* () { if (fallbackText) yield fallbackText })()
+  } catch (err: unknown) {
+    console.error('[MENTOR] tutor closure failure', err instanceof Error ? err.message : err)
+    const gen = (async function* () {
+      yield FALLBACKS[resolveInterfaceLanguage(n.state)] ?? FALLBACKS.en
+    })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals
     return wrapped
