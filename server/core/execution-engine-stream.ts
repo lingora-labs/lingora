@@ -92,6 +92,20 @@ export function executePlanStream(
           }
         }
 
+        // On a five-turn milestone the tutor's own native schema has priority.
+        // If absent, the existing authored explanation can be reorganized
+        // WITHOUT a second model or invented pedagogical content.
+        const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
+          (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
+          !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
+        if (visualDue && !artifacts.some(a => a.type === 'schema_pro')) {
+          const { groundedMilestoneReview } = await import('./native-artifact')
+          const review = groundedMilestoneReview(fullText,
+            (request.conversationHistory ?? []) as Array<{role:string;content:string}>,
+            plan.resolvedTopic ?? state.lastConcept ?? 'Tema actual')
+          if (review) artifacts.push(review)
+          else artifactFailures.push({ subject:'Refuerzo visual del quinto turno' })
+        }
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
         // Mode phases are observable state, not a separate pedagogical model.
@@ -102,14 +116,6 @@ export function executePlanStream(
           else if (state.tutorPhase === 'feedback') {
             patch.tutorPhase = 'lesson'
           }
-        }
-        // SEEK Article 27 milestone: never claim a visual was shown if the
-        // tutor failed to deliver one. The student's content is not replaced.
-        const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
-          (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
-          !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
-        if (visualDue && !artifacts.some(a => a.type === 'schema_pro')) {
-          artifactFailures.push({ subject: 'Refuerzo visual del quinto turno' })
         }
         // P17 Defect 4 — TOPIC CONTINUITY. Root cause: lastConcept was only
         // ever written in execution-engine.ts (the blocking path). Mentor-

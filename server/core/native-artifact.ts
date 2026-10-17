@@ -54,3 +54,41 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
   }
   return null
 }
+
+
+/**
+ * Constitutional 5-token review fallback. The model remains the author.
+ * When its typed review is absent, the runtime can DISPLAY already-taught
+ * substantive passages as expandable native concept cards, never inventing
+ * explanations, questions, answers, or a new pedagogical plan.
+ * No meaningful taught content => null and a visible failure.
+ */
+export function groundedMilestoneReview(
+  reply: string,
+  history: Array<{ role: string; content: string }> = [],
+  topic = 'Tema actual',
+): ArtifactPayload | null {
+  const candidates = [reply, ...history.slice(-10).reverse()
+    .filter(turn => turn.role === 'assistant').map(turn => turn.content)]
+  const selected = candidates.find(t => t && t.length >= 280)
+  if (!selected) return null
+  const clean = selected.replace(/<\/?[^>]+>/g,'').replace(/\r\n/g,'\n')
+  let passages = clean.split(/\n\s*\n/).map(x=>x.trim()).filter(x=>x.length >= 85 && x.length <= 2400)
+  if (passages.length < 2) {
+    passages = clean.split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ])/)
+      .map(x=>x.trim()).filter(x=>x.length >= 60)
+  }
+  const unique = [...new Set(passages)].slice(0,4)
+  if (unique.length < 2) return null
+  const blocks = unique.map((passage) => {
+    const first = passage.split('\n')[0].replace(/^#{1,5}\s*/, '').trim()
+    const heading = first.length > 5 && first.length <= 70
+      ? first : passage.replace(/\s+/g,' ').slice(0,58).trim() + '…'
+    return {type:'concept', title:heading, body:passage.slice(0,550)}
+  })
+  const signal: ArtifactSignal = {
+    type:'schema_pro',trigger:'pedagogical_completion',subject:topic,format:'native',
+    content:{title:'Refuerzo visual · ' + topic.slice(0,90),blocks},
+  }
+  return materializeNativeArtifact(signal)
+}

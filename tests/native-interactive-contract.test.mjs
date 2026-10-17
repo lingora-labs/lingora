@@ -20,7 +20,7 @@ function load(relative) {
 }
 
 const { parseClosedTutorTurn, COMPLETE_TUTOR_TURN_TOOL } = load('lib/artifact-signal.ts')
-const { materializeNativeArtifact } = load('server/core/native-artifact.ts')
+const { materializeNativeArtifact, groundedMilestoneReview } = load('server/core/native-artifact.ts')
 const allowed = COMPLETE_TUTOR_TURN_TOOL.function.parameters.properties.artifacts.items.properties.type.enum
 for (const type of ['emit_pdf','emit_audio','table_matrix','schema_pro','quiz'])
   assert.ok(allowed.includes(type),'single closure must expose '+type)
@@ -61,4 +61,17 @@ assert.equal(materializeNativeArtifact({...quiz,content:{...quiz.content,questio
 assert.equal(materializeNativeArtifact({...matrix,content:{...matrix.content,title:'<script>alert(1)</script>'}}),null)
 assert.equal(parseClosedTutorTurn({reply:'Hi',artifacts:[{...matrix,format:'pdf'}]}),null)
 assert.equal(parseClosedTutorTurn({reply:'Hi',artifacts:[]})?.artifacts.length,0)
+const taught = [
+  'Los tiempos del pasado permiten contar acontecimientos y hábitos.',
+  'El pretérito indefinido presenta acciones terminadas con ayer o la semana pasada.',
+  'El imperfecto expresa hábitos anteriores y escenarios de fondo.',
+  'Ejemplo: ayer fui al cine. Ejemplo: cuando era niño jugaba al fútbol.',
+].join('\n\n')
+const review = groundedMilestoneReview('Ahora practica con un ejemplo breve.',[
+  {role:'assistant',content:taught},
+], 'Pasados de español')
+assert.equal(review?.type,'schema_pro','a real earlier explanation must yield an expandable review')
+assert.ok(review.content.blocks.length >= 2)
+assert.equal(groundedMilestoneReview('Hola',[], 'Tema'),null,
+  'a greeting must not create a placebo review')
 console.log('PASS — closed tutor turn accepts validated matrix, schema and quiz; rejects empty, malicious and incompatible payloads')
