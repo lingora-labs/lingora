@@ -5,8 +5,13 @@
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 
-const ARABIC_FONT_URL =
-  'https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf';
+import { readFile } from 'node:fs/promises';
+
+// Bundled npm package: font is traceable with Next/Vercel and never fetched
+// from GitHub or another external host at runtime.
+const ARABIC_FONT_PATH = require.resolve(
+  '@fontsource/noto-naskh-arabic/files/noto-naskh-arabic-arabic-400-normal.woff2',
+);
 
 export function containsArabic(value: unknown): boolean {
   return /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]/u.test(
@@ -44,17 +49,13 @@ export async function renderUnicodePdf(html: string, requireArabic = false): Pro
     // This avoids relying on undocumented system fonts in Lambda.
     let arabicFontCss = '';
     if (requireArabic) {
-      const response = await fetch(ARABIC_FONT_URL, {
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!response.ok) throw new Error('Arabic font download failed: HTTP ' + response.status);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const fontSignature = buffer.subarray(0, 4).toString('hex');
-      if (buffer.length < 20000 || !['00010000', '4f54544f'].includes(fontSignature)) {
-        throw new Error('Arabic font is missing or invalid');
+      const buffer = await readFile(ARABIC_FONT_PATH);
+      // WOFF2 magic is 'wOF2'; reject missing/corrupt assets before printing.
+      if (buffer.length < 8000 || buffer.subarray(0, 4).toString('ascii') !== 'wOF2') {
+        throw new Error('Bundled Arabic font is missing or invalid');
       }
-      arabicFontCss = '@font-face{font-family:"LingoraArabic";src:url(data:font/ttf;base64,'
-        + buffer.toString('base64') + ') format("truetype");font-style:normal;font-weight:100 900;}';
+      arabicFontCss = '@font-face{font-family:"LingoraArabic";src:url(data:font/woff2;base64,'
+        + buffer.toString('base64') + ') format("woff2");font-style:normal;font-weight:400;}';
     }
     browser = await puppeteer.launch({
       args: chromium.args,

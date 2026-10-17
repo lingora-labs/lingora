@@ -155,6 +155,53 @@ export type ComposeResult =
   | { ok: true; content: DocumentContent }
   | { ok: false; reason: string }
 
+// Deterministic source appendix: keep every source line but render Markdown
+// as document structure, instead of one dense paragraph with literal ##/**.
+function readableSourceAppendix(source: string): DocumentBlock[] {
+  const output: DocumentBlock[] = [
+    { type: 'heading', level: 1, content: 'Texto íntegro del tutor — formato de lectura' },
+  ];
+  const plain = (t: string) => t
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/\x60([^\x60]+)\x60/g, '$1');
+  let paragraphs: string[] = [];
+  let bullets: string[] = [];
+  let numbered: string[] = [];
+  const flushParagraph = () => {
+    if (paragraphs.length) output.push({ type: 'paragraph', content: plain(paragraphs.join(' ')) });
+    paragraphs = [];
+  };
+  const flushList = () => {
+    if (bullets.length) output.push({ type: 'bullets', items: bullets.map(plain) });
+    if (numbered.length) output.push({ type: 'numbered', items: numbered.map(plain) });
+    bullets = [];
+    numbered = [];
+  };
+  for (const rawLine of source.replace(/\r\n/g, '\n').split('\n')) {
+    const line = rawLine.trim();
+    if (!line) { flushParagraph(); flushList(); continue; }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph(); flushList();
+      output.push({
+        type: 'heading', level: Math.min(3, heading[1].length) as 1 | 2 | 3,
+        content: plain(heading[2]),
+      });
+      continue;
+    }
+    const bullet = line.match(/^[-*•]\s+(.+)$/);
+    if (bullet) { flushParagraph(); if (numbered.length) flushList(); bullets.push(bullet[1]); continue; }
+    const numeral = line.match(/^\d+[.)]\s+(.+)$/);
+    if (numeral) { flushParagraph(); if (bullets.length) flushList(); numbered.push(numeral[1]); continue; }
+    flushList();
+    paragraphs.push(line);
+  }
+  flushParagraph();
+  flushList();
+  return output;
+}
+
 export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
   if (!params.fullContent?.trim()) return { ok: false, reason: 'empty_body' }
   // The composer has a bounded budget. Oversize input must use the FULL
@@ -281,10 +328,7 @@ Return ONLY this JSON:
     // The layout model is only a composer. Preserve the Tutor Maestro's full
     // source unabridged in an explicit appendix shared by PDF and HTML. This
     // makes any summarization/reordering auditable without changing tutor text.
-    blocks.push(
-      { type: 'heading', level: 1, content: 'Contenido original íntegro del tutor' },
-      { type: 'paragraph', content: params.fullContent },
-    )
+    blocks.push(...readableSourceAppendix(params.fullContent))
 
     return {
       ok: true,
