@@ -8,7 +8,7 @@ const normal = (value:string):string => value.trim().toLocaleLowerCase('es').rep
 const finiteSer = new Set(['soy','eres','es','somos','sois','son'])
 const finiteEstar = new Set(['estoy','estás','está','estamos','estáis','están'])
 const copulas = new Set([...finiteSer,...finiteEstar,'ser','estar'])
-const infinitiveLicense = /(?:\b(?:quiero|quieres|quiere|queremos|queréis|quieren|puedo|puedes|puede|podemos|pueden|debo|debes|debe|debemos|deben|necesito|necesita|necesitamos|prefiero|prefiere|deseo|desea|voy a|vas a|va a|vamos a|van a|para|sin|antes de|después de|al|a|de)\s*)$/iu
+const infinitiveLicense = /(?:(?:^|\s)(?:quiero|quieres|quiere|queremos|queréis|quieren|puedo|puedes|puede|podemos|pueden|debo|debes|debe|debemos|deben|necesito|necesita|necesitamos|prefiero|prefiere|deseo|desea|voy a|vas a|va a|vamos a|van a|para|sin|antes de|después de|al|a|de)\s*)$/iu
 const eventSubject = /\b(?:fiesta|boda|reunión|concierto|clase|conferencia|examen|partido|evento|ceremonia|festival|acto|presentación)\b/iu
 
 export function validateQuizAnswerKey(questions:Question[]):{ok:boolean;reason?:string} {
