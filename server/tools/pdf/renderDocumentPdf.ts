@@ -61,6 +61,15 @@ export async function renderDocumentPdf(
       'th,td{overflow-wrap:anywhere;vertical-align:top}' +
       'tr{break-inside:avoid-page}' +
       'p,li,blockquote{orphans:3;widows:3}' +
+      // Compact print-only rhythm: do not create an almost-empty last page
+      // for decorative footers, an oversized chapter break, or web padding.
+      '.ln-footer{display:none!important}' +
+      '.ln-container{padding-top:14px!important;padding-bottom:0!important}' +
+      '.ln-chapter{margin-top:16px!important;margin-bottom:9px!important;break-after:avoid-page}' +
+      '.ln-h1,.ln-h2,.ln-h3,.ln-source-start,.ln-source-subhead{break-after:avoid-page}' +
+      '.ln-p,.ln-source-p{orphans:3;widows:3}' +
+      '.ln-source-start{margin-top:14px!important}' +
+      '.ln-next{margin-top:12px!important;padding-top:10px!important}' +
       '</style>';
     const prepared = html.includes('</head>')
       ? html.replace('</head>', commonCSS + '</head>')

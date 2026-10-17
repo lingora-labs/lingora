@@ -1,11 +1,17 @@
-// LINGORA 7.1 — local beta continuity (no server account or cross-device sync).
-// Persist an honest, bounded session snapshot; do not silently reset on reload.
+// LINGORA 7.1 — complete same-browser continuity, including real PDF/HTML.
+// IndexedDB stores the full structured-clone snapshot, not a truncated
+// localStorage string. It requires no account, S3 credentials or new backend.
+// Browser data clearing, private mode and storage eviction can remove files.
 import type { ActiveMode, Lang, MK, Msg, SS, TK } from './beta-model'
 
 export const BETA_SESSION_KEY = 'lingora-beta-session-v1'
-const MAX_STORE_CHARS = 3_000_000
+const DB_NAME = 'lingora-beta-v1'
+const DB_STORE = 'sessions'
+const DB_RECORD = 'current'
 const MAX_MESSAGES = 80
-const MAX_DATA_URL_CHARS = 180_000
+const MAX_SNAPSHOT_CHARS = 60_000_000
+const LOCAL_LIMIT = 3_000_000
+const LOCAL_LINK_LIMIT = 180_000
 
 export type BetaSessionSnapshot = {
   version: 1
@@ -26,70 +32,144 @@ const validMode = new Set(['interact','structured','pdf_course','free'])
 
 function validated(raw: unknown): BetaSessionSnapshot | null {
   if (!raw || typeof raw !== 'object') return null
-  const value = raw as Partial<BetaSessionSnapshot>
-  if (value.version !== 1 || !validLang.has(String(value.lang))
-    || !validMentor.has(String(value.mentor)) || !validTopic.has(String(value.topic))
-    || !validMode.has(String(value.activeMode))
-    || !value.session || typeof value.session !== 'object' || !Array.isArray(value.msgs)) return null
-  const msgs = value.msgs.filter((m): m is Msg =>
-    !!m && typeof m.id === 'string' && typeof m.text === 'string'
-    && ['user','sarah','alex','nick','ln'].includes(m.sender))
+  const v = raw as Partial<BetaSessionSnapshot>
+  if (v.version !== 1 || !validLang.has(String(v.lang))
+      || !validMentor.has(String(v.mentor)) || !validTopic.has(String(v.topic))
+      || !validMode.has(String(v.activeMode)) || !v.session
+      || typeof v.session !== 'object' || !Array.isArray(v.msgs)) return null
+  const msgs = v.msgs.filter((m): m is Msg => !!m && typeof m.id === 'string'
+    && typeof m.text === 'string' && ['user','sarah','alex','nick','ln'].includes(m.sender))
   return {
-    version: 1, phase: value.phase === 'chat' ? 'chat' : 'onboarding',
-    lang: value.lang!, mentor: value.mentor!, topic: value.topic!, activeMode: value.activeMode!,
-    session: value.session as SS, msgs: msgs.slice(-MAX_MESSAGES), reduced: !!value.reduced,
+    version: 1, phase: v.phase === 'chat' ? 'chat' : 'onboarding',
+    lang: v.lang!, mentor: v.mentor!, topic: v.topic!, activeMode: v.activeMode!,
+    session: v.session as SS, msgs: msgs.slice(-MAX_MESSAGES), reduced: !!v.reduced,
   }
 }
 
-export function readBetaSession(): BetaSessionSnapshot | null {
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') return reject(Error('IndexedDB unavailable'))
+    const request = indexedDB.open(DB_NAME, 1)
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DB_STORE)) {
+        request.result.createObjectStore(DB_STORE)
+      }
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? Error('IndexedDB open failed'))
+    request.onblocked = () => reject(Error('IndexedDB blocked by another tab'))
+  })
+}
+
+async function transact<T>(mode: IDBTransactionMode, callback: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  const db = await openDB()
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, mode)
+      let result: T
+      const request = callback(tx.objectStore(DB_STORE))
+      request.onsuccess = () => { result = request.result }
+      request.onerror = () => reject(request.error ?? Error('IndexedDB request failed'))
+      tx.oncomplete = () => resolve(result)
+      tx.onerror = () => reject(tx.error ?? Error('IndexedDB transaction failed'))
+      tx.onabort = () => reject(tx.error ?? Error('IndexedDB aborted'))
+    })
+  } finally { db.close() }
+}
+
+// Session writes and resets have a single ordering authority. A late-running
+// save cannot reappear after Reset and resurrect a private old conversation.
+let writeQueue: Promise<void> = Promise.resolve()
+function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const next = writeQueue.then(operation, operation)
+  writeQueue = next.then(() => undefined, () => undefined)
+  return next
+}
+
+export async function readBetaSession(): Promise<BetaSessionSnapshot | null> {
+  await writeQueue
+  try {
+    const stored = validated(await transact('readonly', store => store.get(DB_RECORD)))
+    if (stored) return stored
+  } catch (err) {
+    console.warn('[LINGORA] IndexedDB read unavailable', err)
+  }
+  // Upgrade from the previous localStorage-only beta. Its large data URLs
+  // may already have been discarded; do not claim they were recovered.
   try {
     const raw = localStorage.getItem(BETA_SESSION_KEY)
     return raw ? validated(JSON.parse(raw)) : null
   } catch { return null }
 }
 
-function withoutExpiredLinks(msg: Msg): Msg {
-  const artifact = (entry: NonNullable<Msg['artifact']>) => {
-    const expired = Object.values(entry).some(v => typeof v === 'string'
-      && v.startsWith('data:') && v.length > MAX_DATA_URL_CHARS)
-    return expired ? null : entry
+function strippedArtifact(message: Msg): Msg {
+  const strip = (a: NonNullable<Msg['artifact']>) => {
+    const oversized = Object.values(a).some(v => typeof v === 'string' && v.startsWith('data:')
+      && v.length > LOCAL_LINK_LIMIT)
+    return oversized ? null : a
   }
-  const single = msg.artifact ? artifact(msg.artifact) : null
-  const multiple = msg.artifacts?.map(a => artifact(a)).filter((a): a is NonNullable<Msg['artifact']> => !!a) ?? null
-  const discarded = (!!msg.artifact && !single)
-    || (msg.artifacts != null && multiple != null && multiple.length !== msg.artifacts.length)
+  const artifact = message.artifact ? strip(message.artifact) : null
+  const artifacts = message.artifacts?.map(a => strip(a)).filter((a): a is NonNullable<Msg['artifact']> => !!a) ?? null
+  const missing = (!!message.artifact && !artifact)
+    || (message.artifacts != null && artifacts != null && artifacts.length !== message.artifacts.length)
   return {
-    ...msg, artifact: single, artifacts: multiple,
-    audioUrl: msg.audioUrl?.startsWith('blob:') || msg.audioUrl?.startsWith('data:') ? undefined : msg.audioUrl,
-    imageUrl: msg.imageUrl?.startsWith('blob:') || msg.imageUrl?.startsWith('data:') ? undefined : msg.imageUrl,
-    artifactFailures: discarded
-      ? [...(msg.artifactFailures ?? []), { subject: 'Archivo grande no conservado tras recarga; descárgalo durante la sesión' }]
-      : msg.artifactFailures,
+    ...message, artifact, artifacts,
+    audioUrl: message.audioUrl?.startsWith('data:') || message.audioUrl?.startsWith('blob:') ? undefined : message.audioUrl,
+    imageUrl: message.imageUrl?.startsWith('data:') || message.imageUrl?.startsWith('blob:') ? undefined : message.imageUrl,
+    artifactFailures: missing
+      ? [...(message.artifactFailures ?? []), { subject: 'El navegador no pudo conservar este archivo; descárgalo ahora.' }]
+      : message.artifactFailures,
   }
 }
 
-export function saveBetaSession(input: Omit<BetaSessionSnapshot, 'version' | 'reduced'>): 'saved' | 'reduced' | 'failed' {
+function localFallback(snapshot: BetaSessionSnapshot): 'reduced' | 'failed' {
   try {
-    // Registry payloads duplicate downloadable data URLs already present in messages.
-    const session = { ...input.session } as SS & { artifactRegistry?: unknown }
+    const session = { ...snapshot.session } as SS & { artifactRegistry?: unknown }
     delete session.artifactRegistry
-    const selected = input.msgs.slice(-MAX_MESSAGES)
-    const snapshot: BetaSessionSnapshot = { ...input, version: 1, session, msgs: selected }
-    let serialized = JSON.stringify(snapshot)
-    if (serialized.length <= MAX_STORE_CHARS) {
-      localStorage.setItem(BETA_SESSION_KEY, serialized)
-      return 'saved'
+    const reduced: BetaSessionSnapshot = {
+      ...snapshot, session, reduced: true,
+      msgs: snapshot.msgs.map(strippedArtifact),
     }
-    const reduced = { ...snapshot, reduced: true, msgs: selected.map(withoutExpiredLinks) }
-    serialized = JSON.stringify(reduced)
-    // Never truncate message content. If storage cannot hold the history,
-    // report failure, rather than pretend that a partial session is complete.
-    if (serialized.length > MAX_STORE_CHARS) return 'failed'
-    localStorage.setItem(BETA_SESSION_KEY, serialized)
+    const encoded = JSON.stringify(reduced)
+    if (encoded.length > LOCAL_LIMIT) return 'failed'
+    localStorage.setItem(BETA_SESSION_KEY, encoded)
     return 'reduced'
   } catch { return 'failed' }
 }
 
-export function clearBetaSession(): void {
-  try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
+export function saveBetaSession(
+  input: Omit<BetaSessionSnapshot, 'version' | 'reduced'>,
+): Promise<'saved' | 'reduced' | 'failed'> {
+  return serialized(async () => {
+    const session = { ...input.session } as SS & { artifactRegistry?: unknown }
+    delete session.artifactRegistry
+    const snapshot: BetaSessionSnapshot = {
+      ...input, version: 1, session, msgs: input.msgs.slice(-MAX_MESSAGES),
+      reduced: input.msgs.length > MAX_MESSAGES,
+    }
+    // Do not silently crop real artifacts to satisfy a storage limit.
+    // Failure must be visible to the student, while preserving a text
+    // fallback where possible.
+    let chars = 0
+    try { chars = JSON.stringify(snapshot).length } catch { return 'failed' }
+    if (chars > MAX_SNAPSHOT_CHARS) return localFallback(snapshot)
+    try {
+      await transact('readwrite', store => store.put(snapshot, DB_RECORD))
+      // Prevent old localStorage snapshots from resurfacing after an IDB
+      // eviction or partial upgrade.
+      try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
+      return snapshot.reduced ? 'reduced' : 'saved'
+    } catch (err) {
+      console.warn('[LINGORA] IndexedDB write unavailable', err)
+      return localFallback(snapshot)
+    }
+  })
+}
+
+export function clearBetaSession(): Promise<void> {
+  return serialized(async () => {
+    try { await transact('readwrite', store => store.delete(DB_RECORD)) }
+    catch (err) { console.warn('[LINGORA] IndexedDB clear unavailable', err) }
+    try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
+  })
 }

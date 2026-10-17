@@ -36,7 +36,7 @@ export function doExportTxt(msgs: Msg[]) {
 }
 
 export type PdfExportResult =
-  | { ok: true; message: string; bytes: number }
+  | { ok: true; message: string; bytes: number; archiveUrl: string }
   | { ok: false; message: string }
 
 // This is an explicit UI operation, NEVER another student message or a
@@ -97,7 +97,18 @@ export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExport
     } finally {
       setTimeout(() => URL.revokeObjectURL(localUrl), 30000)
     }
-    return { ok: true, message: `Descarga de PDF iniciada (${blob.size} bytes verificados).`, bytes: blob.size }
+    // Store the exact verified bytes in the same-browser document archive.
+    // S3 links alone may not remain readable when the student returns.
+    const archiveUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? ''))
+      reader.onerror = () => reject(reader.error ?? Error('Unable to archive exported PDF'))
+      reader.readAsDataURL(blob)
+    })
+    if (!archiveUrl.startsWith('data:application/pdf;base64,')) {
+      return { ok: false, message: 'PDF descargado, pero no pudo guardarse para la siguiente visita.' }
+    }
+    return { ok: true, message: `PDF verificado y listo para recuperar (${blob.size} bytes).`, bytes: blob.size, archiveUrl }
   } catch (error) {
     console.warn('[LINGORA export PDF] download failed', error)
     return { ok: false, message: 'No fue posible descargar el PDF. Inténtalo de nuevo; no se sustituyó por TXT.' }

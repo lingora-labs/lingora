@@ -50,47 +50,76 @@ export function useBetaPage() {
   useEffect(() => { msgsRef.current = msgs }, [msgs])
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
   useEffect(() => {
-    // Hydrate BEFORE allowing saves, otherwise the initial empty React
-    // state overwrites the previous student's entire conversation.
-    const saved = readBetaSession()
-    if (saved) {
-      setLang(saved.lang); langRef.current = saved.lang
-      setMentor(saved.mentor); mentorRef.current = saved.mentor
-      setTopic(saved.topic); topicRef.current = saved.topic
-      setActiveMode(saved.activeMode)
-      setSession(saved.session); sessionRef.current = saved.session
-      setMsgs(saved.msgs); msgsRef.current = saved.msgs
-      setPhase(saved.phase)
-      if (saved.reduced) setPersistWarning('La conversación se recuperó, pero algunos archivos grandes deben descargarse de nuevo.')
-    } else {
-      // One-time legacy migration for preferences only. Do not claim that
-      // the old lng1010 format had any saved conversation to restore.
-      try {
-        const raw = localStorage.getItem('lng1010')
-        if (raw) {
-          const p = JSON.parse(raw) as Partial<SS>
-          const languages = ['es','en','no','fr','de','it','pt','ar','ja','zh']
-          if (p.lang && languages.includes(p.lang)) { setLang(p.lang); langRef.current = p.lang }
-          if (p.mentor && ['sarah','alex','nick'].includes(p.mentor)) { setMentor(p.mentor); mentorRef.current = p.mentor }
-          if (p.topic && ['conversation','structured','cervantes','business','travel','course','leveltest'].includes(p.topic)) { setTopic(p.topic); topicRef.current = p.topic }
-        }
-      } catch {}
-    }
-    setHydrated(true)
+    // Restore full artifact URLs from IndexedDB before enabling autosave.
+    // Earlier localStorage sessions migrate transparently, without
+    // claiming that URLs previously discarded can be reconstructed.
+    let mounted = true
+    void readBetaSession().then(saved => {
+      if (!mounted) return
+      if (saved) {
+        setLang(saved.lang); langRef.current = saved.lang
+        setMentor(saved.mentor); mentorRef.current = saved.mentor
+        setTopic(saved.topic); topicRef.current = saved.topic
+        setActiveMode(saved.activeMode)
+        setSession(saved.session); sessionRef.current = saved.session
+        setMsgs(saved.msgs); msgsRef.current = saved.msgs
+        setPhase(saved.phase)
+        if (saved.reduced) setPersistWarning('Se recuperó una sesión reducida. Comprueba si están todos tus archivos.')
+      } else {
+        try {
+          const raw = localStorage.getItem('lng1010')
+          if (raw) {
+            const p = JSON.parse(raw) as Partial<SS>
+            const languages = ['es','en','no','fr','de','it','pt','ar','ja','zh']
+            if (p.lang && languages.includes(p.lang)) { setLang(p.lang); langRef.current = p.lang }
+            if (p.mentor && ['sarah','alex','nick'].includes(p.mentor)) { setMentor(p.mentor); mentorRef.current = p.mentor }
+            if (p.topic && ['conversation','structured','cervantes','business','travel','course','leveltest'].includes(p.topic)) { setTopic(p.topic); topicRef.current = p.topic }
+          }
+        } catch {}
+      }
+      setHydrated(true)
+    }).catch(err => {
+      console.warn('[LINGORA] beta hydration failed', err)
+      if (mounted) { setPersistWarning('No se pudo recuperar el almacenamiento de esta sesión.'); setHydrated(true) }
+    })
+    return () => { mounted = false }
   }, [])
   useEffect(() => {
     if (!hydrated) return
-    const result = saveBetaSession({
-      phase: phase === 'chat' ? 'chat' : 'onboarding',
+    const snapshot = {
+      phase: (phase === 'chat' ? 'chat' : 'onboarding') as 'chat' | 'onboarding',
       lang, mentor, topic, activeMode, session, msgs,
-    })
-    if (result === 'failed') setPersistWarning('No se pudo guardar la sesión en este navegador. Descarga lo necesario antes de salir.')
-    else if (result === 'reduced') setPersistWarning('La conversación se guarda; los archivos grandes deben descargarse antes de salir.')
-    else setPersistWarning(null)
-  }, [hydrated, phase, lang, mentor, topic, activeMode, session, msgs])
+    }
+    let cancelled = false
+    const write = () => {
+      void saveBetaSession(snapshot).then(result => {
+        if (cancelled) return
+        if (result === 'failed') setPersistWarning('No se pudo guardar la sesión. Descarga los documentos antes de salir.')
+        else if (result === 'reduced') setPersistWarning('La sesión se guardó parcialmente. Algunos archivos podrían no recuperarse.')
+        else setPersistWarning(null)
+      })
+    }
+    // Buffer token-by-token streaming writes; flush promptly when a response
+    // completes. Avoid writing multi-MB PDFs every single streamed token.
+    const delay = loading ? 650 : 100
+    const timer = setTimeout(write, delay)
+    const onHide = () => { if (document.visibilityState === 'hidden') { clearTimeout(timer); write() } }
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onHide)
+    }
+  }, [hydrated, phase, lang, mentor, topic, activeMode, session, msgs, loading])
   const addMsg = useCallback((m: Omit<Msg,'id'>) => {
     setMsgs(prev => [...prev, { ...m, id: Date.now()+'-'+Math.random().toString(36).slice(2) }])
   }, [])
+  const registerExport = useCallback((archiveUrl: string) => {
+    // A saved tool output, not a new student turn.
+    addMsg({ sender: 'ln', text: 'Historial PDF de esta sesión', artifact: {
+      type: 'pdf_chat', url: archiveUrl,
+    } })
+  }, [addMsg])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     setLoading(true)
     try {
@@ -359,7 +388,7 @@ export function useBetaPage() {
     }
   }, [callAPI])
   const resetChat = useCallback(() => {
-    clearBetaSession()
+    void clearBetaSession()
     setMsgs([]); msgsRef.current = []
     setInput(''); setPersistWarning(null)
     setSession({
@@ -395,7 +424,7 @@ export function useBetaPage() {
     r.readAsDataURL(file); e.target.value = ''
   }, [])
   return {
-    phase, setPhase, hydrated, persistWarning, resetChat, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
+    phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,

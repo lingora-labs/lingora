@@ -159,7 +159,7 @@ export type ComposeResult =
 // as document structure, instead of one dense paragraph with literal ##/**.
 function readableSourceAppendix(source: string): DocumentBlock[] {
   const output: DocumentBlock[] = [
-    { type: 'heading', level: 1, content: 'Texto íntegro del tutor — formato de lectura' },
+    { type: 'heading', level: 1, label: 'source-appendix', content: 'Texto íntegro del tutor — formato de lectura' },
   ];
   const plain = (t: string) => t
     .replace(/\*\*(.+?)\*\*/g, '$1')

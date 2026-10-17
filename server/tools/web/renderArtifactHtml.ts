@@ -55,9 +55,17 @@ function esc(v: unknown): string {
 // escaped text, and only recognizes these two fixed patterns; nothing
 // else in the string can become a tag.
 function inline(v: unknown): string {
+  // Bidirectional isolation is typographic, not a translation or a second
+  // language pipeline. An Arabic/Hebrew phrase in Latin prose retains its
+  // original characters without displacing neighboring punctuation.
+  return esc(v)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
+    .replace(/[\u0590-\u08ff]+(?:\s+[\u0590-\u08ff]+)*/gu, '<bdi dir="rtl">function inline(v: unknown): string {
   return esc(v)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>');
+}</bdi>');
 }
 
 const ARTIFACT_TYPE_BADGE: Record<string, string> = {
@@ -75,7 +83,7 @@ function capitalizeMentor(name: string | undefined): string {
 
 function renderBlock(
   block: DocumentBlock,
-  hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean; isAbstract?: boolean; chapterNumber?: number },
+  hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean; isAbstract?: boolean; isAppendix?: boolean; chapterNumber?: number },
 ): string {
   switch (block.type) {
     case 'timeline':
@@ -110,6 +118,13 @@ function renderBlock(
 
     case 'heading': {
       const lvl = block.level ?? 1;
+      if (block.label === 'source-appendix') {
+        return `<div class="ln-source-start"><h2 class="ln-source-head">${inline(block.content)}</h2></div>`;
+      }
+      if (hints.isAppendix) {
+        const heading = lvl === 1 ? 'h3' : 'h4';
+        return `<${heading} class="ln-source-subhead">${inline(block.content)}</${heading}>`;
+      }
       // P19-G3 — scientific chapter rhythm: a level-1 heading gets a
       // numbered "Capítulo N" opener instead of the compact accent-
       // underline treatment. Only applies when the caller supplied a
@@ -131,7 +146,7 @@ function renderBlock(
       if (hints.isAbstract) {
         return `<div class="ln-abstract"><div class="ln-abstract-label">Resumen</div><p class="ln-abstract-body">${inline(block.content)}</p></div>`;
       }
-      return `<p class="ln-p">${inline(block.content)}</p>`;
+      return `<p class="${hints.isAppendix ? 'ln-source-p' : 'ln-p'}" dir="auto">${inline(block.content)}</p>`;
 
     case 'bullets': {
       const items = block.items ?? (block.content ? [block.content] : []);
@@ -206,17 +221,20 @@ export function renderArtifactHtml(content: DocumentContent): string {
   // every level-1 heading after it gets a sequential chapter number.
   const firstParagraphIndex = intent === 'scientific' ? blocks.findIndex((b) => b.type === 'paragraph') : -1;
   let chapterCounter = 0;
+  let inAppendix = false;
 
   const badgeText = ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType;
   const kicker = INTENT_KICKER[intent];
 
   const bodyHtml = blocks.map((b, i) => {
-    const isChapterHeading = intent === 'scientific' && b.type === 'heading' && (b.level ?? 1) === 1;
+    if (b.type === 'heading' && b.label === 'source-appendix') inAppendix = true;
+    const isChapterHeading = !inAppendix && intent === 'scientific' && b.type === 'heading' && (b.level ?? 1) === 1;
     if (isChapterHeading) chapterCounter += 1;
     return renderBlock(b, {
       isKpiStrip: i === firstKvIndex,
       isComparisonMatrix: i === firstTableIndex,
       isAbstract: i === firstParagraphIndex,
+      isAppendix: inAppendix,
       chapterNumber: isChapterHeading ? chapterCounter : undefined,
     });
   }).join('\n');
@@ -272,6 +290,11 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-chapter { margin: 36px 0 14px; padding-top: 10px; border-top: 1px solid #e4e6ed; }
   .ln-chapter-num { font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--ln-teal); margin-bottom: 4px; }
   .ln-chapter-title { font-size: 22px; font-weight: 800; color: var(--ln-dark); margin: 0; line-height: 1.3; }
+  .ln-source-start { border-top: 2px solid var(--ln-teal); margin: 19px 0 8px; padding-top: 10px; break-after: avoid-page; }
+  .ln-source-head { font-size: 17px; color: var(--ln-dark); margin: 0; }
+  .ln-source-subhead { font-size: 14px; margin: 13px 0 6px; color: var(--ln-accent); break-after: avoid-page; }
+  .ln-source-p { font-size: 14px; line-height: 1.64; margin: 0 0 10px; color: #333949; orphans: 3; widows: 3; }
+  bdi[dir="rtl"] { unicode-bidi: isolate; direction: rtl; }
   .ln-kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 16px 0; }
   .ln-kpi-card { background: var(--ln-dark); border-radius: 10px; padding: 14px 12px; }
   .ln-kpi-card::before { content: ''; display: block; width: 24px; height: 3px; background: var(--ln-teal); border-radius: 2px; margin-bottom: 10px; }
