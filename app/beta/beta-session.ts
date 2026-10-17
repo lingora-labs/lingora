@@ -166,10 +166,19 @@ export function saveBetaSession(
   })
 }
 
-export function clearBetaSession(): Promise<void> {
+export function clearBetaSession(): Promise<boolean> {
   return serialized(async () => {
-    try { await transact('readwrite', store => store.delete(DB_RECORD)) }
-    catch (err) { console.warn('[LINGORA] IndexedDB clear unavailable', err) }
-    try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
+    let idbCleared = false
+    let localCleared = false
+    try {
+      await transact('readwrite', store => store.delete(DB_RECORD))
+      idbCleared = true
+    } catch (err) { console.warn('[LINGORA] IndexedDB clear unavailable', err) }
+    try {
+      localStorage.removeItem(BETA_SESSION_KEY)
+      localCleared = true
+    } catch (err) { console.warn('[LINGORA] localStorage clear unavailable', err) }
+    // Reset is only confirmed if both existing storage routes completed.
+    return idbCleared && localCleared
   })
 }

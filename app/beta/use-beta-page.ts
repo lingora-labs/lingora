@@ -33,6 +33,8 @@ export function useBetaPage() {
     commercialOffers: [], lastTask: null, lastArtifact: null,
   })
   const sessionRef = useRef<SS>(session)
+  const resetGenerationRef = useRef(0)
+  const resetInProgressRef = useRef(false)
   const mentorRef = useRef<MK>(mentor)
   const langRef = useRef<Lang>(lang)
   const topicRef = useRef<TK>(topic)
@@ -91,7 +93,9 @@ export function useBetaPage() {
       lang, mentor, topic, activeMode, session, msgs,
     }
     let cancelled = false
+    const generation = resetGenerationRef.current
     const write = () => {
+      if (generation !== resetGenerationRef.current || resetInProgressRef.current) return
       void saveBetaSession(snapshot).then(result => {
         if (cancelled) return
         if (result === 'failed') setPersistWarning('No se pudo guardar la sesión. Descarga los documentos antes de salir.')
@@ -114,12 +118,28 @@ export function useBetaPage() {
   const addMsg = useCallback((m: Omit<Msg,'id'>) => {
     setMsgs(prev => [...prev, { ...m, id: Date.now()+'-'+Math.random().toString(36).slice(2) }])
   }, [])
-  const registerExport = useCallback((archiveUrl: string) => {
-    // A saved tool output, not a new student turn.
-    addMsg({ sender: 'ln', text: 'Historial PDF de esta sesión', artifact: {
-      type: 'pdf_chat', url: archiveUrl,
-    } })
-  }, [addMsg])
+  const registerExport = useCallback(async (archiveUrl: string, expectedSessionId: string):
+    Promise<'saved' | 'reduced' | 'failed' | 'cancelled'> => {
+    if (resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId) return 'cancelled'
+    // A saved tool output, not a student turn. Commit the complete archive
+    // before the interface is permitted to announce that it will survive a return.
+    const archive: Msg = {
+      id: Date.now()+'-export-'+Math.random().toString(36).slice(2),
+      sender: 'ln', text: 'Historial PDF de esta sesión',
+      artifact: { type: 'pdf_chat', url: archiveUrl },
+    }
+    const nextMsgs = [...msgsRef.current, archive]
+    msgsRef.current = nextMsgs
+    setMsgs(nextMsgs)
+    const status = await saveBetaSession({
+      phase: phase === 'chat' ? 'chat' : 'onboarding',
+      lang: langRef.current, mentor: mentorRef.current,
+      topic: topicRef.current, activeMode,
+      session: sessionRef.current, msgs: nextMsgs,
+    })
+    return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
+      ? 'cancelled' : status
+  }, [phase, activeMode])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     setLoading(true)
     try {
@@ -387,18 +407,31 @@ export function useBetaPage() {
       void callAPI({ message: '', activeMode: mode })
     }
   }, [callAPI])
-  const resetChat = useCallback(() => {
-    void clearBetaSession()
-    setMsgs([]); msgsRef.current = []
-    setInput(''); setPersistWarning(null)
-    setSession({
+  const resetChat = useCallback(async () => {
+    if (resetInProgressRef.current) return
+    resetInProgressRef.current = true
+    // Invalidate prior debounced writes before clearing the serialized queue.
+    resetGenerationRef.current += 1
+    setPersistWarning('Eliminando los materiales locales…')
+    const cleared = await clearBetaSession()
+    if (!cleared) {
+      setPersistWarning('Reset no confirmado: el almacenamiento local no pudo limpiarse.')
+      resetInProgressRef.current = false
+      return
+    }
+    const freshSession: SS = {
       lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
       level: 'A0', tokens: 0, samples: [],
       sessionId: 's'+Math.random().toString(36).slice(2),
       commercialOffers: [], lastTask: null, lastArtifact: null,
-    })
+    }
+    sessionRef.current = freshSession
+    setMsgs([]); msgsRef.current = []
+    setInput(''); setPersistWarning(null)
+    setSession(freshSession)
     setActiveMode('interact')
     setPhase('onboarding')
+    resetInProgressRef.current = false
   }, [])
   const toggleRec = useCallback(async () => {
     if (recording) { mrRef.current?.stop(); setRecording(false); return }

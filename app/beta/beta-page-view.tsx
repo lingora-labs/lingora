@@ -159,10 +159,21 @@ export default function BetaPageView() {
               {showExport && (
                 <div style={{ position:'absolute', top:'115%', right:0, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:12, padding:'5px 0', zIndex:50, minWidth:160 }}>
                   <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar TXT</button>
-                  <button onClick={() => { setExportStatus('Preparando PDF…'); void doExportPdfBackend(msgs, session).then(result => {
-                    setExportStatus(result.message)
-                    if (result.ok) registerExport(result.archiveUrl)
-                  }); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar PDF</button>
+                  <button onClick={() => { setExportStatus('Preparando PDF…'); void (async () => {
+                    try {
+                      const result = await doExportPdfBackend(msgs, session)
+                      if (!result.ok) { setExportStatus(result.message); return }
+                      setExportStatus('PDF descargado. Guardando copia para la próxima sesión…')
+                      const stored = await registerExport(result.archiveUrl, session.sessionId)
+                      if (stored === 'cancelled') { setExportStatus(null); return }
+                      setExportStatus(stored === 'saved'
+                        ? `PDF verificado y guardado localmente (${result.bytes} bytes).`
+                        : 'PDF descargado, pero no se confirmó su conservación. Descarga y guarda una copia.')
+                    } catch (err) {
+                      console.warn('[LINGORA] PDF archive confirmation failed', err)
+                      setExportStatus('PDF no confirmado en el archivo local; conserva la descarga.')
+                    }
+                  })(); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar PDF</button>
                 </div>
               )}
             </div>
