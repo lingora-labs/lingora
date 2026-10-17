@@ -84,7 +84,7 @@
 // =============================================================================
 import type { DocumentContent, DocumentBlock, DocumentBlockType } from './generateCoursePdf'
 import type { DocumentIntent } from './brand'
-import { auditDocumentFidelity, sourceToDocumentBlocks } from './documentFidelity'
+import { auditDocumentFidelity, auditRecoveredSource, sourceToDocumentBlocks } from './documentFidelity'
 
 const VALID_BLOCK_TYPES = new Set<DocumentBlockType>([
   'heading', 'paragraph', 'bullets', 'numbered', 'table', 'callout', 'quote',
@@ -177,7 +177,9 @@ function faithfulSourceDocument(
   if (!blocks.some(b => b.type === 'heading')) {
     blocks.unshift({ type: 'heading', level: 1, content: params.subject })
   }
-  const audit = auditDocumentFidelity(params.fullContent, blocks)
+  // This path already represents the complete tutor source. Evaluate loss,
+  // not LLM-outline shape: consecutive original headings are legitimate.
+  const audit = auditRecoveredSource(params.fullContent, blocks)
   if (!audit.ok) return { ok: false, reason: 'source_content_incomplete:' + audit.reason }
   const intent = normalizeIntent(metadata?.documentIntent ?? 'reference')
   const type = metadata?.documentType ? normalizeArtifactType(metadata.documentType)

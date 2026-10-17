@@ -91,3 +91,36 @@ export function sourceToDocumentBlocks(source: string): DocumentBlock[] {
   flushParagraph(); flushList()
   return blocks
 }
+
+/**
+ * Checks a deterministic source-to-block conversion, not an LLM-composed
+ * outline. Consecutive headings are legal in original tutor content.
+ * Every meaningful source word, including repeats, must survive.
+ */
+export function auditRecoveredSource(
+  source: string, blocks: DocumentBlock[],
+): DocumentFidelityResult {
+  if (!source.trim()) return { ok: false, reason: 'empty_source', coverage: 0 }
+  if (!blocks.length) return { ok: false, reason: 'empty_blocks', coverage: 0 }
+  const tokens = (s: string) =>
+    s.toLocaleLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu) ?? []
+  const normalizedSource = source.replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, '')
+  const expected = tokens(normalizedSource)
+  const actual = tokens(blockText(blocks))
+  const remaining = new Map<string, number>()
+  for (const word of actual) remaining.set(word, (remaining.get(word) ?? 0) + 1)
+  let retained = 0
+  for (const word of expected) {
+    const count = remaining.get(word) ?? 0
+    if (count > 0) {
+      retained++
+      remaining.set(word, count - 1)
+    }
+  }
+  const coverage = expected.length ? retained / expected.length : 1
+  return {
+    ok: coverage === 1,
+    reason: coverage === 1 ? 'ok' : 'loss_of_source',
+    coverage,
+  }
+}
