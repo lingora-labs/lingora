@@ -81,16 +81,38 @@ const quiz=(items)=>({
 const eventCorrect=question('La boda ___ en Madrid.',['es','está','somos'],0)
 const personCorrect=question('María ___ en casa.',['es','está','son'],1)
 assert.equal(materializeNativeArtifact(quiz([eventCorrect,personCorrect]))?.type,'quiz')
-assert.equal(materializeNativeArtifact(quiz([
+// The validator STILL rejects model-authored wrong keys, but now reports
+// the one mathematically proven option index for safe runtime correction.
+const wrongEventAudit=validateQuizAnswerKey([
   question('La boda ___ en Madrid.',['A) es','B) está','C) somos'],1),
   personCorrect
-])),null,'prefixed option labels must not bypass answer validation')
-assert.equal(materializeNativeArtifact(quiz([
-  {...eventCorrect,correct:1},personCorrect
-])),null,'reject wrong event key before scoring')
-assert.equal(materializeNativeArtifact(quiz([
+])
+assert.deepEqual(wrongEventAudit,{
+  ok:false,reason:'incorrect_model_answer_key:0',questionIndex:0,correctedIndex:0,
+})
+const wrongPersonAudit=validateQuizAnswerKey([
   eventCorrect,{...personCorrect,correct:0}
-])),null,'reject wrong person key before scoring')
+])
+assert.deepEqual(wrongPersonAudit,{
+  ok:false,reason:'incorrect_model_answer_key:1',questionIndex:1,correctedIndex:1,
+})
+const prefixedCorrected=materializeNativeArtifact(quiz([
+  question('La boda ___ en Madrid.',['A) es','B) está','C) somos'],1),
+  personCorrect
+]))
+assert.equal(prefixedCorrected?.type,'quiz')
+assert.equal(prefixedCorrected?.content?.questions[0].correct,0,
+  'prefixed options must be semantically verified, not trusted by index')
+const correctedEvent=materializeNativeArtifact(quiz([
+  {...eventCorrect,correct:1},personCorrect
+]))
+assert.equal(correctedEvent?.content?.questions[0].correct,0,
+  'event-location index is proof-corrected, not rejected')
+const correctedPerson=materializeNativeArtifact(quiz([
+  eventCorrect,{...personCorrect,correct:0}
+]))
+assert.equal(correctedPerson?.content?.questions[1].correct,1,
+  'person-location index is proof-corrected, not rejected')
 const unverified = materializeNativeArtifact(quiz([
   eventCorrect,question('El tren ___ rápido.',['es','está'],0)
 ]))

@@ -50,21 +50,40 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
       q.correct < (q.options as string[]).length &&
       str(q.explanation))
     if (!ok) return null
-    // Grading is a real student-facing side effect: semantic surface checks
-    // must pass BEFORE a key can color a button green or enter quiz memory.
-    const quality = validateQuizAnswerKey(c.questions as Array<{question:string;options:string[];correct:number;explanation?:string}>)
-    if (!quality.ok) {
-      console.warn('[quiz-quality] rejected ungradable question:', quality.reason)
-      // An unverifiable grammatical key must NEVER produce an automatic grade.
-      // Retain only the student's tactile options and ask the SAME Tutor Maestro
-      // to review selected answers conversationally, without exposing an
-      // unproven model-provided correct index as a score.
-      if (quality.reason?.startsWith('unverified_copula_cloze:')) {
-        return { type:'quiz', content:{...c,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
+    // DAE P1-02: use ONLY the unique answer already proven by the existing
+    // semantic verifier. Never alter its person/tense/semantic heuristics,
+    // questions, options or explanations; never let an unproven key auto-grade.
+    // Repair each independently verified wrong index on a local copy, bounded
+    // by the number of questions. An unverified/absent unique answer is always
+    // returned as a touch quiz with tutor_review, never as an automatic score.
+    type QuizQuestion = {question:string;options:string[];correct:number;explanation?:string}
+    const verifiedQuestions = (c.questions as QuizQuestion[]).map(q => ({...q}))
+    for (let attempt = 0; attempt <= verifiedQuestions.length; attempt++) {
+      const quality = validateQuizAnswerKey(verifiedQuestions)
+      if (quality.ok) {
+        return { type:'quiz', content:{...c,questions:verifiedQuestions} } as unknown as ArtifactPayload
       }
+      console.warn('[quiz-quality] validation finding:', quality.reason)
+      if (quality.reason?.startsWith('incorrect_model_answer_key:')) {
+        const i = quality.questionIndex
+        const correct = quality.correctedIndex
+        if (i === undefined || correct === undefined ||
+            !Number.isInteger(i) || i < 0 || i >= verifiedQuestions.length ||
+            !Number.isInteger(correct) || correct < 0 ||
+            correct >= verifiedQuestions[i].options.length ||
+            verifiedQuestions[i].correct === correct) return null
+        verifiedQuestions[i].correct = correct
+        continue
+      }
+      if (quality.reason?.startsWith('unverified_copula_cloze:') ||
+          quality.reason?.startsWith('missing_or_ambiguous_correct_option:')) {
+        return { type:'quiz', content:{...c,questions:verifiedQuestions,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
+      }
+      // compound_copula_cloze / invalid_answer_key / duplicate_options /
+      // empty_quiz and unknown validation errors retain fail-closed behavior.
       return null
     }
-    return { type:'quiz', content:c } as unknown as ArtifactPayload
+    return null
   }
   return null
 }

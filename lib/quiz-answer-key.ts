@@ -9,7 +9,14 @@
 // Other subject domains retain their existing structural contract. This is
 // deliberately not advertised as universal linguistic verification.
 type Question = { question:string; options:string[]; correct:number; explanation?:string }
-export type AnswerKeyAudit = { ok:boolean; reason?:string }
+export type AnswerKeyAudit = {
+  ok: boolean
+  reason?: string
+  // Only populated when the existing verifier has proved exactly one
+  // correct option in its closed SER/ESTAR grammar domain.
+  questionIndex?: number
+  correctedIndex?: number
+}
 
 const serForms = ['soy','eres','es','somos','sois','son'] as const
 const estarForms = ['estoy','estás','está','estamos','estáis','están'] as const
@@ -105,7 +112,7 @@ export function validateQuizAnswerKey(questions:Question[]):AnswerKeyAudit {
     if (!expected) return {ok:false,reason:'unverified_copula_cloze:'+i}
     const match=choices.map((v,k)=>v===expected?k:-1).filter(k=>k!==-1)
     if (match.length!==1) return {ok:false,reason:'missing_or_ambiguous_correct_option:'+i}
-    if (q.correct!==match[0]) return {ok:false,reason:'incorrect_model_answer_key:'+i}
+    if (q.correct!==match[0]) return {ok:false,reason:'incorrect_model_answer_key:'+i,questionIndex:i,correctedIndex:match[0]}
     // An unsupported alternative option such as an odd verb inflection cannot
     // itself count as correct: all scoring references the verified single form.
   }
