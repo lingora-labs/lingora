@@ -13,20 +13,19 @@ export async function generateImage(
       .trim() || 'Educational Spanish learning illustration'
 
     const result = await openai.images.generate({
-      model:   'dall-e-3',
+      model:   'gpt-image-1',
       prompt:  finalPrompt,
       n:       1,
       size:    '1024x1024',
-      quality: 'standard',
+      quality: 'medium',
     })
 
-    const remoteUrl = result.data?.[0]?.url
-    if (!remoteUrl) throw new Error('No image URL returned from DALL-E')
+    // GPT Image returns image bytes directly, rather than a hosted URL.
+    // Preserve the existing S3 upload and PNG data-URL fallback below.
+    const encoded = result.data?.[0]?.b64_json
+    if (!encoded) throw new Error('No image bytes returned from GPT Image')
 
-    const response = await fetch(remoteUrl)
-    if (!response.ok) throw new Error(`Image download failed: ${response.status}`)
-
-    const buffer = Buffer.from(await response.arrayBuffer())
+    const buffer = Buffer.from(encoded, 'base64')
     const key    = `images/${Date.now()}.png`
 
     const s3Url = await uploadToS3(buffer, key, 'image/png')
