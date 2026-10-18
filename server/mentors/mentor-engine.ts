@@ -440,6 +440,17 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
         if (protectArabic) {
           const arabicChars = (turn.reply.match(/[\u0600-\u06FF]/gu) ?? []).length
           if (arabicChars < 20) findings.push('reply_not_in_selected_arabic')
+          // Instrumental contract: a long Arabic-language PDF+HTML lesson
+          // cannot pass by inserting a few Arabic words into Spanish prose.
+          // Spanish examples may remain Spanish. Validate the authored source
+          // before either representation is materialized.
+          const dualLesson = n.plan?.documentContractUpdate?.format === 'pdf_html'
+          if (dualLesson && turn.reply.length > 2000) {
+            const letters = (turn.reply.match(/\p{L}/gu) ?? []).length
+            if (arabicChars < 350 || arabicChars / Math.max(letters, 1) < 0.18) {
+              findings.push('arabic_explanation_insufficient_in_dual_document')
+            }
+          }
         }
         return findings
       }
