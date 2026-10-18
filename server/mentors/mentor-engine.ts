@@ -393,7 +393,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     const protectArabic = (pack.detectedScriptLanguage === 'Arabic' || resolveInterfaceLanguage(n.state) === 'ar')
       && !/\b(?:responde|explica|contesta)\s+(?:en\s+)?espa[nñ]ol\b/iu.test(n.message)
       && !/\b(?:translate|traduce)\b/iu.test(n.message)
-    const delayUntilValidated = protectQuiz || protectArabic
+    // An explicitly requested start-to-expert curriculum is a quality
+    // contract, never a route or a separate author.
+    const protectCurriculum = /(?:desde\s+cero\s+hasta\s+(?:nivel\s+)?experto|curso\s+completo\s+estructurado|from\s+(?:zero|beginner)\s+to\s+expert)/iu.test(n.message)
+    const delayUntilValidated = protectQuiz || protectArabic || protectCurriculum
     const response = await openai.chat.completions.create({
       ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
       stream: true,
@@ -437,6 +440,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           if (!quizzes.length) findings.push('missing_touch_quiz')
           else if (!quizzes.some(q => materializeNativeArtifact(q)?.type === 'quiz')) findings.push('quiz_answer_key_not_verified')
         }
+        if (protectCurriculum) {
+          const stages = (turn.reply.match(/(?:^|\n)\s*(?:#{1,3}\s*)?(?:[1-9][0-9]?[.)]|(?:fase|etapa|módulo)\s+[1-9])/gimu) ?? []).length
+          if (turn.reply.length < 2300 || stages < 4) findings.push('full_curriculum_missing_depth_or_stages')
+        }
         if (protectArabic) {
           const arabicChars = (turn.reply.match(/[\u0600-\u06FF]/gu) ?? []).length
           if (arabicChars < 20) findings.push('reply_not_in_selected_arabic')
@@ -477,6 +484,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
               ...(n.plan?.documentContractUpdate?.format === 'pdf_html' ? [
                 { role: 'assistant' as const, content: 'DRAFT FOR FIDELITY REVIEW (not a new user request):\n' + closure.reply },
                 { role: 'system' as const, content: 'This is a language/fidelity revision of the complete draft just supplied, not a shortened new lesson. Preserve every section, Spanish example, exercise, solution and the original pedagogical depth. Rewrite explanatory prose in Arabic, while retaining Spanish examples. Do not abbreviate the document.' },
+              ] : []),
+              ...(protectCurriculum ? [
+                { role: 'assistant' as const, content: 'INCOMPLETE CURRICULUM DRAFT FOR EXPANSION:\n' + closure.reply },
+                { role: 'system' as const, content: 'The user already requested a full curriculum from beginner to expert, not an offer to make one. Expand this SAME draft into a substantial, clearly staged curriculum with domain terminology, objectives, practical progression, assessment milestones and safety boundaries where relevant. Cover at least six substantive stages. No generic five-point teaser and no unsolicited artifacts.' },
               ] : []),
               { role: 'system', content: 'Instrumental validation rejected the preceding draft: ' +
                 originalViolations.join(', ') + '. Re-author THIS turn faithfully with the same Tutor Maestro. ' +
