@@ -84,6 +84,18 @@ const newRequest=plan('Quiero un curso de historia en PDF nivel B2',initial)
 assert.equal(newRequest.documentContractReady,true,'explicit new course can replace old')
 assert.equal(newRequest.documentContractUpdate?.level,'B2')
 assert.equal(newRequest.documentContractUpdate?.topic,'historia')
+// Regression discovered by REAL four-turn API exercise: after collecting
+// A1 + topic, the old branch produced a native schema but NO PDF, and
+// "Hola, quiero practicar frases" was stolen as the course topic.
+const newGoal=plan('Hola, quiero practicar frases sencillas.',base({
+  pendingDocumentRequest:pending('A1','ser y estar'),tokens:5,
+}))
+assert.equal(newGoal.clearDocumentContract,true,'new practice intent must supersede document contract')
+assert.equal(newGoal.documentContractUpdate,undefined,'new intent is NOT a course topic')
+assert.equal(apply(newGoal,base({pendingDocumentRequest:pending('A1','ser y estar')})).pendingDocumentRequest,undefined)
+assert.equal(plan('Quiero practicar frases sencillas.',initial).clearDocumentContract,true)
+assert.equal(plan('Quiero el nivel A1',initial).documentContractUpdate?.level,'A1','short level parameter must continue')
+assert.equal(plan('Gramática del español',base({pendingDocumentRequest:pending('A1')})).documentContractReady,true)
 const noContract=base()
 assert.equal(plan('Hola',noContract).documentContractUpdate,undefined)
 assert.equal(plan('Cambiemos de tema. Cuéntame algo.',noContract).clearDocumentContract,undefined)
@@ -97,6 +109,8 @@ for(const msg of ['A1, sobre ser y estar','Olvídalo.','Cambiemos de tema. Cuén
 // The streaming and blocking paths must reduce the SAME state patch.
 const stream=fs.readFileSync(new URL('../server/core/execution-engine-stream.ts',import.meta.url),'utf8')
 const block=fs.readFileSync(new URL('../server/core/execution-engine.ts',import.meta.url),'utf8')
+assert.ok(stream.includes('tutorSignals.filter(s => s.type !== \'emit_pdf\')'),'course contract replaces an uncertain PDF signal with typed authorization')
+assert.ok(stream.includes("subject: plan.documentContractUpdate.topic,format: 'pdf'"),'course authoring must materialize a requested PDF rather than merely show native schema')
 assert.ok(stream.includes('documentContractStatePatch(plan, artifacts)'))
 assert.ok(stream.includes('directFormat || plan.documentContractControlOnly'),'the tutor cannot inject artifacts during contract-only turns')
 assert.ok(stream.includes('!plan.documentContractControlOnly && !artifacts.some'),'no fifth-turn visual on cancellations')

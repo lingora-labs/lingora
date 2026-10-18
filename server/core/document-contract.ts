@@ -22,6 +22,12 @@ const nextTask=/^(?:traduce\b|translate\b|corrige\b|correct\b|expl[ií]ca(?:me)?
 const confirmation=/^(?:sí|si|vale|ok|listo|adelante|hazlo|genera|genera el pdf|procede|yes|go ahead|proceed)\s*[.!]?$/iu
 const topicCue=/\b(?:tema|sobre|acerca de|topic|about)\s*[:\-]?\s*(.+)$/iu
 const genericTopic=/^(?:espa[nñ]ol|english|ingl[eé]s|curso|material|pdf|general|todo|idiomas)$/iu
+// A bare topic is a short NOMINAL fragment (e.g. "Ser y estar").
+// It must never swallow a new conversational instruction as a document field.
+const bareTopic=/^[\p{L}]+(?:[\s-]+[\p{L}]+){0,5}$/u
+const independentIntent=/^(?:(?:hola|hello|buenas)[,.!\s]+)?(?:(?:ahora|mejor)[,\s]+)?(?:quiero|necesito|prefiero|me gustar[ií]a|vamos a|podemos|quisiera)\b/iu
+const levelOnly=/^(?:(?:quiero|necesito|prefiero)\s+)?(?:el\s+)?(?:nivel\s+)?(?:A0|A1|A2|B1|B2|C1|C2)(?:\s*[-–]\s*(?:A0|A1|A2|B1|B2|C1|C2))?\s*[.!]?$/iu
+const contractLevelOnly=/^(?:(?:quiero|necesito|prefiero)\s+)?(?:el\s+)?nivel\s*:?\s*(?:A0|A1|A2|B1|B2|C1|C2)(?:\s*[-–]\s*(?:A0|A1|A2|B1|B2|C1|C2))?\s*[.!]?$/iu
 
 function extractLevel(text:string):string|null{
  const m=text.match(level)
@@ -30,7 +36,7 @@ function extractLevel(text:string):string|null{
 function extractTopic(text:string, allowBare:boolean):string|null{
  const c=text.match(topicCue)
  let raw=c?c[1]:''
- if(!c && allowBare && text.length<=68 && !nextTask.test(text) && !confirmation.test(text) && !/\?/.test(text))raw=text
+ if(!c && allowBare && bareTopic.test(text) && !nextTask.test(text) && !confirmation.test(text))raw=text
  raw=raw.replace(/\b(?:en|a|como)\s+pdf\b.*$/iu,'')
    .replace(/\s+(?:de\s+)?(?:nivel|level)\s+[ABC][0-2](?:\s*[-–]\s*[ABC][0-2])?.*$/iu,'')
    .replace(/\b(?:A0|A1|A2|B1|B2|C1|C2)(?:\s*[-–]\s*(?:A0|A1|A2|B1|B2|C1|C2))?\b/giu,'')
@@ -60,6 +66,14 @@ export function reconcileDocumentContract(
    return {kind:'clear',reason:'New explicit student intention outranks legacy document state'}
  if(prior && (state.tokens??0)-prior.openedAtToken>15)
    return {kind:'clear',reason:'Expired document parameters cannot silently resume'}
+ // The learner's explicit new goal has priority over an unfinished PDF.
+ // No broad "other" fallback to a stale document: only unambiguous parameter
+ // fragments remain available for collection. A request such as "Hola,
+ // quiero practicar frases" must not become the PDF's course title.
+ const anExplicitNewGoal=independentIntent.test(input)
+   && !courseRequest(input) && !levelOnly.test(input) && !contractLevelOnly.test(input)
+ if(prior && anExplicitNewGoal)
+   return {kind:'clear',reason:'New explicit learner goal overrides unfinished document'}
  if(!prior && !courseRequest(input))return {kind:'none',reason:'No explicit new document contract'}
  // Unlike the old exclusive-turn classifier, level and topic can be learned
  // in the same message. The existing contract does not supply the topic from

@@ -67,7 +67,18 @@ export function executePlanStream(
           if (fullText) emit({ delta: fullText })
         }
         // Direct transformation is user authority for text alone.
-        const signals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? [] : (stream.artifactSignals ?? [])
+        const tutorSignals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? [] : (stream.artifactSignals ?? [])
+        // The student's existing multi-turn PDF contract, not a model-authored
+        // side-effect proposal, authorizes materialization once parameters are
+        // complete. Willy remains the sole author of FULL pedagogical content;
+        // the tool layer converts that actual content into a real PDF.
+        // This is the same typed materializer as ordinary explicit PDF turns.
+        const signals: ArtifactSignal[] = plan.documentContractReady && plan.documentContractUpdate?.topic
+          ? [...tutorSignals.filter(s => s.type !== 'emit_pdf'), {
+              type: 'emit_pdf',trigger: 'explicit_user_request',
+              subject: plan.documentContractUpdate.topic,format: 'pdf',
+            }]
+          : tutorSignals
         let artifacts: ArtifactPayload[] = []
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
