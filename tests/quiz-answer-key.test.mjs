@@ -94,7 +94,7 @@ assert.equal(materializeNativeArtifact(quiz([
 const unverified = materializeNativeArtifact(quiz([
   eventCorrect,question('El tren ___ rápido.',['es','está'],0)
 ]))
-assert.equal((unverified?.content as { gradingMode?:string } | undefined)?.gradingMode,'tutor_review','unverified semantic quiz is tutor-reviewed, never auto-scored')
+assert.equal(unverified?.content?.gradingMode,'tutor_review','unverified semantic quiz is tutor-reviewed, never auto-scored')
 const client=fs.readFileSync(require.resolve('../app/beta/beta-schema-a.tsx'),'utf8')
 assert.ok(client.includes('validateQuizAnswerKey(quiz)'))
 console.log('PASS — semantic answer-key proof, event/person location, UI+runtime guards and prior grammar regression')
