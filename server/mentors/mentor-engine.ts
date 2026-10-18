@@ -387,6 +387,13 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
   try {
     const model = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
     const pack = resolveTurnContextPack(n.message, n.state, n.plan)
+    // Instrumental checks buffer only quiz/Arabic turns until the selected Tutor
+    // has delivered a verified response; ordinary turns retain live streaming.
+    const protectQuiz = isExplicitQuizRequest(n.message)
+    const protectArabic = (pack.detectedScriptLanguage === 'Arabic' || resolveInterfaceLanguage(n.state) === 'ar')
+      && !/\b(?:responde|explica|contesta)\s+(?:en\s+)?espa[nñ]ol\b/iu.test(n.message)
+      && !/\b(?:translate|traduce)\b/iu.test(n.message)
+    const delayUntilValidated = protectQuiz || protectArabic
     const response = await openai.chat.completions.create({
       ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
       stream: true,
@@ -408,7 +415,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
             if (candidate.startsWith(emitted) && candidate.length > emitted.length) {
               const delta = candidate.slice(emitted.length)
               emitted = candidate
-              yield delta
+              if (!delayUntilValidated) yield delta
             }
           }
         }
@@ -422,14 +429,58 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       const closure = parseClosedTutorTurn(decoded)
       if (!closure) throw Error('Tutor turn did not close with a valid artifact decision')
       if (!closure.reply.startsWith(emitted)) throw Error('Tutor streamed content mismatch')
-      if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
+      const { materializeNativeArtifact } = await import('../core/native-artifact')
+      const violations = (turn: typeof closure): string[] => {
+        const findings: string[] = []
+        if (protectQuiz) {
+          const quizzes = turn.artifacts.filter(a => a.type === 'quiz')
+          if (!quizzes.length) findings.push('missing_touch_quiz')
+          else if (!quizzes.some(q => materializeNativeArtifact(q)?.type === 'quiz')) findings.push('quiz_answer_key_not_verified')
+        }
+        if (protectArabic) {
+          const arabicChars = (turn.reply.match(/[\u0600-\u06FF]/gu) ?? []).length
+          if (arabicChars < 20) findings.push('reply_not_in_selected_arabic')
+        }
+        return findings
+      }
+      let accepted = closure
+      const originalViolations = delayUntilValidated ? violations(closure) : []
+      if (originalViolations.length) {
+        // Same selected Tutor Maestro may revise one rejected turn. Runtime
+        // supplies only factual validation findings, never a fabricated key.
+        try {
+          const revised = await openai.chat.completions.create({
+            ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.4, 0.88),
+            tools: [COMPLETE_TUTOR_TURN_TOOL],
+            tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
+            messages: [
+              { role: 'system', content: system },
+              ...n.history,
+              { role: 'system', content: 'Instrumental validation rejected the preceding draft: ' +
+                originalViolations.join(', ') + '. Re-author THIS turn faithfully with the same Tutor Maestro. ' +
+                'For a touch quiz use unambiguous, independently verifiable questions and correct option indices. ' +
+                'For Arabic explanations write the narrative in Arabic; Spanish examples remain in Spanish. ' +
+                'Do not add an unrequested PDF.' },
+              { role: 'user', content: user },
+            ],
+          })
+          const candidate = revised.choices?.[0]?.message?.tool_calls?.find(c => c.function.name === 'complete_tutor_turn')
+          const replacement = candidate ? parseClosedTutorTurn(JSON.parse(candidate.function.arguments)) : null
+          if (replacement && violations(replacement).length === 0) accepted = replacement
+          else console.warn('[tutor-validation] revision did not close all checks:', originalViolations.join(','))
+        } catch (err) {
+          console.warn('[tutor-validation] revision unavailable:', err instanceof Error ? err.message : err)
+        }
+      }
+      if (delayUntilValidated) yield accepted.reply
+      else if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
       // A PDF tool request is only authorized by the student's CURRENT
       // explicit intent. A malformed/undersized PDF signal must never tear
       // down an otherwise valid tutor turn or suppress its native schema.
       const requested=isExplicitPdfRequest(n.message,n.state.activeMode)
       const awaitingDocument=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
       const pdfAuthorized=!awaitingDocument&&(requested||Boolean(n.plan?.documentContractReady))
-      signals.push(...closure.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
+      signals.push(...accepted.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
     })()
     const wrapped = gen as MentorStream
     wrapped.artifactSignals = signals

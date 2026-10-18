@@ -185,6 +185,7 @@ export async function fulfillArtifactSignals(
       mentorName,
       level,
       nativeLanguage,
+      preferVerbatim: signal.format === 'pdf_html',
     })
 
     // A partial multi-subject fallback would silently drop most of the

@@ -150,6 +150,7 @@ export interface ComposeParams {
   mentorName: string
   level?: string
   nativeLanguage?: string
+  preferVerbatim?: boolean // exact tutor-authored source for paired PDF+HTML
 }
 
 export type ComposeResult =
@@ -206,6 +207,11 @@ function faithfulSourceDocument(
 
 export async function composeDocumentFromTaught(params: ComposeParams): Promise<ComposeResult> {
   if (!params.fullContent?.trim()) return { ok: false, reason: 'empty_body' }
+  // Both requested formats render the SAME full tutor-authored source; a styling model
+  // cannot erase bilingual exercises or become a second cognitive author.
+  if (params.preferVerbatim && params.otherSubjects.length === 0) {
+    return faithfulSourceDocument(params, 'paired_format_verbatim_source')
+  }
   // The composer has a bounded budget. Oversize input must use the FULL
   // original response in the paginated fallback, not a silently cut source.
   if (params.fullContent.length > MAX_FULL_CONTENT_CHARS) {
