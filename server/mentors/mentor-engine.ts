@@ -275,7 +275,15 @@ function buildExecutionDirective(params: {
     else parts.push('Mentor directive: ' + params.plan.mentor.directive)
   }
   if (params.action && params.action !== 'conversation') parts.push('Current execution action: ' + params.action)
-  if (params.priorContext?.trim()) parts.push('Prior context for this response:\n' + params.priorContext)
+  if(params.plan?.documentContractUpdate){
+    const c=params.plan.documentContractUpdate
+    // Facts from a student-authorized request; the Tutor Maestro decides
+    // how to ask, teach and materialize. No separate cognitive executor.
+    parts.push('Document request context: type=course PDF; level='+
+      (c.level??'not yet specified')+'; topic='+(c.topic??'not yet specified')+
+      '; ready='+Boolean(params.plan.documentContractReady)+'.')
+  }
+    if (params.priorContext?.trim()) parts.push('Prior context for this response:\n' + params.priorContext)
   return parts.length > 0 ? '\n\n' + parts.join('\n\n') : ''
 }
 
@@ -415,7 +423,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       // A PDF tool request is only authorized by the student's CURRENT
       // explicit intent. A malformed/undersized PDF signal must never tear
       // down an otherwise valid tutor turn or suppress its native schema.
-      const pdfAuthorized = isExplicitPdfRequest(n.message, n.state.activeMode)
+      const requested=isExplicitPdfRequest(n.message,n.state.activeMode)
+      const awaitingDocument=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
+      const pdfAuthorized=!awaitingDocument&&(requested||Boolean(n.plan?.documentContractReady))
       signals.push(...closure.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
     })()
     const wrapped = gen as MentorStream

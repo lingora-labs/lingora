@@ -11,7 +11,7 @@ import {
   SuggestedAction,
   ArtifactRegistryEntry,
 } from '../../lib/contracts'
-import { mergeStatePatch, clearDocumentContractIfRequested, toWireState } from './state-manager'
+import { mergeStatePatch, documentContractStatePatch, toWireState } from './state-manager'
 import { evaluateCommercial } from './commercial-engine-adapter'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
@@ -72,7 +72,7 @@ export function executePlanStream(
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
           const { fulfillArtifactSignals } = await import('./artifact-side-effect')
-          const fulfilled = await fulfillArtifactSignals(signals, fullText, state, request.message)
+          const fulfilled = await fulfillArtifactSignals(signals, fullText, state, request.message, plan)
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
         }
@@ -167,7 +167,7 @@ export function executePlanStream(
         // in state-manager.ts — not a second, independently-maintained copy
         // of the same `if` check (AE: "preferiblemente con un mecanismo de
         // actualización compartido en vez de duplicar reglas").
-        Object.assign(patch, clearDocumentContractIfRequested(plan))
+        Object.assign(patch, documentContractStatePatch(plan, artifacts))
         const updatedState = mergeStatePatch(state, patch)
         if (!plan.blocking) {
           const commercial = await evaluateCommercial(updatedState, plan)
@@ -219,7 +219,7 @@ export function executePlanStream(
         // second, uncovered code path instead of the main one. Same shared
         // helper, same call shape, even on the error path.
         const fallbackPatch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
-        Object.assign(fallbackPatch, clearDocumentContractIfRequested(plan))
+        Object.assign(fallbackPatch, documentContractStatePatch(plan))
         const fallbackState = mergeStatePatch(state, fallbackPatch)
         // Same wire/internal split as the success path above — see the
         // comment there for why toWireState() must run on top of

@@ -39,7 +39,7 @@
 // tool names, or provider details reach the caller/UI. Cardinality is
 // preserved per-item: one signal in, one artifact OR one failure out —
 // never both, never neither, never a partial success masked as a full one.
-import type { ArtifactPayload, SessionState } from '../../lib/contracts'
+import type { ArtifactPayload, SessionState, ExecutionPlan } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
 import { isExplicitPdfRequest } from '../../lib/pdf-intent-authorization'
 
@@ -129,12 +129,15 @@ export async function fulfillArtifactSignals(
   pedagogicalContent: string,
   state: SessionState,
   userMessage: string = '',
+  plan?: Pick<ExecutionPlan,'documentContractReady'|'documentContractUpdate'>,
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
   // 7.1: the tutor, not a regex over the user's words, decides the intent.
   // Runtime enforces the explicit-request declaration and per-turn side-effect
   // budget. PDF materialization is never automatic after a normal lesson.
-  const pdfAuthorized = isExplicitPdfRequest(userMessage, state.activeMode)
+  const requested=isExplicitPdfRequest(userMessage,state.activeMode)
+  const awaiting=Boolean(plan?.documentContractUpdate&&!plan?.documentContractReady)
+  const pdfAuthorized=!awaiting&&(requested||Boolean(plan?.documentContractReady))
   const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request' && pdfAuthorized).slice(0, 3);
   const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);

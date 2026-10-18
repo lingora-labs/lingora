@@ -731,6 +731,10 @@ export interface ExecutionPlan {
   // blocking and streaming execution can no longer drift apart on this
   // rule.
   clearDocumentContract?: boolean;
+  // Instrumental lifecycle only. Tutor First remains the only cognitive
+  // author; these parameter facts are not a dialogue directive.
+  documentContractUpdate?: PendingDocumentRequest;
+  documentContractReady?: boolean;
 }
 
 export interface OrchestrationContext {

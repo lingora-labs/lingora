@@ -5,7 +5,7 @@
   "description": "LINGORA — AI Cultural Immersion Platform for Spanish",
   "scripts": {
     "dev": "next dev",
-    "build": "node tests/quiz-answer-key.test.mjs && node tests/direct-intent-contract.test.mjs && node tests/visual-export-contract.test.mjs && node tests/pdf-intent-authority.test.mjs && node tests/native-schema-contract.test.mjs && node tests/architecture-central-authority.test.mjs && next build",
+    "build": "node tests/quiz-answer-key.test.mjs && node tests/direct-intent-contract.test.mjs && node tests/visual-export-contract.test.mjs && node tests/pdf-intent-authority.test.mjs && node tests/native-schema-contract.test.mjs && node tests/architecture-central-authority.test.mjs && node tests/document-contract-tutor-first.test.mjs && next build",
     "start": "next start",
     "lint": "next lint",
     "test:quiz": "node tests/quiz-answer-key.test.mjs",
@@ -13,7 +13,8 @@
     "test:visual": "node tests/visual-export-contract.test.mjs",
     "test:pdf-intent": "node tests/pdf-intent-authority.test.mjs",
     "test:schema": "node tests/native-schema-contract.test.mjs",
-    "test:architecture": "node tests/architecture-central-authority.test.mjs"
+    "test:architecture": "node tests/architecture-central-authority.test.mjs",
+    "test:document": "node tests/document-contract-tutor-first.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.540.0",

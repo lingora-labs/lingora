@@ -9,6 +9,7 @@
 // Manifesto 7.0 arts 47-52; ARCH-9.11 section 8.
 import type { ExecutionPlan, SessionState } from '../../lib/contracts'
 import { buildTutorFirstPlan } from './tutor-first-plan'
+import { reconcileDocumentContract } from './document-contract'
 
 export type RuntimeOperation = 'export_chat_pdf'|'download_pdf'|'hear_audio'|undefined
 export interface RuntimePlanInput {
@@ -74,5 +75,15 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   // intent router, commercial brain, model-derived arbitration or
   // hidden mode switch. Direct transformations are local constraints
   // applied by the tutor planner under central execution authority.
-  return assertExecutionPlan(buildTutorFirstPlan(message,state,interfaceLanguage))
+  const plan=buildTutorFirstPlan(message,state,interfaceLanguage)
+  const contract=reconcileDocumentContract(message,state)
+  if(contract.kind==='clear') {
+    plan.clearDocumentContract=true
+    plan.reason+=' Contract cleared: '+contract.reason
+  } else if(contract.next) {
+    plan.documentContractUpdate=contract.next
+    plan.documentContractReady=contract.kind==='ready'
+    plan.reason+=' Contract state: '+contract.kind
+  }
+  return assertExecutionPlan(plan)
 }

@@ -193,6 +193,20 @@ export function mergeStatePatch(current: SessionState, patch: StatePatch): Sessi
 // This function is that one shared mechanism: both execution-engine.ts's
 // compileResult() and execution-engine-stream.ts's executePlanStream() call
 // it identically when assembling their respective state patches.
+// One lifecycle reducer shared by blocked execution and SSE. A document
+// request completes only after an actual course/PDF artifact is present;
+// cancellations clear through the transport-safe null sentinel.
+export function documentContractStatePatch(
+  plan: Pick<ExecutionPlan,'clearDocumentContract'|'documentContractUpdate'|'documentContractReady'>,
+  artifacts: ReadonlyArray<{type?:string}> = [],
+): Pick<StatePatch,'pendingDocumentRequest'> {
+  if(plan.clearDocumentContract) return {pendingDocumentRequest:null}
+  if(plan.documentContractReady
+    && artifacts.some(a=>a.type==='pdf'||a.type==='course_pdf'))return {pendingDocumentRequest:null}
+  if(plan.documentContractUpdate)return {pendingDocumentRequest:plan.documentContractUpdate}
+  return {}
+}
+
 export function clearDocumentContractIfRequested(
   plan: Pick<ExecutionPlan, 'clearDocumentContract'>,
 ): Pick<StatePatch, 'pendingDocumentRequest'> {

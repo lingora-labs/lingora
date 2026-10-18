@@ -62,7 +62,7 @@ import {
   ArtifactRegistryEntry,
 } from '../../lib/contracts';
 
-import { advanceTutorPhase } from './state-manager';
+import { advanceTutorPhase, documentContractStatePatch } from './state-manager';
 import { buildModelParams } from '../mentors/mentor-engine';
 import { buildContextualActions } from './suggested-actions';
 
@@ -885,6 +885,7 @@ function compileResult(plan: ExecutionPlan, ctx: StepContext, _stepResults: Exec
     {} as StatePatch,
   );
 
+  Object.assign(statePatch, documentContractStatePatch(plan, artifact ? [artifact] : []));
   statePatch.tokens = (ctx.state.tokens ?? 0) + 1;
 
   // SEEK 4.1a — register artifact in session artifact memory
