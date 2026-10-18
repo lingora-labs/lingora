@@ -40,7 +40,7 @@ for(const message of [
  'Quiero un esquema en PNG y PDF',
 ]) assert.equal(isConversationPdfExportRequest(message),false,message)
 const hook=fs.readFileSync(new URL('../app/beta/use-beta-page.ts',import.meta.url),'utf8')
-const route=fs.readFileSync(new URL('../app/api/chat/route.ts',import.meta.url),'utf8')
+const route=fs.readFileSync(new URL('../server/api/chat-entry.ts',import.meta.url),'utf8')
 assert.ok(hook.includes('payload.uiAction = \'export_chat_pdf\''),'text command must use certified pdf_chat executor')
 assert.ok(route.includes('isConversationPdfExportRequest(normalizedMessage)'),'API cannot bypass typed export for explicit chat PDF')
 console.log('PASS — PDF intent authority, native-artifact survival, and honest PDF failures')
