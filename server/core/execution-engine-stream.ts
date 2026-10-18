@@ -16,6 +16,7 @@ import { evaluateCommercial } from './commercial-engine-adapter'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
+import { isExplicitQuizRequest } from '../../lib/quiz-intent-guard'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -76,7 +77,7 @@ export function executePlanStream(
         const signals: ArtifactSignal[] = plan.documentContractReady && plan.documentContractUpdate?.topic
           ? [...tutorSignals.filter(s => s.type !== 'emit_pdf'), {
               type: 'emit_pdf',trigger: 'explicit_user_request',
-              subject: plan.documentContractUpdate.topic,format: 'pdf',
+              subject: plan.documentContractUpdate.topic,format: plan.documentContractUpdate.format ?? 'pdf',
             }]
           : tutorSignals
         let artifacts: ArtifactPayload[] = []
@@ -124,7 +125,8 @@ export function executePlanStream(
         const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
           (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
           !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
-        if (visualDue && !plan.documentContractControlOnly && !artifacts.some(a => a.type === 'schema_pro')) {
+        if (visualDue && !plan.documentContractControlOnly && !artifacts.some(a => a.type === 'schema_pro')
+          && !isExplicitQuizRequest(request.message) && !artifacts.some(a => a.type === 'quiz')) {
           const { groundedMilestoneReview } = await import('./native-artifact')
           const review = groundedMilestoneReview(fullText,
             (request.conversationHistory ?? []) as Array<{role:string;content:string}>,

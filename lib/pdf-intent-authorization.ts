@@ -32,3 +32,12 @@ export function isConversationPdfExportRequest(message:string):boolean {
   if (!/\b(?:conversaci[oó]n|chat|historial|dialogo|di[aá]logo)\b/iu.test(text)) return false
   return /\b(?:exporta(?:r)?|exportar|descarga(?:r)?|descargar|genera(?:r)?|crear?|prepara(?:r)?|convierte|quiero\s+exportar|necesito\s+exportar)\b/iu.test(text)
 }
+
+// Instrumental checks only — never route or author the tutor's cognitive answer.
+export function isPdfProhibitedByUser(message:string):boolean {
+ return /\b(?:sin|no\s+(?:quiero|generes?|hagas?|produzcas?|necesito)|without|do\s+not\s+(?:make|generate)|don't\s+(?:make|generate))\b[\s\S]{0,90}\bpdf\b/iu.test(message.trim())
+}
+export function isPdfAndWebRequest(message:string):boolean {
+ return !isPdfProhibitedByUser(message) && /\bpdf\b/iu.test(message)
+  && /\b(?:versi[oó]n\s+(?:web|html)|p[aá]gina\s+web|html|web\s+version|website\s+version|web\s+page)\b/iu.test(message)
+}

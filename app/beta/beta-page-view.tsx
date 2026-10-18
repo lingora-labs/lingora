@@ -1,7 +1,7 @@
 'use client'
 import React from 'react'
 import { chromeLessonLabel, chromeLevelLabel } from './chrome-gate'
-import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, type ActiveMode } from './beta-model'
+import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, MODE_UI_COPY, type ActiveMode } from './beta-model'
 import { Bubble, Typing } from './beta-chat-ui'
 import { doExportTxt, doExportPdfBackend } from './beta-io'
 import { useBetaPage } from './use-beta-page'
@@ -14,6 +14,7 @@ export default function BetaPageView() {
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   } = useBetaPage()
+  const modeCopy = MODE_UI_COPY[lang] ?? MODE_UI_COPY.en
   if (!hydrated) return null
   return (
     <>
@@ -34,7 +35,7 @@ export default function BetaPageView() {
         textarea:focus, button:focus, input:focus, select:focus { outline:none }
       `}</style>
       {phase === 'mode' && (
-        <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
+        <div dir={lang==='ar'?'rtl':'ltr'} style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <div style={{ width:42, height:42, borderRadius:'50%', background:mm.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#fff' }}>{mm.code}</div>
             <div>
@@ -43,15 +44,15 @@ export default function BetaPageView() {
             </div>
           </div>
           <div style={{ textAlign:'center' }}>
-            <div style={{ fontSize:20, fontWeight:800, color:'#fff', marginBottom:6 }}>¿Cómo quieres aprender?</div>
-            <div style={{ fontSize:13, color:'var(--muted)' }}>Elige el modo. El tutor se adapta desde el primer mensaje.</div>
+            <div style={{ fontSize:20, fontWeight:800, color:'#fff', marginBottom:6 }}>{modeCopy.heading}</div>
+            <div style={{ fontSize:13, color:'var(--muted)' }}>{modeCopy.subtitle}</div>
           </div>
           <div style={{ display:'flex', flexDirection:'column', gap:10, width:'100%', maxWidth:420 }}>
             {([
-              { key:'interact' as ActiveMode, emoji:'\u{1F9E0}', title:'Interacción inteligente', desc:'Respuestas ricas con tablas, esquemas y explicación accionable.' },
-              { key:'structured' as ActiveMode, emoji:'\u{1F393}', title:'Curso estructurado', desc:'Esquema, ejemplos, simulacro y puntuación.' },
-              { key:'pdf_course' as ActiveMode, emoji:'\u{1F4C4}', title:'Curso PDF con entregas', desc:'Material descargable. Entregas y corrección por el tutor.' },
-              { key:'free' as ActiveMode, emoji:'\u{1F4AC}', title:'Conversación libre', desc:'Habla con naturalidad. Correcciones oportunistas.' },
+              { key:'interact' as ActiveMode, emoji:'\u{1F9E0}', title:modeCopy.modes[0].title, desc:modeCopy.modes[0].desc },
+              { key:'structured' as ActiveMode, emoji:'\u{1F393}', title:modeCopy.modes[1].title, desc:modeCopy.modes[1].desc },
+              { key:'pdf_course' as ActiveMode, emoji:'\u{1F4C4}', title:modeCopy.modes[2].title, desc:modeCopy.modes[2].desc },
+              { key:'free' as ActiveMode, emoji:'\u{1F4AC}', title:modeCopy.modes[3].title, desc:modeCopy.modes[3].desc },
             ] as Array<{key:ActiveMode;emoji:string;title:string;desc:string}>).map(({ key, emoji, title, desc }) => (
               <button key={key} onClick={() => selectMode(key)}
                 style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 16px', borderRadius:16, border: activeMode === key ? '1px solid rgba(0,201,167,.4)' : '1px solid var(--border)', background: activeMode === key ? 'rgba(0,201,167,.1)' : 'rgba(255,255,255,.02)', cursor:'pointer', textAlign:'left', width:'100%' }}>

@@ -1,0 +1,51 @@
+{
+  "schema": "lingora.qa.progress.v1",
+  "date": "2026-10-18",
+  "baseline": {
+    "sha": "3ae4f65dba73556a438b8df7507edf9a2feb18ef",
+    "branch": "migrate/7.1-tutor-first",
+    "deployment": "dpl_CSMTuBk6nSMaBrhtVwSsHyCivT5M",
+    "evidence": "Work reported, retest ZIP pending independent review",
+    "results": [
+      {
+        "id": "P1-01",
+        "status": "PASS"
+      },
+      {
+        "id": "P1-02",
+        "status": "FAIL"
+      },
+      {
+        "id": "P1-03",
+        "status": "FAIL"
+      },
+      {
+        "id": "P1-04",
+        "status": "PASS"
+      },
+      {
+        "id": "P1-05",
+        "status": "FAIL"
+      }
+    ],
+    "pass": 2,
+    "fail": 3,
+    "total": 5,
+    "passPercent": 40
+  },
+  "newSha": {
+    "status": "NOT_RETESTED",
+    "noPassInheritance": true
+  },
+  "other": {
+    "SEEK": "UNSCORED",
+    "audio": "DEVICE_BLOCKED",
+    "architecturalReview": "ISSUE_11_OPEN"
+  },
+  "governance": {
+    "anyMemberMayChallengeUpOrDown": true,
+    "evidenceRequired": true,
+    "writer": "AE",
+    "noSelfCertification": true
+  }
+}

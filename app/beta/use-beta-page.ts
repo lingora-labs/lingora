@@ -6,7 +6,7 @@ import {
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
-import { isConversationPdfExportRequest } from '../../lib/pdf-intent-authorization'
+import { isConversationPdfExportRequest, isPdfProhibitedByUser } from '../../lib/pdf-intent-authorization'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
 export function useBetaPage() {
@@ -144,6 +144,9 @@ export function useBetaPage() {
       ? 'cancelled' : status
   }, [phase, activeMode])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
+    const noPdfForTurn = isPdfProhibitedByUser(typeof payload.message === 'string' ? payload.message : '')
+    const filterPdfActions = <T extends {action?:string;type?:string}>(items:T[]):T[] =>
+      noPdfForTurn ? items.filter(a=>!['export_chat_pdf','download_pdf','download_course_pdf'].includes(a.action??a.type??'')) : items
     setLoading(true)
     try {
       // BASE-MODEL-PARITY — recent real turns (not a code-derived summary),
@@ -208,8 +211,9 @@ export function useBetaPage() {
                     return n
                   })
                 }
-                const defaultActions = [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
-                const finalActions = (parsed.suggestedActions && parsed.suggestedActions.length > 0) ? parsed.suggestedActions : defaultActions
+                const defaultActions = noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
+                const safeActions = Array.isArray(parsed.suggestedActions) ? filterPdfActions(parsed.suggestedActions) : []
+                const finalActions = safeActions.length > 0 ? safeActions : defaultActions
                 setMsgs(prev => prev.map(m => m.id === streamId ? {
                   ...m,
                   artifact: parsed.artifact ?? m.artifact ?? null,
@@ -247,7 +251,9 @@ export function useBetaPage() {
         artifacts: (Array.isArray(data.artifacts) && data.artifacts.length > 0) ? data.artifacts : null,
         artifactFailures: (Array.isArray(data.artifactFailures) && data.artifactFailures.length > 0) ? data.artifactFailures : null,
         score: data.pronunciationScore,
-        suggestedActions: (data.suggestedActions && data.suggestedActions.length > 0) ? data.suggestedActions : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }] })
+        suggestedActions: Array.isArray(data.suggestedActions) && filterPdfActions(data.suggestedActions).length > 0
+        ? filterPdfActions(data.suggestedActions)
+        : (noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e)
       const langNow = langRef.current ?? 'en'

@@ -96,6 +96,7 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
+import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -122,7 +123,7 @@ const FALLBACKS: Record<string, string> = {
   de: 'Konnte Ihre Nachricht nicht verarbeiten. Versuchen Sie es erneut.',
   it: 'Non ho potuto elaborare il tuo messaggio. Riprova.',
   pt: 'Nao consegui processar sua mensagem. Tente novamente.',
-  ar: "Could not process your message. Please try again.",
+  ar: 'تعذرت معالجة رسالتك. يرجى المحاولة مرة أخرى.',
   ja: 'messeji wo shori dekimasendeshita. mou ichido o tameshi kudasai.',
   zh: 'Wufa chuli nin de xiaoxi. Qing chongshi.',
 }
@@ -314,13 +315,15 @@ export function buildMentorPrompt(params: {
   // A runtime milestone, not an independent pedagogical brain. The tutor
   // writes the actual review content through the same typed turn closure.
   const milestone = (state.tokens ?? 0) > 0 && ((state.tokens ?? 0) + 1) % 5 === 0
-    && state.activeMode !== 'free'
+    && state.activeMode !== 'free' && !isExplicitQuizRequest(params.message)
     ? '\n\nVISUAL REVIEW MILESTONE: This is the fifth study exchange. In addition to the requested answer, provide one brief, meaningful schema_pro native artifact that reviews actual subject matter already taught. Use at least two accurate concept/flow/highlight blocks grounded in the conversation. No PDF, unless independently requested. If the student explicitly forbids visual extras, obey the student.'
     : ''
   // Data from completed UI quiz: actual selected, expected, and graded answers.
   // This is context to inform Willy, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
-  const system = [profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
+  // This session metadata comes from the actual UI selection, not a regex classifier.
+  const localeEnvelope = `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. The tutor's initial greeting and explanations use interfaceLanguage; Spanish examples use targetLanguage. A later explicit change of language overrides this default.]\n\n`
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 

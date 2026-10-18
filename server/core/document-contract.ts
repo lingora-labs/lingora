@@ -5,6 +5,7 @@
 // later withdrawal/task change. The tutor decides what to teach and whether
 // to emit an authorized PDF. Do not import the retired intent-router.
 import type { PendingDocumentRequest, SessionState } from '../../lib/contracts'
+import { isPdfAndWebRequest, isPdfProhibitedByUser } from '../../lib/pdf-intent-authorization'
 
 export type DocumentDecision = {
   kind: 'none'|'open'|'continue'|'ready'|'clear'
@@ -13,14 +14,14 @@ export type DocumentDecision = {
 }
 const normalized=(s:string)=>s.normalize('NFC').trim()
 const level=/\b(A0|A1|A2|B1|B2|C1|C2)(?:\s*[-–]\s*(A0|A1|A2|B1|B2|C1|C2))?\b/iu
-const courseNoun=/\b(?:curso|gu[ií]a|manual|course|study\s+guide|workbook)\b/iu
+const courseNoun=/\b(?:curso|gu[ií]a|manual|material|lecci[oó]n|documento|course|study\s+guide|workbook|lesson|study\s+material)\b/iu
 const wants=/\b(?:quiero|necesito|hazme|dame|crea(?:me)?|genera(?:me)?|prep[aá]ra(?:me)?|desarrolla|create|generate|prepare|make|give me|i want|i need)\b/iu
 const cancel=/^(?:olvídalo|olvidalo|cancela(?:lo|r)?|no,?\s+gracias|ya no lo quiero|desisto|forget it|cancel(?: it)?|never mind|stop)\s*[.!]?$/iu
 const explicitNoPdf=/^(?:no\s+quiero|sin|no\s+generes|no\s+hagas|don't\s+make|without)\b.{0,80}\b(?:pdf|curso|documento)\b/iu
 const taskSwitch=/^(?:cambiemos de tema|cambia(?:mos)? de tema|hablemos de otra cosa|dejemos (?:eso|el curso)|pasemos a otra cosa|let's change (?:the )?topic|change (?:the )?subject)\b[.!:;, ]*/iu
 const nextTask=/^(?:traduce\b|translate\b|corrige\b|correct\b|expl[ií]ca(?:me)?\b|explain\b|cu[eé]ntame\b|tell me\b|haz(?:me)?\b|crea(?:me)?\b|genera(?:me)?\b|dame\b|ens[eé]ñame\b|enseña\b|i want to learn\b)/iu
 const confirmation=/^(?:sí|si|vale|ok|listo|adelante|hazlo|genera|genera el pdf|procede|yes|go ahead|proceed)\s*[.!]?$/iu
-const topicCue=/\b(?:tema|sobre|acerca de|topic|about)\s*[:\-]?\s*(.+)$/iu
+const topicCue=/\b(?:tema|sobre|acerca de|topic|about)\s*[:\-]?\s*([^,.;!?\n]{3,100})/iu
 const genericTopic=/^(?:espa[nñ]ol|english|ingl[eé]s|curso|material|pdf|general|todo|idiomas)$/iu
 // A bare topic is a short NOMINAL fragment (e.g. "Ser y estar").
 // It must never swallow a new conversational instruction as a document field.
@@ -51,7 +52,7 @@ function initialTopic(message:string):string|null{
  const match=message.match(/\b(?:curso|gu[ií]a|manual|course)\s+(?:completo\s+)?(?:de|sobre|about|on)\s+([^.!?;\n]{3,90})/iu)
  return match?extractTopic(match[1],true):null
 }
-const courseRequest=(message:string)=>wants.test(message)&&courseNoun.test(message)&&/\bpdf\b/iu.test(message)
+const courseRequest=(message:string)=>wants.test(message)&&courseNoun.test(message)&&/\bpdf\b/iu.test(message)&&!isPdfProhibitedByUser(message)
 
 export function reconcileDocumentContract(
   message:string, state:Pick<SessionState,'pendingDocumentRequest'|'tokens'>,
@@ -86,6 +87,7 @@ export function reconcileDocumentContract(
    topic:contextTopic??(freshRequest?null:prior?.topic??null),
    status:'collecting',
    openedAtToken:freshRequest?(state.tokens??0):prior?.openedAtToken??(state.tokens??0),
+   format:isPdfAndWebRequest(input)?'pdf_html':(freshRequest?'pdf':prior?.format??'pdf'),
  }
  const kind:DocumentDecision['kind']=contract.level&&contract.topic?'ready':prior?'continue':'open'
  return{kind,next:contract,reason:kind==='ready'

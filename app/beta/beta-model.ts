@@ -191,3 +191,130 @@ export const TSYS: Record<TK, string> = {
   course:       "Structured course from the user's level. Sequence grammar, vocabulary, culture. Advance systematically.",
   leveltest:    'Diagnostic evaluation. Ask progressively harder questions to determine CEFR level accurately.',
 }
+
+// Interface-only translations, never a second tutor.
+const MODE_COPY_RAW: Record<Lang, string[]> = {
+  "es": [
+    "¿Cómo quieres aprender?",
+    "Elige el modo. El tutor se adapta desde el primer mensaje.",
+    "Interacción inteligente",
+    "Tablas, esquemas y explicaciones prácticas.",
+    "Curso estructurado",
+    "Lecciones, ejemplos, simulacro y puntuación.",
+    "Curso PDF con entregas",
+    "Material descargable y correcciones.",
+    "Conversación libre",
+    "Habla con naturalidad y recibe correcciones."
+  ],
+  "en": [
+    "How would you like to learn?",
+    "Choose a mode. The tutor adapts from the first message.",
+    "Intelligent interaction",
+    "Tables, diagrams and useful explanations.",
+    "Structured course",
+    "Lessons, examples, quizzes and scores.",
+    "PDF course",
+    "Downloadable material and feedback.",
+    "Free conversation",
+    "Speak naturally with helpful corrections."
+  ],
+  "no": [
+    "Hvordan vil du lære?",
+    "Velg modus. Veilederen tilpasser seg fra første melding.",
+    "Intelligent samhandling",
+    "Forklaringer, tabeller og skjemaer.",
+    "Strukturert kurs",
+    "Leksjoner, eksempler, quiz og vurdering.",
+    "PDF-kurs",
+    "Nedlastbart materiale og tilbakemelding.",
+    "Fri samtale",
+    "Snakk naturlig med nyttige rettelser."
+  ],
+  "fr": [
+    "Comment voulez-vous apprendre ?",
+    "Choisissez un mode. Le tuteur s'adapte dès le premier message.",
+    "Interaction intelligente",
+    "Explications, tableaux et schémas.",
+    "Cours structuré",
+    "Leçons, exemples, quiz et scores.",
+    "Cours PDF",
+    "Documents téléchargeables et commentaires.",
+    "Conversation libre",
+    "Parlez naturellement avec des corrections."
+  ],
+  "de": [
+    "Wie möchtest du lernen?",
+    "Wähle einen Modus. Dein Tutor passt sich sofort an.",
+    "Intelligente Interaktion",
+    "Erklärungen, Tabellen und Schaubilder.",
+    "Strukturierter Kurs",
+    "Lektionen, Beispiele, Quiz und Bewertungen.",
+    "PDF-Kurs",
+    "Herunterladbares Material mit Feedback.",
+    "Freies Gespräch",
+    "Sprich natürlich mit hilfreichen Korrekturen."
+  ],
+  "it": [
+    "Come vuoi imparare?",
+    "Scegli la modalità. Il tutor si adatta dal primo messaggio.",
+    "Interazione intelligente",
+    "Spiegazioni, tabelle e schemi.",
+    "Corso strutturato",
+    "Lezioni, esempi, quiz e valutazioni.",
+    "Corso PDF",
+    "Materiali scaricabili e feedback.",
+    "Conversazione libera",
+    "Parla naturalmente con correzioni utili."
+  ],
+  "pt": [
+    "Como quer aprender?",
+    "Escolha o modo. O tutor adapta-se desde a primeira mensagem.",
+    "Interação inteligente",
+    "Explicações, tabelas e esquemas.",
+    "Curso estruturado",
+    "Aulas, exemplos, quizzes e avaliações.",
+    "Curso PDF",
+    "Material descarregável e feedback.",
+    "Conversa livre",
+    "Converse naturalmente com correções úteis."
+  ],
+  "ar": [
+    "كيف تريد أن تتعلم؟",
+    "اختر طريقة التعلم. يتكيف المرشد من أول رسالة.",
+    "تفاعل ذكي",
+    "إجابات وجداول ومخططات وشروح عملية.",
+    "دورة منظمة",
+    "دروس وأمثلة واختبارات وتقييمات.",
+    "دورة PDF",
+    "مواد قابلة للتنزيل مع ملاحظات المرشد.",
+    "محادثة حرة",
+    "تحدث بحرية مع تصحيحات مفيدة."
+  ],
+  "ja": [
+    "どのように学びたいですか？",
+    "モードを選んでください。最初のメッセージから講師が対応します。",
+    "対話型学習",
+    "説明、表、図を使った学習。",
+    "体系的なコース",
+    "レッスン、例、クイズ、評価。",
+    "PDFコース",
+    "ダウンロードできる教材とフィードバック。",
+    "自由会話",
+    "自然な会話と適切な訂正。"
+  ],
+  "zh": [
+    "你想如何学习？",
+    "选择模式，导师从第一条消息开始适应你的需求。",
+    "智能互动",
+    "丰富的讲解、表格和实用图示。",
+    "结构化课程",
+    "课程、示例、测验和评分。",
+    "PDF课程",
+    "可下载的学习材料和反馈。",
+    "自由对话",
+    "自然交流并获得适当纠正。"
+  ]
+}
+export const MODE_UI_COPY = Object.fromEntries(Object.entries(MODE_COPY_RAW).map(([lang,v]) => [
+ lang,{ heading:v[0],subtitle:v[1],modes:[0,1,2,3].map(i=>({title:v[2+i*2],desc:v[3+i*2]})) }
+])) as Record<Lang,{heading:string;subtitle:string;modes:Array<{title:string;desc:string}>}>

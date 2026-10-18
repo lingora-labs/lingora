@@ -110,7 +110,7 @@ for(const msg of ['A1, sobre ser y estar','Olvídalo.','Cambiemos de tema. Cuén
 const stream=fs.readFileSync(new URL('../server/core/execution-engine-stream.ts',import.meta.url),'utf8')
 const block=fs.readFileSync(new URL('../server/core/execution-engine.ts',import.meta.url),'utf8')
 assert.ok(stream.includes('tutorSignals.filter(s => s.type !== \'emit_pdf\')'),'course contract replaces an uncertain PDF signal with typed authorization')
-assert.ok(stream.includes("subject: plan.documentContractUpdate.topic,format: 'pdf'"),'course authoring must materialize a requested PDF rather than merely show native schema')
+assert.ok(stream.includes("subject: plan.documentContractUpdate.topic,format: plan.documentContractUpdate.format ?? 'pdf'"),'course authoring must materialize a requested PDF rather than merely show native schema')
 assert.ok(stream.includes('documentContractStatePatch(plan, artifacts)'))
 assert.ok(stream.includes('directFormat || plan.documentContractControlOnly'),'the tutor cannot inject artifacts during contract-only turns')
 assert.ok(stream.includes('!plan.documentContractControlOnly && !artifacts.some'),'no fifth-turn visual on cancellations')

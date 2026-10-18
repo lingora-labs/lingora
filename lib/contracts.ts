@@ -63,7 +63,10 @@ export type InterfaceLanguage =
   | 'fr'
   | 'de'
   | 'pt'
-  | 'nl';
+  | 'nl'
+  | 'ar'
+  | 'ja'
+  | 'zh';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SECTION 1 — PEDAGOGICAL ACTION TYPES (extended for SEEK 3.0)
@@ -391,6 +394,7 @@ export interface PendingDocumentRequest {
   topic:         string | null;   // set only by topic_input turns
   status:        'collecting' | 'ready';
   openedAtToken: number;          // for expiry after CONTRACT_EXPIRY_TURNS
+  format?: 'pdf' | 'pdf_html';     // requested delivery format, not diagnosed level
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
