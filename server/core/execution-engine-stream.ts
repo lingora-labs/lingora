@@ -67,7 +67,7 @@ export function executePlanStream(
           if (fullText) emit({ delta: fullText })
         }
         // Direct transformation is user authority for text alone.
-        const signals: ArtifactSignal[] = directFormat ? [] : (stream.artifactSignals ?? [])
+        const signals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? [] : (stream.artifactSignals ?? [])
         let artifacts: ArtifactPayload[] = []
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
@@ -113,7 +113,7 @@ export function executePlanStream(
         const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
           (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
           !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
-        if (visualDue && !artifacts.some(a => a.type === 'schema_pro')) {
+        if (visualDue && !plan.documentContractControlOnly && !artifacts.some(a => a.type === 'schema_pro')) {
           const { groundedMilestoneReview } = await import('./native-artifact')
           const review = groundedMilestoneReview(fullText,
             (request.conversationHistory ?? []) as Array<{role:string;content:string}>,

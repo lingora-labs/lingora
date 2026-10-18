@@ -735,6 +735,7 @@ export interface ExecutionPlan {
   // author; these parameter facts are not a dialogue directive.
   documentContractUpdate?: PendingDocumentRequest;
   documentContractReady?: boolean;
+  documentContractControlOnly?: boolean;
 }
 
 export interface OrchestrationContext {

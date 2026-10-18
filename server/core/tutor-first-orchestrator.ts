@@ -79,10 +79,13 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   const contract=reconcileDocumentContract(message,state)
   if(contract.kind==='clear') {
     plan.clearDocumentContract=true
+    plan.documentContractControlOnly=contract.reason.includes('withdrawal') ||
+      contract.reason.includes('Expired')
     plan.reason+=' Contract cleared: '+contract.reason
   } else if(contract.next) {
     plan.documentContractUpdate=contract.next
     plan.documentContractReady=contract.kind==='ready'
+    plan.documentContractControlOnly=contract.kind==='open'||contract.kind==='continue'
     plan.reason+=' Contract state: '+contract.kind
   }
   return assertExecutionPlan(plan)
