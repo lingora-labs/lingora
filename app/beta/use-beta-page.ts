@@ -1,7 +1,7 @@
 'use client'
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
-  BACKEND_LANG, MENTOR_META, COPY, TSYS,
+  BACKEND_LANG, MENTOR_META, COPY, TSYS, GREETINGS,
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
@@ -429,12 +429,16 @@ export function useBetaPage() {
     pendingQuizFeedbackRef.current = null
     setSession(selected)
     setPhase('chat')
-    // One mode-independent opening, using the real selected session state.
-    // DISCARDED: synthetic "Modo seleccionado... Nivel A1 ... hoja de ruta"
-    // requests. They were interpreted as consent to generate A0 PDFs.
-    msgsRef.current = []
-    setMsgs([])
-    void callAPI({message:'',activeMode:mode})
+    // A session-open event has no student utterance: render the existing
+    // localized welcome in UI. The FIRST real user message reaches Tutor
+    // Maestro unchanged, with no synthetic LLM prompt or surprise PDF.
+    const greeting = GREETINGS[mentorRef.current]?.[langRef.current]
+      ?? GREETINGS[mentorRef.current]?.en ?? ''
+    const opening: Msg[] = greeting
+      ? [{id: Date.now()+'-welcome',sender:mentorRef.current,text:greeting}]
+      : []
+    msgsRef.current = opening
+    setMsgs(opening)
   }, [callAPI])
   const resetChat = useCallback(async () => {
     if (resetInProgressRef.current) return

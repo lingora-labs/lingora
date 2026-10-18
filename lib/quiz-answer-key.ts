@@ -25,7 +25,9 @@ const normalizeOption = (value:string):string =>
   normalize(value.replace(/^\s*(?:[A-D]|[1-4])\s*[).:\-]\s*/iu,''))
 
 function personOf(subject:string):Person|null {
-  const s=normalize(subject)
+  // Initial temporal adjuncts do not change the grammatical subject/person.
+  // Covers ordinary fronted clauses such as "Ahora nosotros ___ en casa".
+  const s=normalize(subject).replace(/^(?:(?:ahora|hoy|actualmente|en este momento)\s*,?\s+)/u,'')
   // This recognises explicit subjects only. Avoid assigning a person where
   // syntax is unknown; absence of proof must not grant a mark.
   const explicit:Record<string,Person>={
