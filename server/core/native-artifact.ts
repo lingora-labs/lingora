@@ -4,6 +4,7 @@
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import type { ArtifactPayload } from '../../lib/contracts'
 import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
+import { normalizeSchemaPro } from '../../lib/native-schema-contract'
 
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -29,20 +30,10 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
     return { type:'table_matrix', content: c } as unknown as ArtifactPayload
   }
   if (signal.type === 'schema_pro') {
-    if (!Array.isArray(c.blocks) || c.blocks.length < 2 || c.blocks.length > 12) return null
-    const valid = (c.blocks as unknown[]).every(b => {
-      if (!obj(b)) return false
-      if (b.type === 'concept') return str(b.title) && str(b.body)
-      if (b.type === 'bullets') return str(b.title) && strings(b.items)
-      if (b.type === 'highlight') return str(b.text) && (b.tone === undefined || tone(b.tone))
-      if (b.type === 'flow') return strings(b.steps, 2, 10)
-      if (b.type === 'comparison') return str(b.left) && str(b.right)
-      if (b.type === 'table') return strings(b.columns, 2, 6) &&
-        Array.isArray(b.rows) && b.rows.length > 0 && b.rows.length <= 12 &&
-        (b.rows as unknown[]).every(row => strings(row, (b.columns as string[]).length, (b.columns as string[]).length))
-      return false
-    })
-    return valid ? ({ type:'schema_pro', content:c } as unknown as ArtifactPayload) : null
+    // Shared typed materialization boundary: re-map only equivalent author-
+    // supplied fields. Never invent missing lessons, nodes, or examples.
+    const canonical=normalizeSchemaPro(c)
+    return canonical ? ({type:'schema_pro',content:canonical} as unknown as ArtifactPayload) : null
   }
   if (signal.type === 'quiz') {
     if (!Array.isArray(c.questions) || c.questions.length < 2 || c.questions.length > 8) return null
