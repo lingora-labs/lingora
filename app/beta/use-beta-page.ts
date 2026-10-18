@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
   BACKEND_LANG, MENTOR_META, COPY, TSYS,
-  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS,
+  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
@@ -145,7 +145,7 @@ export function useBetaPage() {
   }, [phase, activeMode])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     const noPdfForTurn = isPdfProhibitedByUser(typeof payload.message === 'string' ? payload.message : '')
-    const filterPdfActions = <T extends {action?:string;type?:string}>(items:T[]):T[] =>
+    const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] =>
       noPdfForTurn ? items.filter(a=>!['export_chat_pdf','download_pdf','download_course_pdf'].includes(a.action??a.type??'')) : items
     setLoading(true)
     try {
