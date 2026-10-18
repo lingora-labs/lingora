@@ -449,8 +449,12 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
         // Same selected Tutor Maestro may revise one rejected turn. Runtime
         // supplies only factual validation findings, never a fabricated key.
         try {
+          // One bounded quality-recovery attempt by the SAME selected Tutor Maestro,
+          // using the higher-fidelity recovery model only when its output failed
+          // an observable instrumental contract. No independent planner or router.
+          const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || 'gpt-4o'
           const revised = await openai.chat.completions.create({
-            ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.4, 0.88),
+            ...buildModelParams(recoveryModel, resolveOutputBudget(n.plan, pack), 0.2, 0.88),
             tools: [COMPLETE_TUTOR_TURN_TOOL],
             tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
             messages: [
@@ -458,8 +462,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
               ...n.history,
               { role: 'system', content: 'Instrumental validation rejected the preceding draft: ' +
                 originalViolations.join(', ') + '. Re-author THIS turn faithfully with the same Tutor Maestro. ' +
-                'For a touch quiz use unambiguous, independently verifiable questions and correct option indices. ' +
-                'For Arabic explanations write the narrative in Arabic; Spanish examples remain in Spanish. ' +
+                'For a touch quiz use only independently verifiable, unique single-gap questions with explicit subjects and simple present-tense SER/ESTAR predicates; avoid ambiguous adjectives, multiple gaps and hidden subjects. The correct index must match the grammatical form exactly. ' +
+                'For Arabic explanations use Arabic for ALL instructional prose, keeping Spanish phrases and conjugation examples unchanged. The language of the question must not override a user-selected Arabic interface. ' +
                 'Do not add an unrequested PDF.' },
               { role: 'user', content: user },
             ],
