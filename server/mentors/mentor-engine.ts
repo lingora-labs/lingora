@@ -445,6 +445,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           // Spanish examples may remain Spanish. Validate the authored source
           // before either representation is materialized.
           const dualLesson = n.plan?.documentContractUpdate?.format === 'pdf_html'
+          if (dualLesson && turn.reply.length < Math.max(2400, closure.reply.length * 0.70)) {
+            findings.push('dual_document_revision_lost_original_coverage')
+          }
           if (dualLesson && turn.reply.length > 2000) {
             const letters = (turn.reply.match(/\p{L}/gu) ?? []).length
             if (arabicChars < 350 || arabicChars / Math.max(letters, 1) < 0.18) {
@@ -471,6 +474,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
             messages: [
               { role: 'system', content: system },
               ...n.history,
+              ...(n.plan?.documentContractUpdate?.format === 'pdf_html' ? [
+                { role: 'assistant' as const, content: 'DRAFT FOR FIDELITY REVIEW (not a new user request):\n' + closure.reply },
+                { role: 'system' as const, content: 'This is a language/fidelity revision of the complete draft just supplied, not a shortened new lesson. Preserve every section, Spanish example, exercise, solution and the original pedagogical depth. Rewrite explanatory prose in Arabic, while retaining Spanish examples. Do not abbreviate the document.' },
+              ] : []),
               { role: 'system', content: 'Instrumental validation rejected the preceding draft: ' +
                 originalViolations.join(', ') + '. Re-author THIS turn faithfully with the same Tutor Maestro. ' +
                 'For a touch quiz use only independently verifiable, unique single-gap questions with explicit subjects and simple present-tense SER/ESTAR predicates; avoid ambiguous adjectives, multiple gaps and hidden subjects. The correct index must match the grammatical form exactly. ' +
