@@ -36,14 +36,14 @@ function extractLevel(text:string):string|null{
 function extractTopic(text:string, allowBare:boolean):string|null{
  const c=text.match(topicCue)
  let raw=c?c[1]:''
- if(!c && allowBare && bareTopic.test(text) && !nextTask.test(text) && !confirmation.test(text))raw=text
+ if(!c && allowBare && !nextTask.test(text) && !confirmation.test(text) && !/\?/.test(text))raw=text
  raw=raw.replace(/\b(?:en|a|como)\s+pdf\b.*$/iu,'')
    .replace(/\s+(?:de\s+)?(?:nivel|level)\s+[ABC][0-2](?:\s*[-–]\s*[ABC][0-2])?.*$/iu,'')
    .replace(/\b(?:A0|A1|A2|B1|B2|C1|C2)(?:\s*[-–]\s*(?:A0|A1|A2|B1|B2|C1|C2))?\b/giu,'')
    .replace(/^[,;.\s:-]+|[,;.\s:-]+$/g,'').trim()
  // An apparently new command is not a course topic.
  return raw.length>=3 && raw.length<=100 && !genericTopic.test(raw)
-   && !nextTask.test(raw) ? raw:null
+   && !nextTask.test(raw) && (c || !allowBare || bareTopic.test(raw)) ? raw:null
 }
 function initialTopic(message:string):string|null{
  const explicit=extractTopic(message,false)
