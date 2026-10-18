@@ -81,11 +81,11 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
   return <TableArtifactBlock content={content} />
 }
 
-export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
+export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewMode?: boolean }) {
   const [ans, setAns] = useState<Record<number, number|null>>({})
   const reported = useRef(false)
   useEffect(() => {
-    if (reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
+    if (reviewMode || reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
     reported.current = true
     const responses = quiz.map((q, i) => ({
       question:q.question, chosen:q.options[ans[i] as number],
@@ -93,10 +93,10 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
       explanation:q.explanation ?? '',
     }))
     window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
-  }, [ans, quiz])
+  }, [ans, quiz, reviewMode])
   if (!quiz.length) return null
   const validity = validateQuizAnswerKey(quiz)
-  if (!validity.ok) return (
+  if (!validity.ok && !reviewMode) return (
     <div role="alert" style={{padding:14,border:'1px solid var(--coral)',borderRadius:12,color:'var(--coral)'}}>
       Este quiz contiene una clave que no permite una corrección gramatical fiable. No se ha puntuado.
     </div>
@@ -112,15 +112,16 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
               {q.options.map((opt, oi) => {
                 const isSel = oi === sel
                 let bg='transparent', bc='var(--border)', col='var(--silver)'
-                if (done) {
+                if (reviewMode && isSel) { bg='rgba(0,201,167,.1)'; bc='var(--teal)'; col='var(--teal)' }
+                if (done && !reviewMode) {
                   const isOk = oi === q.correct
                   if (isOk)           { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
                   if (isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
                 }
-                return <button key={oi} disabled={done} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
+                return <button key={oi} disabled={done && !reviewMode} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done && !reviewMode?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
               })}
             </div>
-            {done && (
+            {done && !reviewMode && (
               <div style={{ marginTop:8, fontSize:12, fontWeight:700, display:'flex', flexDirection:'column', gap:4 }}>
                 {sel === q.correct
                   ? <span style={{ color:'var(--teal)' }}>✅ Correcto</span>
@@ -131,6 +132,21 @@ export function QuizBlock({ quiz }: { quiz: QuizQ[] }) {
           </div>
         )
       })}
+      {reviewMode && (
+        <div style={{ border:'1px solid var(--border)',borderRadius:12,padding:12 }}>
+          <div style={{fontSize:12,color:'var(--silver)',marginBottom:8}}>
+            La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática.
+          </div>
+          <button
+            disabled={!quiz.every((_,i)=>ans[i]!==undefined && ans[i]!==null)}
+            onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-review-request', {
+              detail:{responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number]}))}
+            }))}
+            style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--teal)',color:'var(--teal)',background:'rgba(0,201,167,.1)',cursor:'pointer'}}>
+            Revisar mis respuestas con Sarah
+          </button>
+        </div>
+      )}
     </div>
   )
 }

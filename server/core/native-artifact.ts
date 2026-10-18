@@ -55,6 +55,13 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
     const quality = validateQuizAnswerKey(c.questions as Array<{question:string;options:string[];correct:number;explanation?:string}>)
     if (!quality.ok) {
       console.warn('[quiz-quality] rejected ungradable question:', quality.reason)
+      // An unverifiable grammatical key must NEVER produce an automatic grade.
+      // Retain only the student's tactile options and ask the SAME Tutor Maestro
+      // to review selected answers conversationally, without exposing an
+      // unproven model-provided correct index as a score.
+      if (quality.reason?.startsWith('unverified_copula_cloze:')) {
+        return { type:'quiz', content:{...c,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
+      }
       return null
     }
     return { type:'quiz', content:c } as unknown as ArtifactPayload

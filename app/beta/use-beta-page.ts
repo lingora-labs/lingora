@@ -354,6 +354,36 @@ export function useBetaPage() {
     window.addEventListener('lingora-quiz-completed', handler)
     return () => window.removeEventListener('lingora-quiz-completed', handler)
   }, [flushStructuredQuizFeedback])
+  // Unverified answer keys can be attempted by touch, but are NEVER
+  // auto-scored. The selected Tutor Maestro is asked to assess what the
+  // student chose; no model-authored 'correct' index enters quizEvidence.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if (loading) return
+      const value = (event as CustomEvent).detail?.responses
+      if (!Array.isArray(value) || value.length < 2 || value.length > 8) return
+      const responses = value.map((r: unknown) => {
+        if (!r || typeof r !== 'object') return null
+        const item = r as {question?:unknown;options?:unknown;chosen?:unknown}
+        if (typeof item.question !== 'string' || item.question.length > 1800 ||
+            !Array.isArray(item.options) || item.options.length < 2 || item.options.length > 4 ||
+            item.options.some(o=>typeof o !== 'string') ||
+            typeof item.chosen !== 'string' || !item.options.includes(item.chosen)) return null
+        return {question:item.question,chosen:item.chosen,options:item.options as string[]}
+      })
+      if (responses.some(r=>r===null)) return
+      const message = 'He respondido a este quiz táctil. Mis respuestas, sin calificación automática:\n' +
+        responses.map((r,i)=>String(i+1)+'. '+r!.question+'\nOpciones: '+r!.options.join(' | ')+'\nElegí: '+r!.chosen).join('\n') +
+        '\nRevisa pedagógicamente cada elección e indica las soluciones justificadas; no inventes una puntuación verificada ni generes PDF.'
+      const next = {...sessionRef.current,tutorPhase:'feedback' as const}
+      sessionRef.current=next
+      setSession(next)
+      addMsg({sender:'user',text:message})
+      void callAPI({message})
+    }
+    window.addEventListener('lingora-quiz-review-request',handler)
+    return () => window.removeEventListener('lingora-quiz-review-request',handler)
+  }, [loading,callAPI,addMsg])
   const sendComposer = useCallback(async () => {
     const msg = input.trim()
     const hasText = msg.length > 0
