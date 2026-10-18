@@ -2,7 +2,7 @@
 // Full browser parity remains a separate requirement.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import Module, {createRequire} from 'node:module'
+import {createRequire} from 'node:module'
 const require=createRequire(import.meta.url)
 const ts=require('typescript')
 require.extensions['.ts']=(mod,filename)=>{
@@ -11,26 +11,16 @@ require.extensions['.ts']=(mod,filename)=>{
  }).outputText
  mod._compile(compiled,filename)
 }
-const original=Module._load
-// Stub the pure Tutor Maestro plan only. We test execution AUTHORITY and
-// invariants independently, without calling any model or tool side effect.
-Module._load=function(request,parent,isMain){
- if(request==='./tutor-first-plan'){
-  return {buildTutorFirstPlan:(message,state,language)=>({
-   executor:'mentor',priority:10,blocking:false,skipPhaseAdvance:true,
-   pedagogicalAction:'conversation',artifacts:[],
-   reason:'One cognitive tutor, one explicit action plan',
-   executionOrder:[{order:1,executor:'mentor',action:'conversation',params:{message,language,mode:state.activeMode}}],
-  })}
- }
- return original.apply(this,arguments)
-}
+// Run the ACTUAL Tutor First builder and ContextPack. No mocked
+// cognitive planner: identical request/state must give identical
+// execution plans across all runtime modes and explicit operations.
 const {orchestrateTutorFirst}=require('../server/core/tutor-first-orchestrator.ts')
-Module._load=original
-const st={activeMode:'interact',mentorProfile:'Sarah',tokens:2}
+const st={activeMode:'interact',mentorProfile:'Sarah',tokens:2,
+ userLevel:'A2',confirmedLevel:'A2',lastConcept:'SER/ESTAR',
+ lastUserGoal:'Practicar español',currentLessonTopic:'SER/ESTAR'}
 for(const action of [undefined,'export_chat_pdf','download_pdf','hear_audio']){
  const inp={message:'Some user message',state:st,interfaceLanguage:'es',uiAction:action}
- const runs=Array.from({length:30},()=>orchestrateTutorFirst(inp))
+ const runs=Array.from({length:100},()=>orchestrateTutorFirst(inp))
  assert.ok(runs.every(x=>JSON.stringify(x)===JSON.stringify(runs[0])),'plan must be deterministic')
  const p=runs[0]
  assert.ok(p.reason?.length>10)
@@ -44,6 +34,14 @@ for(const diagnostic of ['*1357*#','*2468*#']){
  assert.equal(a.executor,'diagnostic')
  assert.equal(a.pedagogicalAction,'diagnostic_assessment')
  assert.equal(a.executionOrder.length,1)
+}
+for(const mode of ['interact','structured','pdf_course','free']){
+ for(const message of ['Hola','Traduce al inglés: ayer fui al mercado','Corrige esto: Yo soy cansado','Dame un esquema nativo']){
+  const input={message,state:{...st,activeMode:mode},interfaceLanguage:'es'}
+  const first=orchestrateTutorFirst(input)
+  for(let i=0;i<100;i++)assert.deepEqual(orchestrateTutorFirst(input),first,
+    'real planner not deterministic in '+mode+' / '+message)
+ }
 }
 const convo=orchestrateTutorFirst({message:'Hola',state:st,interfaceLanguage:'es'})
 assert.equal(convo.executor,'mentor')
@@ -61,4 +59,4 @@ assert.ok(!entry.includes('buildTutorFirstPlan('),'no direct plan bypass in entr
 assert.ok(!entry.includes('orchestrate(testCtx)'),'no obsolete hidden routing in diagnostics')
 assert.ok(orchestrator.includes('assertExecutionPlan'))
 assert.ok(entry.includes('validateStateInvariants(baseState)')&&entry.includes('repairState(baseState, validation.errors)'))
-console.log('PASS — ARCH-9.11 deterministic central plan, atomic blocking, route <150, state invariants, no live planner bypass')
+console.log('PASS — ARCH-9.11 REAL integrated deterministic central plan, atomic blocking, route <150, state invariants, no live planner bypass')
