@@ -28,6 +28,15 @@ assert.equal(combined.documentContractUpdate?.level,'A1')
 assert.equal(combined.documentContractUpdate?.topic,'ser y estar')
 assert.equal(combined.documentContractReady,true)
 assert.equal(combined.documentContractControlOnly,false,'ready contract permits tutor-authored PDF')
+assert.equal(combined.mentor?.directive,'PDF_COURSE_DIRECTIVE')
+assert.equal(combined.executionOrder[0].params.contextPack.artifactAction,'author')
+assert.equal(combined.executionOrder[0].params.contextPack.artifactDepth,'comprehensive')
+assert.equal(combined.executionOrder[0].params.outputBudget,8192)
+assert.equal(partialSafeBudget(),true)
+function partialSafeBudget(){
+  const plan=orchestrateTutorFirst({message:'Quiero un curso completo en PDF',state:base(),interfaceLanguage:'es'})
+  return plan.executionOrder[0].params.outputBudget===undefined
+}
 assert.equal(combined.executor,'mentor','no old second-model pdf generation')
 const partial=plan('Nivel A1',initial)
 assert.equal(partial.documentContractUpdate?.level,'A1')

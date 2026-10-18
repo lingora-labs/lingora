@@ -86,6 +86,26 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
     plan.documentContractUpdate=contract.next
     plan.documentContractReady=contract.kind==='ready'
     plan.documentContractControlOnly=contract.kind==='open'||contract.kind==='continue'
+    if(contract.kind==='ready'){
+      // Source of truth is the student's accumulated contract, not a fresh
+      // keyword classification of a short continuation such as "A1, sobre ...".
+      // The existing ContextPack is the interface to authoring depth;
+      // no new model, no old generateCoursePdf brain, no lowered PDF threshold.
+      const first=plan.executionOrder[0]
+      const params=first.params??{}
+      const pack=params.contextPack as Record<string,unknown>|undefined
+      first.params={
+        ...params,
+        contextPack:pack?{...pack,
+          artifactGoal:'emit_pdf',artifactAction:'author',
+          artifactDepth:'comprehensive',activeFlowType:'course',
+          domain:contract.next.topic,
+        }:pack,
+        outputBudget:8192,
+      }
+      if(plan.mentor)plan.mentor.directive='PDF_COURSE_DIRECTIVE'
+      plan.priority=80
+    }
     plan.reason+=' Contract state: '+contract.kind
   }
   return assertExecutionPlan(plan)
