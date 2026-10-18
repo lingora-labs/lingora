@@ -23,6 +23,6 @@ assert.equal(formatDirectAnswer('correction','La forma correcta es: Yo fui a la 
 assert.equal(formatDirectAnswer('correction','Corrección: Yo fui a la tienda y compré pan ayer.'),'Yo fui a la tienda y compré pan ayer.')
 assert.ok(source.includes("directFormat === 'translation' ? 'TRANSLATION_ONLY_DIRECTIVE'"))
 assert.ok(source.includes("directFormat === 'correction' ? 'CORRECTION_ONLY_DIRECTIVE'"))
-assert.ok(stream.includes('const signals: ArtifactSignal[] = directFormat ? []'), 'direct transformation must not issue artifacts')
+assert.ok(stream.includes('const signals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? []'), 'direct transformations and contract-control turns must not issue artifacts')
 assert.ok(stream.includes('if (!directFormat) emit({ delta })'), 'ordinary streaming must remain progressive')
 console.log('PASS — SEEK strict hard overrides, no artifact and preserved normal SSE')
