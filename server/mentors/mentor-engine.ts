@@ -471,9 +471,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
         // supplies only factual validation findings, never a fabricated key.
         try {
           // One bounded quality-recovery attempt by the SAME selected Tutor Maestro,
-          // using the higher-fidelity recovery model only when its output failed
+          // using the SAME default model (or an explicitly configured override) when its output failed
           // an observable instrumental contract. No independent planner or router.
-          const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || 'gpt-4o'
+          const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || model
           const revised = await openai.chat.completions.create({
             ...buildModelParams(recoveryModel, resolveOutputBudget(n.plan, pack), 0.2, 0.88),
             tools: [COMPLETE_TUTOR_TURN_TOOL],

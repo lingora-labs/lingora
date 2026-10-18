@@ -76,6 +76,23 @@ function excerptForSubject(content: string, subject: string): string {
 // dropped (not reported as a failure) when unauthorized — this is a
 // choice not to attempt, not an attempt that failed.
 
+// DAE 7.1 — IMAGE COST AUTHORITY: a Tutor declaration is not sufficient
+// authorization to spend image-generation credits. The current user message
+// must also explicitly request a newly generated/drawn image. This is an
+// instrumental side-effect permission, NOT a cognitive intent router.
+export function isExplicitImageRequest(message: string): boolean {
+  const text = message.trim()
+  if (!text) return false
+  if (/(?:\b(?:sin|no|without|don't|do not)\s+(?:generar|crear|hacer|dibujar|generate|create|draw|make)?\s*(?:una?\s+|an?\s+|any\s+)?(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|image(?:s)?|pictures?|photos?|illustrations?)\b)/iu.test(text)) return false
+  const imageNoun = /(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|infograf[ií]as?|images?|pictures?|photos?|illustrations?|drawings?|infographics?|صورة|صور|رسمة)/iu
+  const command = /(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|dibuja(?:r)?|ilustra(?:r)?|diseña(?:r)?|renderiza(?:r)?|produce|quiero|necesito|generate|create|draw|illustrate|design|render|make|produce|i want|i need|ارسم|أنشئ|اصنع|أريد)/iu
+  if (!imageNoun.test(text) || !command.test(text)) return false
+  // An explicit image noun must occur close to the creation request; a
+  // distant mention in an unrelated lesson is not authority to spend credits.
+  const close = /(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|dibuja(?:r)?|ilustra(?:r)?|diseña(?:r)?|renderiza(?:r)?|produce|quiero|necesito|generate|create|draw|illustrate|design|render|make|produce|i want|i need|ارسم|أنشئ|اصنع|أريد)[^\n.!?]{0,95}(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|infograf[ií]as?|images?|pictures?|photos?|illustrations?|drawings?|infographics?|صورة|صور|رسمة)/iu
+  return close.test(text)
+}
+
 export interface ArtifactFailure {
   subject: string
 }
@@ -141,10 +158,11 @@ export async function fulfillArtifactSignals(
   const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request' && pdfAuthorized).slice(0, 3);
   const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
-  if (pdfs.length === 0 && audioSignals.length === 0 && native.length === 0) return { artifacts: [], failures: [] };
-
-  const { generatePDF } = await import('../tools/pdf-generator')
-  const { composeDocumentFromTaught } = await import('../tools/pdf/composeArtifactDocument')
+  // Costed operation: BOTH Tutor closure and CURRENT user message must consent.
+  const imageSignals = deduped.filter((s) =>
+    s.type === 'emit_image' && s.trigger === 'explicit_user_request' &&
+    isExplicitImageRequest(userMessage)).slice(0, 1);
+  if (pdfs.length === 0 && audioSignals.length === 0 && native.length === 0 && imageSignals.length === 0) return { artifacts: [], failures: [] };
 
   const mentorName = (state as unknown as { mentorProfile?: string }).mentorProfile ?? 'Sarah'
   const level = (state as unknown as { confirmedLevel?: string; userLevel?: string }).confirmedLevel
@@ -169,6 +187,8 @@ export async function fulfillArtifactSignals(
   }
 
   for (const signal of pdfs) {
+    const { generatePDF } = await import('../tools/pdf-generator')
+    const { composeDocumentFromTaught } = await import('../tools/pdf/composeArtifactDocument')
     // Honest failure for an explicitly requested file: preserve the tutor
     // response and other successful native artifacts rather than raising
     // an exception that destroys the whole turn.
@@ -242,6 +262,30 @@ export async function fulfillArtifactSignals(
     const entry = buildFulfillmentEntry(signal.subject, title, composed, result, webUrl)
     if (entry.kind === 'artifact') artifacts.push(entry.payload)
     else failures.push(entry.failure)
+  }
+
+  // DAE-approved emit_image: executor only, no alternative cognition/router.
+  // Cardinality: one authorized user request -> one actual image or one failure.
+  if (imageSignals.length) {
+    const { generateImage } = await import('../tools/image-generator')
+    for (const signal of imageSignals) {
+      try {
+        const result = await generateImage(signal.subject)
+        if (result.success && result.url) {
+          artifacts.push({
+            type: 'illustration',
+            prompt: signal.subject,
+            url: result.url,
+          } as ArtifactPayload)
+        } else {
+          console.error('[emit_image] generation failed', result.error ?? result.message)
+          failures.push({ subject: signal.subject })
+        }
+      } catch (error) {
+        console.error('[emit_image] execution error', error instanceof Error ? error.message : error)
+        failures.push({ subject: signal.subject })
+      }
+    }
   }
 
   // P15 — AUDIO OUTPUT RECONNECTION.
