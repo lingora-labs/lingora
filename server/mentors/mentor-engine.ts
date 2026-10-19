@@ -387,7 +387,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // materialized from those exact words. Large JSON tool arguments truncate.
  const mustDeliver = !wantsPdf && (isExplicitQuizRequest(n.message)
    || isExplicitImageRequest(n.message)
-   || n.request.uiAction==='create_visual_review')
+   || params.request.uiAction==='create_visual_review')
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  let response:AsyncIterable<any>|undefined
  try{
