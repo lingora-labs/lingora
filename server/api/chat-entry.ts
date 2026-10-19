@@ -23,7 +23,6 @@ import {
 
 import { executePlan }    from '../core/execution-engine';
 import { executePlanStream } from '../core/execution-engine-stream';
-import { evaluateCommercial } from '../core/commercial-engine-adapter';
 import { orchestrateTutorFirst } from '../core/tutor-first-orchestrator';
 import { isConversationPdfExportRequest } from '../../lib/pdf-intent-authorization';
 
@@ -406,21 +405,13 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       }
     }
 
-    let commercialSuffix: string | undefined;
-    if (!plan.blocking) {
-      const commercial = await evaluateCommercial(updatedState, plan);
-      if (commercial.triggered && commercial.message) {
-        commercialSuffix = commercial.message;
-      }
-    }
-
     const wireState = toWireState(updatedState, result.statePatch);
 
     const exportFailed = plan.pedagogicalAction === 'export_chat_pdf' && !resultArtifact;
     const response: ChatResponse = {
       message: exportFailed
         ? 'No se pudo generar el PDF de esta conversación. Inténtalo de nuevo.'
-        : commercialSuffix ? `${result.message}\n\n${commercialSuffix}` : result.message,
+        : result.message,
       artifact:         resultArtifact,
       ...(exportFailed ? { artifactFailures: [{ subject: 'Exportación de conversación' }] } : blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
       state:            wireState,

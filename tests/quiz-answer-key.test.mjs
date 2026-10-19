@@ -126,18 +126,18 @@ const prefixedCorrected=materializeNativeArtifact(quiz([
   personCorrect
 ]))
 assert.equal(prefixedCorrected?.type,'quiz')
-assert.equal(prefixedCorrected?.content?.questions[0].correct,0,
-  'prefixed options must be semantically verified, not trusted by index')
+assert.equal(prefixedCorrected?.content?.questions[0].correct,1,
+  'the tutor key must not be silently overwritten')
 const correctedEvent=materializeNativeArtifact(quiz([
   {...eventCorrect,correct:1},personCorrect
 ]))
-assert.equal(correctedEvent?.content?.questions[0].correct,0,
-  'event-location index is proof-corrected, not rejected')
+assert.equal(correctedEvent?.content?.questions[0].correct,1,
+  'event-location contradiction must stay visible for tutor review')
 const correctedPerson=materializeNativeArtifact(quiz([
   eventCorrect,{...personCorrect,correct:0}
 ]))
-assert.equal(correctedPerson?.content?.questions[1].correct,1,
-  'person-location index is proof-corrected, not rejected')
+assert.equal(correctedPerson?.content?.questions[1].correct,0,
+  'person-location contradiction must stay visible for tutor review')
 const unverified = materializeNativeArtifact(quiz([
   eventCorrect,question('El tren ___ rápido.',['es','está'],0)
 ]))

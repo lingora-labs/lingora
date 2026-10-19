@@ -212,11 +212,12 @@ export async function fulfillArtifactSignals(
     // student's material. Reject rather than pretend that a clipped PDF
     // satisfies the request. A single-subject fallback carries ALL text.
     if (!composed.ok && pdfs.length > 1) {
-      console.error('[7.1] compound artifact composition incomplete', signal.subject, composed.reason)
+      console.error('[document-compose]', JSON.stringify({format:signal.format, reason:composed.reason, subjectLength:signal.subject.length}))
       failures.push({ subject: signal.subject })
       continue
     }
     if (signal.format === 'pdf_html' && !composed.ok) {
+      console.error('[document-compose]', JSON.stringify({format:'pdf_html',reason:composed.reason,sourceLength:pedagogicalContent.length}))
       failures.push({ subject: signal.subject + ' (PDF y HTML no disponibles)' })
       continue
     }
@@ -236,7 +237,7 @@ export async function fulfillArtifactSignals(
         })
 
     if (!result.success || !result.url) {
-      console.error('[P8] generatePDF failed', signal.subject, result.error ?? result.message)
+      console.error('[document-render]', JSON.stringify({format:signal.format,reason:result.error ?? result.message ?? 'unknown',sourceLength:pedagogicalContent.length}))
     }
 
     // P19-D — DUAL DELIVERY. Only possible when composition succeeded

@@ -12,11 +12,10 @@ import {
   ArtifactRegistryEntry,
 } from '../../lib/contracts'
 import { mergeStatePatch, documentContractStatePatch, toWireState } from './state-manager'
-import { evaluateCommercial } from './commercial-engine-adapter'
+import { recordedImmersionOfferPatch } from './commercial-context'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
-import { isExplicitQuizRequest } from '../../lib/quiz-intent-guard'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -119,23 +118,9 @@ export function executePlanStream(
           }
         }
 
-        // On a five-turn milestone the tutor's own native schema has priority.
-        // If absent, the existing authored explanation can be reorganized
-        // WITHOUT a second model or invented pedagogical content.
-        const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
-          (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
-          !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
-        if (visualDue && !plan.documentContractControlOnly && !artifacts.some(a => a.type === 'schema_pro')
-          && !isExplicitQuizRequest(request.message) && !artifacts.some(a => a.type === 'quiz')) {
-          const { groundedMilestoneReview } = await import('./native-artifact')
-          const review = groundedMilestoneReview(fullText,
-            (request.conversationHistory ?? []) as Array<{role:string;content:string}>,
-            plan.resolvedTopic ?? state.lastConcept ?? 'Tema actual')
-          if (review) artifacts.push(review)
-          else artifactFailures.push({ subject:'Refuerzo visual del quinto turno' })
-        }
         const artifact = artifacts[0]
         const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
         // student's tactile answers the following turn gives feedback.
@@ -182,10 +167,6 @@ export function executePlanStream(
         // actualización compartido en vez de duplicar reglas").
         Object.assign(patch, documentContractStatePatch(plan, artifacts))
         const updatedState = mergeStatePatch(state, patch)
-        if (!plan.blocking) {
-          const commercial = await evaluateCommercial(updatedState, plan)
-          if (commercial.triggered && commercial.message) emit({ delta: `\n\n${commercial.message}` })
-        }
         // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
         // mergeStatePatch() already translated this turn's null-as-clear
         // sentinel into `undefined` on updatedState (correct for the

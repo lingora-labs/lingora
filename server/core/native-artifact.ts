@@ -50,40 +50,21 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
       q.correct < (q.options as string[]).length &&
       str(q.explanation))
     if (!ok) return null
-    // DAE P1-02: use ONLY the unique answer already proven by the existing
-    // semantic verifier. Never alter its person/tense/semantic heuristics,
-    // questions, options or explanations; never let an unproven key auto-grade.
-    // Repair each independently verified wrong index on a local copy, bounded
-    // by the number of questions. An unverified/absent unique answer is always
-    // returned as a touch quiz with tutor_review, never as an automatic score.
-    type QuizQuestion = {question:string;options:string[];correct:number;explanation?:string}
-    const verifiedQuestions = (c.questions as QuizQuestion[]).map(q => ({...q}))
-    for (let attempt = 0; attempt <= verifiedQuestions.length; attempt++) {
-      const quality = validateQuizAnswerKey(verifiedQuestions)
-      if (quality.ok) {
-        return { type:'quiz', content:{...c,questions:verifiedQuestions} } as unknown as ArtifactPayload
-      }
-      console.warn('[quiz-quality] validation finding:', quality.reason)
-      if (quality.reason?.startsWith('incorrect_model_answer_key:')) {
-        const i = quality.questionIndex
-        const correct = quality.correctedIndex
-        if (i === undefined || correct === undefined ||
-            !Number.isInteger(i) || i < 0 || i >= verifiedQuestions.length ||
-            !Number.isInteger(correct) || correct < 0 ||
-            correct >= verifiedQuestions[i].options.length ||
-            verifiedQuestions[i].correct === correct) return null
-        verifiedQuestions[i].correct = correct
-        continue
-      }
-      if (quality.reason?.startsWith('unverified_copula_cloze:') ||
-          quality.reason?.startsWith('missing_or_ambiguous_correct_option:')) {
-        return { type:'quiz', content:{...c,questions:verifiedQuestions,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
-      }
-      // compound_copula_cloze / invalid_answer_key / duplicate_options /
-      // empty_quiz and unknown validation errors retain fail-closed behavior.
-      return null
-    }
-    return null
+    // A native quiz is always the Tutor's own work. Never silently rewrite
+    // a correct index while leaving its explanation unchanged: that caused
+    // the Gate C "Madrid es en España" contradiction.
+    // The existing verifier can PROVE keys only inside its limited domain.
+    // Outside that proof or on disagreement, deliver a tactile tutor_review
+    // quiz; never fabricate an automatic score.
+    const audit = validateQuizAnswerKey(c.questions as Array<{
+      question: string; options: string[]; correct: number; explanation?: string
+    }>)
+    if (audit.ok && (c.questions as Array<{question:string; options:string[]}>).every(q =>
+      /_{2,}|\.{3,}|…/u.test(q.question) &&
+      q.options.every(option => /\b(?:soy|eres|es|somos|sois|son|estoy|estás|está|estamos|estáis|están|ser|estar)\b/iu.test(option))
+    )) return { type:'quiz', content:c } as unknown as ArtifactPayload
+    console.info('[quiz-quality] auto grading withheld:', audit.reason ?? 'outside_proven_domain')
+    return { type:'quiz', content:{...c,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
   }
   return null
 }

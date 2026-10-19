@@ -480,6 +480,9 @@ export interface SessionState {
   // Persists full artifact payloads across turns for session export (SEEK 4.2).
   // Survives mergeStatePatch via { ...current, ...patch } spread (verified SEEK 4.1a).
   artifactRegistry?: ArtifactRegistryEntry[];
+  // Tutor-owned immersion invitations, persisted with ordinary session state.
+  sessionId?: string;
+  commercialOffers?: CommercialOffer[];
 
   // SEEK 4.1c2 — sovereign document contract
   pendingDocumentRequest?: PendingDocumentRequest;
