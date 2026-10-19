@@ -81,7 +81,13 @@ export function reconcileDocumentContract(
  // lastConcept or curriculum history.
  const contextLevel=extractLevel(input)
  const freshRequest=courseRequest(input)
- const contextTopic=freshRequest?initialTopic(input):prior?extractTopic(input,!contextLevel):null
+ // A complete explicit dual-format request WITH a declared level is not an
+ // unfinished course-registration form. Its own words are a valid topic
+ // specification even without the formula "guía sobre X". The original
+ // request, not the runtime, remains authoritative for subject and scope.
+ const contextTopic=freshRequest
+   ? (initialTopic(input)??(contextLevel&&isPdfAndWebRequest(input)?input.slice(0,100):null))
+   : prior?extractTopic(input,!contextLevel):null
  const contract:PendingDocumentRequest={
    type:'course_pdf',level:contextLevel??prior?.level??null,
    topic:contextTopic??(freshRequest?null:prior?.topic??null),

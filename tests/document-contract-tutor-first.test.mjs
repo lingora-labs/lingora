@@ -45,6 +45,12 @@ const topic=plan('Tema: gramática del español',base({pendingDocumentRequest:pe
 assert.equal(topic.documentContractUpdate?.topic,'gramática del español')
 const bare=plan('Ser y estar',base({pendingDocumentRequest:pending('A1')}))
 assert.equal(bare.documentContractUpdate?.topic,'Ser y estar')
+const dualFormat='Prepara y entrega ahora una guía bilingüe español y árabe para una estudiante A1 que aprende a presentarse, pedir indicaciones y conversar en una cafetería. Incluye ejercicios, respuestas y explicaciones reales en ambos idiomas. Quiero el PDF y una versión web HTML descargables en este mismo turno, no una promesa ni un resumen.'
+const dualPlan=plan(dualFormat,base())
+assert.equal(dualPlan.documentContractReady,true,'complete explicit PDF+HTML request must not be intercepted by parameter collection')
+assert.equal(dualPlan.documentContractControlOnly,false)
+assert.equal(dualPlan.documentContractUpdate?.format,'pdf_html')
+assert.equal(dualPlan.documentContractUpdate?.level,'A1')
 const full=plan('Quiero un curso sobre ser y estar de nivel A1 en PDF',base())
 assert.equal(full.documentContractReady,true)
 assert.equal(full.documentContractUpdate?.level,'A1')
