@@ -27,11 +27,11 @@ const multiWrong={...signal,content:{...signal.content,questions:[
 const originalKeys=multiWrong.content.questions.map(q=>q.correct)
 const repaired=materializeNativeArtifact(multiWrong)
 assert.equal(repaired?.type,'quiz')
-assert.deepEqual(repaired?.content?.questions.map(q=>q.correct),[0,1,0],
-  'correct ALL wrong indices, not merely the first')
+assert.deepEqual(repaired?.content?.questions.map(q=>q.correct),originalKeys,
+  'never silently correct keys or leave contradictory explanations')
 assert.deepEqual(multiWrong.content.questions.map(q=>q.correct),originalKeys,
   'never mutate the Tutor-authored source signal')
-assert.equal(repaired?.content?.gradingMode,undefined)
+assert.equal(repaired?.content?.gradingMode,'tutor_review')
 assert.deepEqual(repaired?.content?.questions.map(q=>q.question),
   multiWrong.content.questions.map(q=>q.question))
 const malformed={...signal,content:{...signal.content,questions:[

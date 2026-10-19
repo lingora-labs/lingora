@@ -59,6 +59,7 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
     const audit = validateQuizAnswerKey(c.questions as Array<{
       question: string; options: string[]; correct: number; explanation?: string
     }>)
+    if (audit.reason?.startsWith('duplicate_options:')) return null
     if (audit.ok && (c.questions as Array<{question:string; options:string[]}>).every(q =>
       /_{2,}|\.{3,}|…/u.test(q.question) &&
       q.options.every(option => /\b(?:soy|eres|es|somos|sois|son|estoy|estás|está|estamos|estáis|están|ser|estar)\b/iu.test(option))

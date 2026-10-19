@@ -6,13 +6,13 @@ import type { SessionState, CommercialOffer } from '../../lib/contracts'
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const INVITATION_PATH = '/immersion'
 
-function recentOffers(state: SessionState, now: number): CommercialOffer[] {
+function recentOffers(state: Partial<SessionState>, now: number): CommercialOffer[] {
   return (state.commercialOffers ?? []).filter(
     o => Number.isFinite(o.timestamp) && o.timestamp > now - WEEK_MS && o.timestamp <= now,
   )
 }
 
-function canInvite(state: SessionState, now: number): boolean {
+function canInvite(state: Partial<SessionState>, now: number): boolean {
   const recent = recentOffers(state, now)
   const sessionId = state.sessionId
   if (recent.length >= 2) return false
@@ -21,7 +21,7 @@ function canInvite(state: SessionState, now: number): boolean {
   return true
 }
 
-export function commercialContextForTurn(_message: string, state: SessionState): string {
+export function commercialContextForTurn(_message: string, state: Partial<SessionState>): string {
   const permitted = canInvite(state, Date.now())
   const goal = state.lastUserGoal ?? state.userObjective ?? 'not yet established'
   const level = state.confirmedLevel ?? state.userLevel ?? 'not confirmed'

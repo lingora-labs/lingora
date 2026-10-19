@@ -25,7 +25,8 @@ assert.equal(isExplicitPdfRequest('Modo seleccionado: pdf_course','pdf_course'),
 const mentor=fs.readFileSync(new URL('../server/mentors/mentor-engine.ts',import.meta.url),'utf8')
 const fulfillment=fs.readFileSync(new URL('../server/core/artifact-side-effect.ts',import.meta.url),'utf8')
 assert.ok(!mentor.includes("throw Error('PDF requested without sufficient teaching content')"),'PDF must not destroy the tutor turn')
-assert.ok(mentor.includes("accepted.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized)"))
+assert.ok(mentor.includes("closed.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized)"))
+assert.ok(mentor.includes("tool_choice: needsArtifact"),'ordinary conversation cannot require a tool')
 assert.ok(fulfillment.includes('if (pedagogicalContent.trim().length < 500)'))
 assert.ok(fulfillment.includes('failures.push('))
 for(const message of [
