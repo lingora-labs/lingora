@@ -20,7 +20,7 @@ assert.doesNotMatch(commercialContextForTurn('Continuemos',{...state,commercialO
 const fs=require('node:fs')
 const mentor=fs.readFileSync(new URL('../server/mentors/mentor-engine.ts',import.meta.url),'utf8')
 const stream=fs.readFileSync(new URL('../server/core/execution-engine-stream.ts',import.meta.url),'utf8')
-assert.match(mentor,/tool_choice: mustDeliver/)
+assert.match(mentor,/tool_choice: wantsPdf/)
 assert.match(mentor,/: 'auto'/)
 assert.doesNotMatch(mentor,/Structural closure rejection/)
 assert.doesNotMatch(stream,/evaluateCommercial\(/)

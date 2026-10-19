@@ -382,17 +382,18 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
  // An explicit student authorization is a binding delivery contract, not a
  // classifier deciding what the Tutor may teach. Free conversation stays auto.
- const mustDeliver = isExplicitPdfRequest(n.message,n.state.activeMode)
-   || isExplicitQuizRequest(n.message)
-   || isExplicitImageRequest(n.message)
-   || Boolean(n.plan?.documentContractReady)
+ const wantsPdf = isExplicitPdfRequest(n.message,n.state.activeMode)
+ // Full documents are authored as ordinary text, then deterministically
+ // materialized from those exact words. Large JSON tool arguments truncate.
+ const mustDeliver = !wantsPdf && (isExplicitQuizRequest(n.message)
+   || isExplicitImageRequest(n.message))
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
      stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],
-     tool_choice: mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
+     tool_choice: wantsPdf ? 'none' : mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
      messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
    })
  }catch(e){

@@ -18,6 +18,7 @@ import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
 import { creditLearningProgress } from '../../lib/progress-tokens'
 import { unfulfilledExplicitDeliverables } from '../../lib/explicit-delivery'
+import { isExplicitPdfRequest, isPdfAndWebRequest } from '../../lib/pdf-intent-authorization'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -70,6 +71,16 @@ export function executePlanStream(
         }
         // Direct transformation is user authority for text alone.
         const tutorSignals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? [] : (stream.artifactSignals ?? [])
+        // The student's explicit PDF instruction is the typed AUTHORIZATION.
+        // The one Tutor authors fullText without serializing it into tool JSON.
+        // Both formats are deterministically rendered from that same answer.
+        const wantsPdf = !directFormat && !plan.documentContractControlOnly
+          && isExplicitPdfRequest(request.message,state.activeMode)
+        if(wantsPdf && !plan.documentContractReady && !tutorSignals.some(s=>s.type==='emit_pdf')){
+          tutorSignals.push({type:'emit_pdf',trigger:'explicit_user_request',
+            subject:(state.currentLessonTopic || request.message).trim().slice(0,180),
+            format:isPdfAndWebRequest(request.message)?'pdf_html':'pdf'})
+        }
         // The student's existing multi-turn PDF contract, not a model-authored
         // side-effect proposal, authorizes materialization once parameters are
         // complete. Willy remains the sole author of FULL pedagogical content;
