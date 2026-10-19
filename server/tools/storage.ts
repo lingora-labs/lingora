@@ -1,5 +1,9 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 
+export function hasPersistentPrivateStorage(): boolean {
+  return Boolean(process.env.AWS_REGION && process.env.S3_BUCKET && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
+}
+
 function getClient(): S3Client | null {
   const { AWS_REGION, S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY } = process.env
   if (!AWS_REGION || !S3_BUCKET || !AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY) return null

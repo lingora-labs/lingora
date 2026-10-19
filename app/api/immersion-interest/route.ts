@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { randomUUID } from 'node:crypto'
-import { uploadToS3 } from '@/server/tools/storage'
+import { uploadToS3, hasPersistentPrivateStorage } from '@/server/tools/storage'
+
+export async function GET() {
+  return NextResponse.json({ available:hasPersistentPrivateStorage() }, { headers:{'Cache-Control':'no-store'} })
+}
 
 export async function POST(req: NextRequest) {
   // This is a real, persisted interest request, never a booking or payment.
@@ -10,6 +14,8 @@ export async function POST(req: NextRequest) {
     try { if (new URL(origin).host !== req.nextUrl.host) return NextResponse.json({error:'Origen no autorizado'}, {status:403}) }
     catch { return NextResponse.json({error:'Origen no válido'}, {status:403}) }
   }
+  if (!hasPersistentPrivateStorage())
+    return NextResponse.json({error:'La recepción de solicitudes aún no está habilitada. No se registró ninguna reserva.'},{status:503})
   if (Number(req.headers.get('content-length') ?? 0) > 8192)
     return NextResponse.json({error:'Solicitud demasiado grande'}, {status:413})
   let input: Record<string,unknown>
