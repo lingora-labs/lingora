@@ -70,12 +70,21 @@ function expectedSerEstarForm(question:string):string|null {
   const before=question.slice(0,pos).trim()
   const after=normalize(question.slice(pos+gaps[0][0].length))
   const subject=normalize(before)
+  const predicate=after.replace(/^(?:muy|bastante)\s+/u,'')
+  // DAE: these adjectives can change meaning with SER versus ESTAR.
+  // A single cloze cannot prove which reading the student intended.
+  // Do not silently "correct" either verb even without an intensifier.
+  const ambiguous=/^(?:list[oa]s?|abiert[oa]s?|cerrad[oa]s?|trist[ei]s?|feliz|felices|felic(?:es)?)\b/u.test(predicate)
+  // Extend intensifier handling ONLY for demonstrably transient predicates.
+  const unambiguousTransient=/^(?:cansad[oa]s?|nervios[oa]s?|enferm[oa]s?|preocupad[oa]s?|agotad[oa]s?|content[oa]s?|ocupad[oa]s?)\b/u.test(predicate)
+  const intensified=predicate!==after
   const semantic: 'ser'|'estar'|null =
-    location.test(after) ? (eventHead.test(subject)?'ser':'estar')
+    ambiguous ? null
+    : location.test(after) ? (eventHead.test(subject)?'ser':'estar')
     : origin.test(after) ? 'ser'
     : eventTime.test(after) && eventHead.test(subject) ? 'ser'
-    : transient.test(after) ? 'estar'
-    : identity.test(after.replace(/^(?:muy|bastante)\s+/u,'')) ? 'ser'
+    : (intensified ? unambiguousTransient : transient.test(after)) ? 'estar'
+    : identity.test(predicate) ? 'ser'
     : null
   if (!semantic) return null
   if (infinitiveGovernor.test(subject)) return semantic

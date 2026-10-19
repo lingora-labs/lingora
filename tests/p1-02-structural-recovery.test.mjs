@@ -7,7 +7,7 @@ const require=createRequire(import.meta.url),ts=require('typescript')
 const root=fileURLToPath(new URL('../',import.meta.url))
 const originalResolve=Module._resolveFilename,originalLoad=Module._load
 Module._resolveFilename=function(name,...rest){return originalResolve.call(this,name.startsWith('@/')?path.join(root,name.slice(2)):name,...rest)}
-let queue=[],requests=[],logs=[]
+let queue=[],requests=[],logs=[],infoLogs=[],errorLogs=[]
 class FakeOpenAI {chat={completions:{create:async(request,options)=>{
  requests.push({request,options});assert.ok(queue.length,'unexpected extra completion')
  const result=queue.shift();if(result instanceof Error)throw result;return request.stream?stream(result):completion(result)
@@ -36,17 +36,19 @@ async function* stream(raw){for(const [index,c]of entries(raw).entries()){
  yield {choices:[{delta:{tool_calls:[{index,function:{arguments:c.args.slice(mid)}}]}}]}
 }}
 function completion(raw){return {choices:[{message:{tool_calls:entries(raw).map(c=>({type:'function',function:{name:c.name,arguments:c.args}}))}}]}}
-const warn=console.warn
+const warn=console.warn, originalInfo=console.info, originalError=console.error
 console.warn=(...args)=>logs.push(args)
-async function run(outputs,input=params){queue=[...outputs];requests=[];logs=[];const deltas=[];let error;const stream=await getMentorResponseStream(input)
+console.info=(...args)=>infoLogs.push(args)
+console.error=(...args)=>errorLogs.push(args)
+async function run(outputs,input=params){queue=[...outputs];requests=[];logs=[];infoLogs=[];errorLogs=[];const deltas=[];let error;const stream=await getMentorResponseStream(input)
  try{for await(const d of stream)deltas.push(d)}catch(e){error=e}
  assert.equal(queue.length,0,'all and only prescribed completions consumed')
  assert.ok(requests.length<=3,'global two-extra-completions budget')
- for(const r of requests)assert.deepEqual(r.options,{maxRetries:0},'no hidden SDK retry')
- const wireLogs=JSON.stringify(logs)
+ for(const r of requests)assert.equal(r.options,undefined,'restore SDK default retry behavior for transient HTTP errors')
+ const wireLogs=JSON.stringify([logs,infoLogs,errorLogs])
  for(const secret of ['PRIVATE_DRAFT','PRIVATE_HISTORY',message,quiz.subject])assert.ok(!wireLogs.includes(secret),'no source content in logs')
  for(const [tag,json]of logs.filter(l=>l[0]==='[tutor-closure]')){const entry=JSON.parse(json);assert.deepEqual(Object.keys(entry),['cause','artifactCount','artifactTypes']);assert.ok(entry.cause)}
- return {text:deltas.join(''),deltas,signals:stream.artifactSignals,error,requests:[...requests],logs:[...logs]}
+ return {text:deltas.join(''),deltas,signals:stream.artifactSignals,error,requests:[...requests],logs:[...logs],infos:[...infoLogs],errors:[...errorLogs]}
 }
 let count=0
 function pass(name){count++;process.stdout.write(`PASS ${name}\n`)}
@@ -60,13 +62,66 @@ try{
  assert.equal(materializeNativeArtifact(r.signals[0])?.content.questions.length,3)
  pass('buffered recovery: same Tutor/model/system/history/context; one visible reply; structured safe log')
  r=await run([valid]);assert.equal(r.text,valid.reply);assert.equal(r.requests.length,1);pass('valid closure incurs no retry')
+ const reviewSignal={...quiz,content:{...quiz.content,questions:[
+   {question:'La película ___ triste.',options:['es','está'],correct:0,explanation:'Ambiguous meaning.'},
+   ...quiz.content.questions.slice(1),
+ ]}}
+ const reviewTurn={reply:'Quiz táctil con revisión pedagógica.',artifacts:[reviewSignal]}
+ const reviewMaterialized=materializeNativeArtifact(reviewSignal)
+ assert.equal(reviewMaterialized?.content?.gradingMode,'tutor_review')
+ assert.equal(reviewMaterialized?.content?.questions[0].correct,0,
+   'ambiguous SER key must not be rewritten')
+ r=await run([reviewTurn,valid])
+ assert.equal(r.error,undefined)
+ assert.equal(r.text,valid.reply)
+ assert.deepEqual(r.signals,[quiz])
+ assert.equal(r.requests.length,2,'at most one semantic recovery for a review-only quiz')
+ assert.match(r.requests[1].request.messages.at(-2).content,/quiz_review_only:unverified_copula_cloze:0/)
+ assert.doesNotMatch(r.requests[1].request.messages.at(-2).content,/correctedIndex|correctedKey|expectedForm/)
+ assert.equal(JSON.parse(r.infos.find(l=>l[0]==='[quiz-grading]')[1]).gradingMode,'auto')
+ pass('review-only quiz attempts SAME Tutor with code and index, no expected answer or key')
+ r=await run([reviewTurn,reviewTurn])
+ assert.equal(r.error,undefined)
+ assert.equal(r.text,reviewTurn.reply)
+ assert.equal(r.requests.length,2)
+ assert.equal(materializeNativeArtifact(r.signals[0])?.content?.gradingMode,'tutor_review')
+ assert.equal(JSON.parse(r.infos.find(l=>l[0]==='[quiz-grading]')[1]).gradingMode,'tutor_review')
+ pass('unverified recovery remains a real tactile tutor_review, never a hard error')
+ r=await run([reviewTurn,invalid])
+ assert.equal(r.error,undefined)
+ assert.equal(r.text,reviewTurn.reply)
+ assert.equal(materializeNativeArtifact(r.signals[0])?.content?.gradingMode,'tutor_review')
+ pass('invalid OPTIONAL semantic closure cannot destroy an original valid tutor_review quiz')
+ const missingSignal={...quiz,content:{...quiz.content,questions:[
+   {question:'María ___ en casa.',options:['es','son'],correct:0,explanation:'Correct option absent.'},
+   ...quiz.content.questions.slice(1),
+ ]}}
+ r=await run([{reply:'Quiz con opción ausente',artifacts:[missingSignal]},valid])
+ assert.match(r.requests[1].request.messages.at(-2).content,/quiz_review_only:missing_or_ambiguous_correct_option:0/)
+ assert.equal(r.requests.length,2)
+ pass('missing-or-ambiguous correct option yields code/index, not fabricated score')
+ r=await run([invalid,reviewTurn,valid])
+ assert.equal(r.text,valid.reply)
+ assert.equal(r.requests.length,3,'structural and semantic one each, two extra total')
+ pass('structural plus semantic tutor recovery shares global two-completion limit')
+ const rawProviderError=Object.assign(new Error('PRIVATE_HISTORY provider secret'),
+   {name:'RateLimitError',status:429,code:'rate_limit_exceeded'})
+ r=await run([rawProviderError])
+ assert.ok(r.text.length>0)
+ const providerEntry=r.errors.find(l=>l[0]==='[tutor-provider]')
+ assert.deepEqual(JSON.parse(providerEntry[1]),{
+   errorClass:'RateLimitError',httpStatus:429,providerCode:'rate_limit_exceeded'
+ })
+ assert.equal(r.requests.length,1)
+ pass('outer provider catch logs only safe class/status/code and keeps fallback')
+
  const ordinary={...params,request:{...params.request,message:'Explícame la diferencia.'}}
  r=await run([invalid],ordinary);assert.ok(r.error);assert.equal(r.text,'PRIVATE_DRAFT');assert.equal(r.requests.length,1);assert.deepEqual(r.signals,[]);pass('visible text forbids retry and no artifact is salvaged')
  r=await run([{reply:'',artifacts:[]},{reply:'Respuesta completa',artifacts:[]}],ordinary);assert.equal(r.text,'Respuesta completa');assert.equal(r.deltas.length,1);pass('unbuffered empty emission permits exactly one recovery')
  r=await run([invalid,invalid]);assert.ok(r.error?.message.includes('no artifacts delivered'));assert.equal(r.text,'');assert.deepEqual(r.signals,[]);assert.equal(r.logs.length,2);pass('second structural failure is honest and publishes no partial turn')
  r=await run([invalid,new Error('PRIVATE_DRAFT')]);assert.ok(r.error);assert.equal(r.text,'');pass('retry transport failure is honest and sanitized')
  r=await run([invalid,{reply:'Explicación sin quiz',artifacts:[]},valid]);assert.equal(r.text,valid.reply);assert.equal(r.requests.length,3);pass('structural plus semantic recovery uses exactly two additional completions')
- r=await run([invalid,{reply:'Sin quiz',artifacts:[]},invalid]);assert.ok(r.error);assert.equal(r.text,'');assert.deepEqual(r.signals,[]);assert.equal(r.requests.length,3);pass('invalid final semantic closure cannot exceed global budget or deliver partial content')
+ r=await run([invalid,{reply:'Sin quiz',artifacts:[]},invalid]);assert.equal(r.error,undefined);assert.equal(r.text,'Sin quiz');assert.deepEqual(r.signals,[]);assert.equal(r.requests.length,3);pass('invalid optional semantic revision preserves the structurally valid tutor turn within global budget')
  for(const [cause,bad]of [['closure_json_invalid','{'],['closure_count',{envelope:[]}],['closure_type',{envelope:[{name:'other',args:'{}'}]}],['closure_count',{envelope:[{name:'complete_tutor_turn',args:'{}'},{name:'complete_tutor_turn',args:'{}'}]}]]){
   r=await run([bad,valid]);assert.equal(r.text,valid.reply);assert.equal(JSON.parse(r.logs[0][1]).cause,cause);pass(cause+' envelope recovery')
  }
@@ -81,5 +136,5 @@ try{
   r=await run([invalid,{...valid,artifacts:[signal]}]);assert.ok(r.error);assert.equal(r.text,'');assert.deepEqual(r.signals,[])
  }
  pass('retry retains PDF/image/native structural contracts; no partial artifact salvage')
-}finally{console.warn=warn}
+}finally{console.warn=warn;console.info=originalInfo;console.error=originalError}
 console.log(`PASS Gate B: ${count} recovery scenarios (mocked transport, actual mentor generator and artifact guards)`)

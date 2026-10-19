@@ -97,6 +97,7 @@ import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/con
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
 import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
+import { validateQuizAnswerKey } from '@/lib/quiz-answer-key'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -404,7 +405,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       tools: [COMPLETE_TUTOR_TURN_TOOL],
       tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
       messages: [{ role: 'system', content: system }, ...n.history, { role: 'user', content: user }],
-    }, { maxRetries: 0 })
+    })
     const gen = (async function* () {
       const calls = new Map<number, { name: string; args: string }>()
       let emitted = ''
@@ -466,7 +467,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
               { role: 'system', content: system }, ...n.history, { role: 'user', content: user },
               { role: 'system', content: 'Structural closure rejection: ' + inspected.cause },
             ],
-          }, { maxRetries: 0 })
+          })
         } catch {
           console.warn('[tutor-closure]', JSON.stringify({ cause: 'closure_retry_unavailable', artifactCount: null, artifactTypes: [] }))
           throw Error('Tutor turn could not be completed; no artifacts delivered')
@@ -485,7 +486,24 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
         if (protectQuiz) {
           const quizzes = turn.artifacts.filter(a => a.type === 'quiz')
           if (!quizzes.length) findings.push('missing_touch_quiz')
-          else if (!quizzes.some(q => materializeNativeArtifact(q)?.type === 'quiz')) findings.push('quiz_answer_key_not_verified')
+          else {
+            const materialized = quizzes.map(q => materializeNativeArtifact(q))
+            const gradable = materialized.some(a => a?.type === 'quiz' &&
+              (a as unknown as {content?:{gradingMode?:string}}).content?.gradingMode !== 'tutor_review')
+            if (!gradable) {
+              const review = materialized.find(a => a?.type === 'quiz')
+              if (!review) findings.push('quiz_answer_key_not_verified')
+              else {
+                const content = (review as unknown as {content:{
+                  gradingMode?:string;questions:Array<{question:string;options:string[];correct:number;explanation?:string}>
+                }}).content
+                // Runtime-proven reason + zero-based question index only.
+                // Never provide the expected grammatical form or answer key.
+                const reason = validateQuizAnswerKey(content.questions).reason ?? 'unverified_key'
+                findings.push('quiz_review_only:' + reason)
+              }
+            }
+          }
         }
         if (protectCurriculum) {
           const stages = (turn.reply.match(/(?:^|\n)\s*(?:#{1,3}\s*)?(?:[1-9][0-9]?[.)]|(?:fase|etapa|módulo)\s+[1-9])/gimu) ?? []).length
@@ -513,7 +531,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       }
       let accepted = closure
       const originalViolations = delayUntilValidated ? violations(closure) : []
-      let semanticStructureFailed = false
+      let semanticRecoveryAttempted = false
       if (originalViolations.length && additionalCompletions < 2) {
         // Same selected Tutor Maestro may revise one rejected turn. Runtime
         // supplies only factual validation findings, never a fabricated key.
@@ -522,6 +540,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           // using the SAME default model (or an explicitly configured override) when its output failed
           // an observable instrumental contract. No independent planner or router.
           const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || model
+          semanticRecoveryAttempted = true
           additionalCompletions++
           const revised = await openai.chat.completions.create({
             ...buildModelParams(recoveryModel, resolveOutputBudget(n.plan, pack), 0.2, 0.88),
@@ -545,17 +564,32 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
                 'Do not add an unrequested PDF.' },
               { role: 'user', content: user },
             ],
-          }, { maxRetries: 0 })
+          })
           const reviewed = inspectClosure((revised.choices?.[0]?.message?.tool_calls ?? []).map(c => ({ name: c.function.name, args: c.function.arguments })))
           const replacement = reviewed.turn
-          if (!replacement) semanticStructureFailed = true
-          else if (violations(replacement).length === 0) accepted = replacement
+          if (!replacement) {
+            // An optional semantic revision may not destroy the original
+            // structurally valid closure, including its tactile tutor_review.
+            console.warn('[tutor-validation] revision structurally invalid; original retained')
+          } else if (violations(replacement).length === 0) accepted = replacement
           else console.warn('[tutor-validation] revision did not close all checks:', originalViolations.join(','))
         } catch {
           console.warn('[tutor-validation] revision unavailable')
         }
       }
-      if (semanticStructureFailed) throw Error('Tutor turn could not be completed; no artifacts delivered')
+      if (protectQuiz) {
+        const finalQuizzes = accepted.artifacts.filter(a => a.type === 'quiz')
+          .map(q => materializeNativeArtifact(q))
+        const auto = finalQuizzes.some(a => a?.type === 'quiz' &&
+          (a as unknown as {content?:{gradingMode?:string}}).content?.gradingMode !== 'tutor_review')
+        const reviewed = finalQuizzes.some(a => a?.type === 'quiz')
+        // Safe per-turn telemetry: no questions, answers or learner content.
+        console.info('[quiz-grading]', JSON.stringify({
+          gradingMode: auto ? 'auto' : reviewed ? 'tutor_review' : 'none',
+          semanticRecoveryAttempted,
+          additionalCompletions,
+        }))
+      }
       if (delayUntilValidated) yield accepted.reply
       else if (structurallyRetried) yield accepted.reply
       else if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
@@ -571,6 +605,18 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     wrapped.artifactSignals = signals
     return wrapped
   } catch (err: unknown) {
+    const provider = err && typeof err === 'object' ? err as Record<string,unknown> : {}
+    const name = err instanceof Error ? err.name : ''
+    const errorClass = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'UnknownError'
+    const rawStatus = provider.status ?? provider.statusCode
+    const httpStatus = Number.isInteger(rawStatus) && Number(rawStatus) >= 400 && Number(rawStatus) <= 599
+      ? rawStatus : null
+    const code = provider.code
+    const providerCode = typeof code === 'string' && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(code)
+      ? code : null
+    // DAE: retain actionable provider class/status without logging requests,
+    // provider messages, prompts, credentials or arbitrary error strings.
+    console.error('[tutor-provider]', JSON.stringify({ errorClass, httpStatus, providerCode }))
     console.error('[tutor-closure]', JSON.stringify({ cause: 'completion_unavailable', artifactCount: null, artifactTypes: [] }))
     const gen = (async function* () {
       yield FALLBACKS[resolveInterfaceLanguage(n.state)] ?? FALLBACKS.en
