@@ -101,6 +101,7 @@ import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
   parseClosedTutorTurn,
+  diagnoseClosedTutorTurn,
   streamedTutorReplyPrefix,
   type ArtifactSignal,
 } from '@/lib/artifact-signal'
@@ -403,7 +404,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       tools: [COMPLETE_TUTOR_TURN_TOOL],
       tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
       messages: [{ role: 'system', content: system }, ...n.history, { role: 'user', content: user }],
-    })
+    }, { maxRetries: 0 })
     const gen = (async function* () {
       const calls = new Map<number, { name: string; args: string }>()
       let emitted = ''
@@ -423,15 +424,61 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           }
         }
       }
-      if (calls.size !== 1) throw Error('Tutor closure count invalid')
-      const call = [...calls.values()][0]
-      if (call.name !== 'complete_tutor_turn') throw Error('Tutor closure type invalid')
-      let decoded: unknown
-      try { decoded = JSON.parse(call.args) }
-      catch { throw Error('Tutor closure JSON invalid') }
-      const closure = parseClosedTutorTurn(decoded)
-      if (!closure) throw Error('Tutor turn did not close with a valid artifact decision')
-      if (!closure.reply.startsWith(emitted)) throw Error('Tutor streamed content mismatch')
+      // A turn has at most one structural retry and two extra completions in total.
+      // Keep the initial request's effective Tutor/model/context unchanged.
+      let additionalCompletions = 0
+      const inspectClosure = (entries: { name: string; args: string }[]) => {
+        let raw: unknown
+        let cause: string | null = null
+        if (entries.length !== 1) cause = 'closure_count'
+        else if (entries[0].name !== 'complete_tutor_turn') cause = 'closure_type'
+        else {
+          try { raw = JSON.parse(entries[0].args) }
+          catch { cause = 'closure_json_invalid' }
+          if (!cause) cause = diagnoseClosedTutorTurn(raw)
+        }
+        const turn = cause ? null : parseClosedTutorTurn(raw)
+        if (cause) {
+          const artifacts = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).artifacts : undefined
+          const list = Array.isArray(artifacts) ? artifacts : null
+          const knownTypes = COMPLETE_TUTOR_TURN_TOOL.function.parameters.properties.artifacts.items.properties.type.enum
+          // Never log model text, arguments, subjects, or arbitrary type strings.
+          console.warn('[tutor-closure]', JSON.stringify({
+            cause,
+            artifactCount: list?.length ?? null,
+            artifactTypes: list?.map(a => knownTypes.includes(a?.type) ? a.type : 'invalid') ?? [],
+          }))
+        }
+        return { turn, cause }
+      }
+      let inspected = inspectClosure([...calls.values()])
+      let structurallyRetried = false
+      if (!inspected.turn && (delayUntilValidated || emitted === '') && additionalCompletions < 2) {
+        structurallyRetried = true
+        additionalCompletions++
+        let revised
+        try {
+          revised = await openai.chat.completions.create({
+            ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
+            tools: [COMPLETE_TUTOR_TURN_TOOL],
+            tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
+            messages: [
+              { role: 'system', content: system }, ...n.history, { role: 'user', content: user },
+              { role: 'system', content: 'Structural closure rejection: ' + inspected.cause },
+            ],
+          }, { maxRetries: 0 })
+        } catch {
+          console.warn('[tutor-closure]', JSON.stringify({ cause: 'closure_retry_unavailable', artifactCount: null, artifactTypes: [] }))
+          throw Error('Tutor turn could not be completed; no artifacts delivered')
+        }
+        inspected = inspectClosure((revised.choices?.[0]?.message?.tool_calls ?? []).map(c => ({ name: c.function.name, args: c.function.arguments })))
+      }
+      const closure = inspected.turn
+      if (!closure) throw Error('Tutor turn could not be completed; no artifacts delivered')
+      if (!structurallyRetried && !closure.reply.startsWith(emitted)) {
+        console.warn('[tutor-closure]', JSON.stringify({ cause: 'streamed_reply_mismatch', artifactCount: closure.artifacts.length, artifactTypes: closure.artifacts.map(a => a.type) }))
+        throw Error('Tutor streamed content mismatch')
+      }
       const { materializeNativeArtifact } = await import('../core/native-artifact')
       const violations = (turn: typeof closure): string[] => {
         const findings: string[] = []
@@ -466,7 +513,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
       }
       let accepted = closure
       const originalViolations = delayUntilValidated ? violations(closure) : []
-      if (originalViolations.length) {
+      let semanticStructureFailed = false
+      if (originalViolations.length && additionalCompletions < 2) {
         // Same selected Tutor Maestro may revise one rejected turn. Runtime
         // supplies only factual validation findings, never a fabricated key.
         try {
@@ -474,6 +522,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
           // using the SAME default model (or an explicitly configured override) when its output failed
           // an observable instrumental contract. No independent planner or router.
           const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || model
+          additionalCompletions++
           const revised = await openai.chat.completions.create({
             ...buildModelParams(recoveryModel, resolveOutputBudget(n.plan, pack), 0.2, 0.88),
             tools: [COMPLETE_TUTOR_TURN_TOOL],
@@ -496,16 +545,19 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
                 'Do not add an unrequested PDF.' },
               { role: 'user', content: user },
             ],
-          })
-          const candidate = revised.choices?.[0]?.message?.tool_calls?.find(c => c.function.name === 'complete_tutor_turn')
-          const replacement = candidate ? parseClosedTutorTurn(JSON.parse(candidate.function.arguments)) : null
-          if (replacement && violations(replacement).length === 0) accepted = replacement
+          }, { maxRetries: 0 })
+          const reviewed = inspectClosure((revised.choices?.[0]?.message?.tool_calls ?? []).map(c => ({ name: c.function.name, args: c.function.arguments })))
+          const replacement = reviewed.turn
+          if (!replacement) semanticStructureFailed = true
+          else if (violations(replacement).length === 0) accepted = replacement
           else console.warn('[tutor-validation] revision did not close all checks:', originalViolations.join(','))
-        } catch (err) {
-          console.warn('[tutor-validation] revision unavailable:', err instanceof Error ? err.message : err)
+        } catch {
+          console.warn('[tutor-validation] revision unavailable')
         }
       }
+      if (semanticStructureFailed) throw Error('Tutor turn could not be completed; no artifacts delivered')
       if (delayUntilValidated) yield accepted.reply
+      else if (structurallyRetried) yield accepted.reply
       else if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
       // A PDF tool request is only authorized by the student's CURRENT
       // explicit intent. A malformed/undersized PDF signal must never tear
