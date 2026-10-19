@@ -16,6 +16,8 @@ import { recordedImmersionOfferPatch } from './commercial-context'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
+import { creditLearningProgress } from '../../lib/progress-tokens'
+import { unfulfilledExplicitDeliverables } from '../../lib/explicit-delivery'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -88,6 +90,9 @@ export function executePlanStream(
           artifactFailures = fulfilled.failures
         }
 
+        if (stream.deliveryFailure) console.warn('[tutor-delivery-failure]', stream.deliveryFailure)
+        artifactFailures.push(...unfulfilledExplicitDeliverables(request.message,state,plan,artifacts,artifactFailures))
+
         // P16 — VOICE CONVERSATION: if this turn started as spoken input,
         // the SAME text response Tutor Core just produced is also spoken by
         // default — a transport/turn-taking decision, not a pedagogical
@@ -119,7 +124,8 @@ export function executePlanStream(
         }
 
         const artifact = artifacts[0]
-        const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        const progress=creditLearningProgress(state,request)
+        const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
         Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
@@ -193,13 +199,13 @@ export function executePlanStream(
           // Now shares the same contextual builder as the blocking path —
           // same trigger conditions, same 2-4 relevant actions per mentor
           // specialty, for every transport.
-          suggestedActions: buildContextualActions({
+          suggestedActions: (progress.hitFive ? [{type:'create_visual_review',action:'create_visual_review',label:'Crear mi esquema visual'} as SuggestedAction] : []).concat(artifactFailures.length ? [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] : []).concat(buildContextualActions({
             pedagogicalAction: plan.pedagogicalAction,
             artifactType: artifact?.type,
             mentorProfile: (state as unknown as { mentorProfile?: string }).mentorProfile,
             interfaceLanguage: (state as unknown as { interfaceLanguage?: string }).interfaceLanguage,
             activeMode: (state as unknown as { activeMode?: string }).activeMode,
-          }),
+          })),
         })
         controller.close()
       } catch (err) {
@@ -212,15 +218,17 @@ export function executePlanStream(
         // document contract exactly like the original defect H, just via a
         // second, uncovered code path instead of the main one. Same shared
         // helper, same call shape, even on the error path.
-        const fallbackPatch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        const progressFallback=creditLearningProgress(state,request)
+        const fallbackPatch: Record<string, unknown> = {tokens:progressFallback.tokens,progressCredits:progressFallback.progressCredits,engagement:progressFallback.engagement}
         Object.assign(fallbackPatch, documentContractStatePatch(plan))
         const fallbackState = mergeStatePatch(state, fallbackPatch)
         // Same wire/internal split as the success path above — see the
         // comment there for why toWireState() must run on top of
         // mergeStatePatch() rather than being skipped on this branch.
-        emit({ delta: '\n\nNo pude completar esta entrega. Los materiales solicitados no están disponibles; inténtalo de nuevo.' })
+        emit({ delta: '\n\nNo se pudo completar la entrega solicitada. Puedes reintentar sin perder la conversación.' })
         emit({ done: true, state: toWireState(fallbackState, fallbackPatch),
-          artifactFailures: [{ subject: 'Entrega no completada en este turno' }] })
+          artifactFailures: [{ subject: 'Entrega no completada en este turno' }],
+          suggestedActions: [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] })
         controller.close()
       }
     },

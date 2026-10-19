@@ -47,7 +47,7 @@ assert.equal(materializeNativeArtifact(duplicates),null,'duplicate options remai
 const ui=fs.readFileSync(new URL('../app/beta/beta-schema-a.tsx',import.meta.url),'utf8')
 const hook=fs.readFileSync(new URL('../app/beta/use-beta-page.ts',import.meta.url),'utf8')
 assert.ok(ui.includes('lingora-quiz-review-request'))
-assert.ok(ui.includes('if (reviewMode || reported.current'))
+assert.ok(ui.includes('if (requiresReview || reported.current'))
 assert.ok(ui.includes('No se asignará una puntuación automática'))
 assert.ok(hook.includes("window.addEventListener('lingora-quiz-review-request'"))
 assert.ok(hook.includes("sin calificación automática"))

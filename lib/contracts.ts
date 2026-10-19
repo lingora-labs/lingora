@@ -441,6 +441,8 @@ export interface SessionState {
   activeMode: ActiveMode;
   tutorPhase: TutorPhase;
   tokens: number;
+  /** Credited evidence IDs: deduplication only; tokens is the single balance. */
+  progressCredits?: string[];
 
   mentorProfile?: 'Alex' | 'Sarah' | 'Nick';
   interfaceLanguage: InterfaceLanguage;

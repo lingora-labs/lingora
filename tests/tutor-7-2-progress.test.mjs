@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import {createRequire} from 'node:module'
+const require=createRequire(import.meta.url),ts=require('typescript')
+require.extensions['.ts']=(mod,path)=>mod._compile(ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,path)
+const {creditLearningProgress}=require('../lib/progress-tokens.ts')
+const now=Date.UTC(2026,9,19,12,0,0)
+const first={tokens:3,progressCredits:[],diagnosticSamples:0,engagement:{lastActive:now,streak:1,totalTokens:3,completedModules:[]}}
+let r=creditLearningProgress(first,{message:'Practiquemos'},now)
+assert.equal(r.tokens,4)
+assert.equal(r.hitFive,false)
+const quizEvidence={responses:[{question:'¿Cuál?',chosen:'A',expected:'A',correct:true,explanation:'Correcto'}],correctCount:1,total:1}
+r=creditLearningProgress({...first,tokens:4,quizEvidence},{message:'He completado el quiz: 1/1'},now)
+assert.equal(r.tokens,6)
+assert.equal(r.hitFive,true)
+const again=creditLearningProgress({...first,tokens:6,progressCredits:r.progressCredits,quizEvidence},{message:'He completado el quiz: 1/1'},now)
+assert.equal(again.earned,1,'no repeated correction award')
+const d=creditLearningProgress({...first,tokens:2,diagnosticSamples:1,confirmedLevel:'A1'},{message:'Siguiente actividad'},now)
+assert.equal(d.tokens,5)
+assert.equal(d.hitFive,true)
+const c=creditLearningProgress({...first,tokens:3,engagement:{...first.engagement,lastActive:now-86400000,streak:2}},{message:'He vuelto'},now)
+assert.equal(c.tokens,5)
+assert.equal(c.hitFive,true)
+const againC=creditLearningProgress({...first,tokens:5,progressCredits:c.progressCredits,engagement:{...first.engagement,lastActive:now-86400000}},{message:'Vuelvo'},now)
+assert.equal(againC.tokens,6)
+const stream=fs.readFileSync(new URL('../server/core/execution-engine-stream.ts',import.meta.url),'utf8')
+const ui=fs.readFileSync(new URL('../app/beta/use-beta-page.ts',import.meta.url),'utf8')
+assert.ok(stream.includes('progress.hitFive'))
+assert.ok(stream.includes("type:'create_visual_review'"))
+assert.ok(ui.includes("create_visual_review:"))
+assert.ok(ui.includes("window.addEventListener('lingora-suggested-action'"))
+console.log('PASS — one canonical token balance, Article 26 evidence and Article 27 tactile offer')

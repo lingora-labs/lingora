@@ -47,6 +47,7 @@ const LABELS: Record<string, Record<string, string>> = {
   request_pronunciation: { en: 'Practice pronunciation',    es: 'Practicar pronunciación',   no: 'Øv uttale' },
   continue_lesson:       { en: 'Continue',                  es: 'Continuar',                 no: 'Fortsett' },
   request_explanation:   { en: 'Explain more',              es: 'Explica más',               no: 'Forklar mer' },
+  create_visual_review: {en:'Create my visual schema',es:'Crear mi esquema visual',no:'Lag mitt visuelle skjema'},
 };
 
 function getLabel(type: string, lang: string): string {

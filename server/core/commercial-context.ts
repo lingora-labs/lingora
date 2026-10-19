@@ -3,6 +3,7 @@
 // Manifiesto's frequency ceiling and records only invitations actually sent.
 import type { SessionState, CommercialOffer } from '../../lib/contracts'
 import { hasPersistentPrivateStorage } from '../tools/storage'
+export const LEAD_CAPTURE_RELEASED = false // DAE privacy gate; do not override without legal/storage review
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const INVITATION_PATH = '/immersion'
@@ -23,7 +24,7 @@ function canInvite(state: Partial<SessionState>, now: number): boolean {
 }
 
 export function commercialContextForTurn(_message: string, state: Partial<SessionState>): string {
-  const permitted = hasPersistentPrivateStorage() && canInvite(state, Date.now())
+  const permitted = LEAD_CAPTURE_RELEASED && hasPersistentPrivateStorage() && canInvite(state, Date.now())
   const goal = state.lastUserGoal ?? state.userObjective ?? 'not yet established'
   const level = state.confirmedLevel ?? state.userLevel ?? 'not confirmed'
   return '\n\n[IMMERSION CONTEXT — MANIFIESTO ARTS. 34–37 bis]\n' +
@@ -40,7 +41,7 @@ export function recordedImmersionOfferPatch(
   state: SessionState, tutorReply: string, now = Date.now(),
 ): Pick<SessionState, 'commercialOffers'> | Record<string, never> {
   const mentioned = /(?:\]\(\s*\/immersion(?:[?#][^)]*)?\s*\)|(?:^|\s)\/immersion\b)/iu.test(tutorReply)
-  if (!mentioned || !hasPersistentPrivateStorage() || !canInvite(state, now)) return {}
+  if (!mentioned || !LEAD_CAPTURE_RELEASED || !hasPersistentPrivateStorage() || !canInvite(state, now)) return {}
   const history = recentOffers(state, now)
   return {
     commercialOffers: [...history, {

@@ -96,8 +96,6 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
-import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
-import { isExplicitImageRequest } from '@/server/core/artifact-side-effect'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
@@ -165,7 +163,7 @@ type NormalizedMentorCall = {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[] }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; deliveryFailure?: string }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -374,91 +372,55 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
-/**
- * Tutor First 7.1: one LLM, one conversational pathway.
- *
- * Ordinary turns stream native assistant text. The model may choose a tool
- * only when there is a materializable deliverable; an explicit user-requested
- * artifact requires the typed tool. The runtime never writes a second lesson,
- * alters a key, or instructs a grammatical rewrite.
- */
+/** 7.2: one Tutor, optional typed tools, no destruction of streamed text. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
-  const n = normalizeRuntimeCall(params)
-  const { system, user } = buildMentorPrompt({
-    message: n.message, state: n.state, systemDirective: n.systemDirective,
-    plan: n.plan, action: n.action, priorContext: n.priorContext,
-  })
-  const signals: ArtifactSignal[] = []
-  const pack = resolveTurnContextPack(n.message, n.state, n.plan)
-  // Explicit artifact requests require a typed payload. No tool call is
-  // required for a normal conversation, including the fifth study turn.
-  const needsArtifact = isExplicitQuizRequest(n.message)
-    || isExplicitPdfRequest(n.message, n.state.activeMode)
-    || Boolean(n.plan?.documentContractReady)
-    || isExplicitImageRequest(n.message)
-    || /(?:haz|crea|genera|mu[eé]strame|make|create|show)\b[^.!?]{0,80}\b(?:tabla|esquema|diagrama|table|schema|diagram)\b/iu.test(n.message)
-  const model = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
-  let response
-  try {
-    response = await openai.chat.completions.create({
-      ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
-      stream: true,
-      tools: [COMPLETE_TUTOR_TURN_TOOL],
-      tool_choice: needsArtifact
-        ? { type: 'function' as const, function: { name: 'complete_tutor_turn' } }
-        : 'auto',
-      messages: [{ role: 'system', content: system }, ...n.history, { role: 'user', content: user }],
-    })
-  } catch (error: unknown) {
-    // Provider errors are operational: never log student text or credentials.
-    const status = error && typeof error === 'object' && 'status' in error
-      ? Number((error as {status?:unknown}).status) : null
-    console.error('[tutor-provider]', JSON.stringify({
-      status: Number.isInteger(status) ? status : null,
-      class: error instanceof Error ? error.name : 'UnknownError',
-    }))
-    throw error
-  }
-  const gen = (async function* () {
-    const toolCalls = new Map<number, { name: string; args: string }>()
-    let freeText = ''
-    for await (const chunk of response) {
-      const delta = chunk.choices?.[0]?.delta
-      if (typeof delta?.content === 'string' && delta.content) {
-        freeText += delta.content
-        yield delta.content
-      }
-      for (const item of delta?.tool_calls ?? []) {
-        const prior = toolCalls.get(item.index) ?? { name: '', args: '' }
-        prior.name += item.function?.name ?? ''
-        prior.args += item.function?.arguments ?? ''
-        toolCalls.set(item.index, prior)
-      }
-    }
-    if (toolCalls.size === 0) {
-      if (needsArtifact) throw Error('requested_artifact_closure_missing')
-      if (!freeText.trim()) throw Error('tutor_empty_reply')
-      return
-    }
-    if (toolCalls.size !== 1) throw Error('tutor_multiple_closures')
-    const call = [...toolCalls.values()][0]
-    if (call.name !== 'complete_tutor_turn') throw Error('tutor_wrong_closure')
-    let raw: unknown
-    try { raw = JSON.parse(call.args) }
-    catch { throw Error('tutor_invalid_closure_json') }
-    const closed = parseClosedTutorTurn(raw)
-    if (!closed) throw Error('tutor_invalid_closure_schema')
-    if (freeText.trim() && freeText.trim() !== closed.reply.trim()) {
-      // Once streamed, text cannot be silently replaced by a different draft.
-      throw Error('tutor_reply_artifact_source_mismatch')
-    }
-    if (!freeText.trim()) yield closed.reply
-    const awaiting=Boolean(n.plan?.documentContractUpdate && !n.plan.documentContractReady)
-    const pdfAuthorized=!awaiting &&
-      (isExplicitPdfRequest(n.message,n.state.activeMode) || Boolean(n.plan?.documentContractReady))
-    signals.push(...closed.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
-  })()
-  const wrapped = gen as MentorStream
-  wrapped.artifactSignals = signals
-  return wrapped
+ const n=normalizeRuntimeCall(params)
+ const {system,user}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext})
+ const signals:ArtifactSignal[]=[]
+ const pack=resolveTurnContextPack(n.message,n.state,n.plan)
+ const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
+ let response:AsyncIterable<any>|undefined
+ try{
+   response=await openai.chat.completions.create({
+     ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
+     stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],tool_choice:'auto',
+     messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
+   })
+ }catch(e){
+   const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
+   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError'}))
+ }
+ const wrapped=(async function*(){
+   const calls=new Map<number,{name:string;args:string}>()
+   let spoken=''
+   const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
+   if(!response){fail('provider_unavailable');yield fallback;return}
+   try{
+     for await(const chunk of response){
+       const d=chunk.choices?.[0]?.delta
+       if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
+       for(const t of d?.tool_calls??[]){
+         const c=calls.get(t.index)??{name:'',args:''}
+         c.name+=t.function?.name??''
+         c.args+=t.function?.arguments??''
+         calls.set(t.index,c)
+       }
+     }
+   }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
+   if(!calls.size){if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   if(calls.size!==1){fail('multiple_tool_calls');if(!spoken.trim())yield fallback;return}
+   const call=[...calls.values()][0]
+   if(call.name!=='complete_tutor_turn'){fail('unknown_tool');if(!spoken.trim())yield fallback;return}
+   let raw:unknown
+   try{raw=JSON.parse(call.args)}catch{fail('invalid_tool_json');if(!spoken.trim())yield fallback;return}
+   const closed=parseClosedTutorTurn(raw)
+   if(!closed){fail('invalid_tool_contract');if(!spoken.trim())yield fallback;return}
+   if(spoken.trim()&&spoken.trim()!==closed.reply.trim()){fail('tool_reply_mismatch');return}
+   if(!spoken.trim()){spoken=closed.reply;yield closed.reply}
+   const pending=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
+   const pdfOk=!pending&&(isExplicitPdfRequest(n.message,n.state.activeMode)||Boolean(n.plan?.documentContractReady))
+   signals.push(...closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk))
+ })() as MentorStream
+ wrapped.artifactSignals=signals
+ return wrapped
 }
