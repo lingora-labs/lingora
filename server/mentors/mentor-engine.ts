@@ -571,7 +571,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
     wrapped.artifactSignals = signals
     return wrapped
   } catch (err: unknown) {
-    console.error('[MENTOR] tutor closure failure', err instanceof Error ? err.message : err)
+    console.error('[tutor-closure]', JSON.stringify({ cause: 'completion_unavailable', artifactCount: null, artifactTypes: [] }))
     const gen = (async function* () {
       yield FALLBACKS[resolveInterfaceLanguage(n.state)] ?? FALLBACKS.en
     })()
