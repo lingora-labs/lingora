@@ -96,6 +96,8 @@ import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
+import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
+import { isExplicitImageRequest } from '@/server/core/artifact-side-effect'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
@@ -378,12 +380,19 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const {system,user}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext})
  const signals:ArtifactSignal[]=[]
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
+ // An explicit student authorization is a binding delivery contract, not a
+ // classifier deciding what the Tutor may teach. Free conversation stays auto.
+ const mustDeliver = isExplicitPdfRequest(n.message,n.state.activeMode)
+   || isExplicitQuizRequest(n.message)
+   || isExplicitImageRequest(n.message)
+   || Boolean(n.plan?.documentContractReady)
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
-     stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],tool_choice:'auto',
+     stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],
+     tool_choice: mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
      messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
    })
  }catch(e){
@@ -413,7 +422,18 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    if(call.name!=='complete_tutor_turn'){fail('unknown_tool');if(!spoken.trim())yield fallback;return}
    let raw:unknown
    try{raw=JSON.parse(call.args)}catch{fail('invalid_tool_json');if(!spoken.trim())yield fallback;return}
-   const closed=parseClosedTutorTurn(raw)
+   // Preserve valid independent deliverables even if another entry in the
+   // same closure was malformed. Never bypass any artifact validator.
+   let closed=parseClosedTutorTurn(raw)
+   if(!closed && raw && typeof raw==='object'){
+     const item=raw as Record<string,unknown>
+     const reply=typeof item.reply==='string'?item.reply:''
+     const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
+     if(reply.trim()){
+       const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
+       if(valid.length) closed={reply,artifacts:valid}
+     }
+   }
    if(!closed){fail('invalid_tool_contract');if(!spoken.trim())yield fallback;return}
    if(spoken.trim()&&spoken.trim()!==closed.reply.trim()){fail('tool_reply_mismatch');return}
    if(!spoken.trim()){spoken=closed.reply;yield closed.reply}

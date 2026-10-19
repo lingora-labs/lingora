@@ -27,3 +27,6 @@ Manifiesto 7.1: arts. 47–52, Tutor Maestro cognitivo primero; runtime autoriza
 
 ## Deuda declarada, no ocultada
 Las pruebas heredadas de recuperación estructural que esperan llamadas/reintentos eliminados no forman parte del build y deben actualizarse o archivarse con decisión DAE. El build no acredita interacción de navegador, PDFs/HTML reales ni SEEК 89,90/90.
+
+### QA confirmada 7.2 — intento explícito, entrega obligatoria
+Un intento de PDF+HTML en Chromium mostró una respuesta introductoria sin archivo. El control de autorización ya reconoce la petición; el fallo era permitir que el modelo omitiera el canal instrumental aun cuando entregar bytes era obligación. Se exige la llamada typed únicamente cuando el usuario solicita PDF, imagen o quiz, o un documento multiturmo queda autorizado; la conversación general conserva tool_choice auto. Esto NO decide el contenido, solo garantiza el canal de entrega. Los componentes del cierre se validan individualmente antes de materializarse. Fallos se registran sin sustituir texto.

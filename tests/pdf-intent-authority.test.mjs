@@ -26,7 +26,7 @@ const mentor=fs.readFileSync(new URL('../server/mentors/mentor-engine.ts',import
 const fulfillment=fs.readFileSync(new URL('../server/core/artifact-side-effect.ts',import.meta.url),'utf8')
 assert.ok(!mentor.includes("throw Error('PDF requested without sufficient teaching content')"),'PDF must not destroy the tutor turn')
 assert.ok(mentor.includes("closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk)"),'PDF side effect retains explicit authorization')
-assert.ok(mentor.includes("tool_choice:'auto'"),'all dialogue must leave tool choice to Tutor')
+assert.ok(mentor.includes("tool_choice: mustDeliver ?"),'explicit PDF delivery requires typed payload, not a mere promise')
 assert.ok(fulfillment.includes('if (pedagogicalContent.trim().length < 500)'))
 assert.ok(fulfillment.includes('failures.push('))
 for(const message of [
