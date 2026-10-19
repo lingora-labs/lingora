@@ -530,7 +530,9 @@ export type SuggestedActionType =
   | 'resume_course'
   | 'request_immersion'
   | 'request_pronunciation'
-  | 'diagnostic_start';
+  | 'diagnostic_start'
+  | 'create_visual_review'
+  | 'retry_delivery';
 
 export interface SuggestedAction {
   type: SuggestedActionType;
