@@ -280,7 +280,7 @@ export function useBetaPage() {
         download_course_pdf: 'Descarga el curso completo en PDF', review_errors: 'Repasa mis errores recurrentes',
         request_correction: 'Corrige lo que he escrito', request_translation: 'Traduce esto',
         hear_audio: 'Lee esto en voz alta', show_schema_pro: 'Hazme un esquema avanzado',
-        show_image: 'Genera un diagrama visual de este tema', create_visual_review: 'Crea un esquema visual interactivo de refuerzo sobre lo aprendido, con contenido real y exportación a PNG y PDF', start_course: 'Empezamos el curso',
+        show_image: 'Genera un diagrama visual de este tema', create_visual_review: 'Crea un esquema visual interactivo de refuerzo sobre el último contenido que aprendimos. Incluye conceptos verificables y ejemplos reales. Entrégalo ahora como componente táctil.', start_course: 'Empezamos el curso',
         resume_course: 'Continúa el curso donde lo dejamos', choose_examples: 'Ver ejemplos reales',
         choose_exercise: 'Hacer un ejercicio', request_immersion: 'Cuéntame sobre la inmersión',
         diagnostic_start: 'Evalúa mi nivel de español',
@@ -295,6 +295,9 @@ export function useBetaPage() {
       if (actionKey === 'export_chat_pdf') {
         const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
         callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
+      } else if (actionKey === 'create_visual_review') {
+        // Exact touch intent, not a PDF keyword and not a cognitive router.
+        callAPI({ message: msg, uiAction: 'create_visual_review' })
       } else if (actionKey === 'download_pdf' || actionKey === 'hear_audio') {
         // Instrumental touch actions operate on the tutor content already on
         // screen. They do not inject an artificial student utterance.

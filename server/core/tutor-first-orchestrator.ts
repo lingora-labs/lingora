@@ -11,7 +11,7 @@ import type { ExecutionPlan, SessionState } from '../../lib/contracts'
 import { buildTutorFirstPlan } from './tutor-first-plan'
 import { reconcileDocumentContract } from './document-contract'
 
-export type RuntimeOperation = 'export_chat_pdf'|'download_pdf'|'hear_audio'|undefined
+export type RuntimeOperation = 'export_chat_pdf'|'download_pdf'|'hear_audio'|'create_visual_review'|undefined
 export interface RuntimePlanInput {
   message: string
   state: SessionState
@@ -38,7 +38,7 @@ function assertExecutionPlan(plan:ExecutionPlan):ExecutionPlan {
 
 export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   const {message,state,interfaceLanguage,uiAction}=input
-  if(uiAction && !['export_chat_pdf','download_pdf','hear_audio'].includes(uiAction)) {
+  if(uiAction && !['export_chat_pdf','download_pdf','hear_audio','create_visual_review'].includes(uiAction)) {
     throw new Error('orchestration invariant: unauthorized UI operation')
   }
   if(message.trim()==='*1357*#' || message.trim()==='*2468*#') {

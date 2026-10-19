@@ -556,7 +556,7 @@ export interface ChatRequest {
   message: string;
   exportTranscript?: string;
   // 7.1 — explicit UI operation, not language intent inferred from conversation.
-  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio';
+  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review';
   // Material currently visible to the student, supplied by an explicit UI click.
   materialText?: string;
   state: SessionState;

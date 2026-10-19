@@ -299,7 +299,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
           .join('\n\n')
       }
     }
-    if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio'] as string[]).includes(body.uiAction)) {
+    if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio', 'create_visual_review'] as string[]).includes(body.uiAction)) {
       return errorResponse(400, 'Unsupported UI operation', state);
     }
     const plan=orchestrateTutorFirst({
