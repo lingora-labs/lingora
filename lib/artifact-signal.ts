@@ -158,6 +158,34 @@ export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
   }
   return { reply: r.reply, artifacts: dedupeSignals(artifacts) }
 }
+/** First factual rejection, in parser order. No source content is returned. */
+export function diagnoseClosedTutorTurn(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return 'closure_invalid'
+  const r = raw as Record<string, unknown>
+  if (typeof r.reply !== 'string' || !r.reply.trim()) return 'reply_empty'
+  if (!Array.isArray(r.artifacts)) return 'artifacts_invalid'
+  if (r.artifacts.length > 5) return 'artifact_count'
+  for (const [i, item] of r.artifacts.entries()) {
+    if (!item || typeof item !== 'object') return `artifact_invalid:${i}`
+    const o = item as Record<string, unknown>
+    if (!TYPES.includes(o.type as ArtifactSignalType)) return `invalid_type:${i}`
+    if (!TRIGGERS.includes(o.trigger as ArtifactSignalTrigger)) return `invalid_trigger:${i}`
+    if (typeof o.subject !== 'string' || o.subject.trim().length < 2) return `bad_subject:${i}`
+    const s = parseArtifactSignal(item)!
+    if (s.type === 'emit_pdf') {
+      if (s.trigger !== 'explicit_user_request' || !['pdf', 'pdf_html'].includes(s.format ?? '')) return `pdf_contract:${i}`
+    } else if (s.type === 'emit_audio') {
+      if (s.format !== 'audio') return `audio_contract:${i}`
+    } else if (s.type === 'emit_image') {
+      if (s.trigger !== 'explicit_user_request' || s.format !== 'image') return `image_contract:${i}`
+    } else if (s.type === 'table_matrix' || s.type === 'schema_pro' || s.type === 'quiz') {
+      if (s.format !== 'native') return `native_format:${i}`
+      if (!s.content) return `native_missing_content:${i}`
+    } else return `unsupported_type:${i}`
+  }
+  return null
+}
+
 /** Stream the tutor's reply string only, decoding complete JSON escape sequences. */
 export function streamedTutorReplyPrefix(json: string): string {
   const marker = /"reply"\s*:\s*"/.exec(json)
