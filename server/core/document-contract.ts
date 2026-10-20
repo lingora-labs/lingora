@@ -54,6 +54,20 @@ function initialTopic(message:string):string|null{
 }
 const courseRequest=(message:string)=>wants.test(message)&&courseNoun.test(message)&&/\bpdf\b/iu.test(message)&&!isPdfProhibitedByUser(message)
 
+// A dual PDF+HTML request that already carries its own content specification
+// is complete: the student's own words are the brief. It is not a course form
+// waiting for a CEFR level; the Tutor adapts level and depth from the
+// conversation and the request itself.
+const selfSufficientDualRequest=(message:string)=>
+  isPdfAndWebRequest(message) && message.trim().split(/\s+/).length>=14
+// The brief is what follows the format mention, not the framing before it.
+function describedTopic(message:string):string{
+ const after=message.replace(/^[\s\S]*?\bpdf\b(?:\s+y\s+(?:una?\s+)?versi[oó]n\s+(?:web\s+)?(?:html|web))?/iu,'')
+   .replace(/^[,;.\s:-]+/,'').trim()
+ const brief=after.length>=3?after:message.trim()
+ return brief.slice(0,100)
+}
+
 export function reconcileDocumentContract(
   message:string, state:Pick<SessionState,'pendingDocumentRequest'|'tokens'>,
 ):DocumentDecision {
@@ -81,12 +95,14 @@ export function reconcileDocumentContract(
  // lastConcept or curriculum history.
  const contextLevel=extractLevel(input)
  const freshRequest=courseRequest(input)
- // A complete explicit dual-format request WITH a declared level is not an
- // unfinished course-registration form. Its own words are a valid topic
- // specification even without the formula "guía sobre X". The original
- // request, not the runtime, remains authoritative for subject and scope.
+ // A complete explicit dual-format request, either with a declared level or
+ // with a self-sufficient brief, is not an unfinished course-registration
+ // form. Its own words are a valid topic specification even without the
+ // formula "guía sobre X". The original request, not the runtime, remains
+ // authoritative for subject and scope.
+ const selfSufficient=freshRequest&&selfSufficientDualRequest(input)
  const contextTopic=freshRequest
-   ? (initialTopic(input)??(contextLevel&&isPdfAndWebRequest(input)?input.slice(0,100):null))
+   ? (initialTopic(input)??(contextLevel&&isPdfAndWebRequest(input)?input.slice(0,100):(selfSufficient?describedTopic(input):null)))
    : prior?extractTopic(input,!contextLevel):null
  const contract:PendingDocumentRequest={
    type:'course_pdf',level:contextLevel??prior?.level??null,
@@ -95,7 +111,7 @@ export function reconcileDocumentContract(
    openedAtToken:freshRequest?(state.tokens??0):prior?.openedAtToken??(state.tokens??0),
    format:isPdfAndWebRequest(input)?'pdf_html':(freshRequest?'pdf':prior?.format??'pdf'),
  }
- const kind:DocumentDecision['kind']=contract.level&&contract.topic?'ready':prior?'continue':'open'
+ const kind:DocumentDecision['kind']=contract.topic&&(contract.level||selfSufficient)?'ready':prior?'continue':'open'
  return{kind,next:contract,reason:kind==='ready'
    ?'Explicit document parameters ready; Tutor Maestro owns content and PDF decision'
    :'Document parameters collected without taking ownership of tutoring'}
