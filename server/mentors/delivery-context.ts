@@ -26,7 +26,7 @@ export function deliveryContextForTurn(
   if (!isExplicitPdfRequest(message, activeMode)) return ''
   return '\n\n[DELIVERY CONTEXT - THIS TURN] ' +
     'The student explicitly requested downloadable material (PDF and/or web HTML). ' +
-    'This capability is available right now: when you finish, the platform renders exactly the text you write as a real PDF and web HTML and attaches them to your answer. ' +
-    'Write the complete requested document now as your answer, in every language the student asked for, including exercises and solutions. ' +
-    'Do not say that you cannot create or attach files, do not offer an outline or a promise, and do not claim that any file exists beyond this answer. No tool call is needed.'
+    'This capability is available right now and is performed by the platform, not by you: it takes the text of your answer, renders it as a real PDF and web HTML, and attaches both files with download buttons. ' +
+    'Therefore your answer IS the document: begin directly with its title and write the complete requested material in every language the student asked for, including exercises and solutions. ' +
+    'Do not write any preface or closing about files, formats, conversion, access or what you can or cannot do, and do not offer an outline or a promise. No tool call is needed.'
 }
