@@ -36,6 +36,14 @@ for(const message of [
  'Descarga el historial de esta conversación en PDF',
 ]) assert.equal(isConversationPdfExportRequest(message),true,message)
 for(const message of [
+ 'Cambiemos de tema: crea un PDF descargable y una versión HTML web sobre cómo redactar una reclamación hotelera profesional en inglés de nivel B2; incluye expresiones útiles, diálogo, ejercicios y sus respuestas. Entrega ambos ahora.',
+ 'Prepara un PDF con diálogos de cafetería y la versión web HTML.',
+ 'Crea un PDF sobre una conversación de ficción entre dos huéspedes.',
+]) {
+ assert.equal(isConversationPdfExportRequest(message),false,'not a transcript export: '+message)
+ assert.equal(isExplicitPdfRequest(message),true,'legitimate PDF request: '+message)
+}
+for(const message of [
  'No exportes esta conversación a PDF',
  '¿Cómo se exporta un chat a PDF?',
  'Genera un PDF sobre SER y ESTAR',

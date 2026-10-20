@@ -27,12 +27,16 @@ export function isExplicitPdfRequest(message: string, activeMode?: string): bool
 export function isConversationPdfExportRequest(message:string):boolean {
   const text=message.trim()
   if (/^(?:no|sin|don't|do not)\b/iu.test(text)) return false
-  // An informational question about HOW to export is not an authorization
-  // to produce a file and must preserve the user's explicit intent.
   if (/^¿?\s*(?:c[oó]mo|cu[aá]l es la forma|d[oó]nde|qu[eé] pasos)\b/iu.test(text)) return false
   if (!/\bpdf\b/iu.test(text)) return false
-  if (!/\b(?:conversaci[oó]n|chat|historial|dialogo|di[aá]logo)\b/iu.test(text)) return false
-  return /\b(?:exporta(?:r)?|exportar|descarga(?:r)?|descargar|genera(?:r)?|crear?|prepara(?:r)?|convierte|quiero\s+exportar|necesito\s+exportar)\b/iu.test(text)
+  // Exporting the EXISTING dialogue is an instrumental operation; asking
+  // for a new document ABOUT a dialogue is an entirely different intention.
+  // Never treat an incidental "incluye un diálogo" as a transcript export.
+  const explicitExport=/\b(?:exporta(?:r)?|descarga(?:r)?|convierte|genera(?:r)?|prepara(?:r)?|crea(?:r)?|haz|quiero\s+exportar|necesito\s+exportar|p[aá]same)\b/iu
+  if(!explicitExport.test(text))return false
+  const direct=/\b(?:exporta(?:r)?|descarga(?:r)?|convierte|p[aá]same)\s+(?:(?:todo|toda|el|la|este|esta|mi|nuestro|nuestra)\s+){0,3}(?:conversaci[oó]n|chat|historial|di[aá]logo)\b/iu
+  const owned=/\b(?:esta|mi|nuestra|nuestro)\s+conversaci[oó]n\b|\b(?:mi|este|el|nuestro|nuestra)\s+(?:historial|chat)\b|\b(?:este|nuestro)\s+di[aá]logo\b|\bhistorial\s+de\s+(?:la|esta)\s+conversaci[oó]n\b/iu
+  return direct.test(text)||owned.test(text)
 }
 
 // Instrumental checks only — never route or author the tutor's cognitive answer.
