@@ -9,6 +9,7 @@ const accept=[
  'Quiero un PDF y HTML con la explicación y ejercicios',
  'Genera el PDF de esta lección',
  'Prepara una guía descargable en PDF',
+ 'Necesito material de práctica en nivel B1 sobre el pretérito perfecto frente al indefinido: ejemplos en español, cinco ejercicios y claves razonadas. Entrégame un documento PDF descargable y su página HTML en esta misma respuesta.',
  'Exporta esta conversación a PDF',
 ]
 const reject=[

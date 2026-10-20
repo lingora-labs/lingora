@@ -192,7 +192,10 @@ export async function fulfillArtifactSignals(
     // Honest failure for an explicitly requested file: preserve the tutor
     // response and other successful native artifacts rather than raising
     // an exception that destroys the whole turn.
-    if (pedagogicalContent.trim().length < 500) {
+    // Do not convert a Tutor refusal into deceptively downloadable files.
+    const sourceText=pedagogicalContent.trim()
+    const refusalSource=sourceText.length<1800 && /\b(?:no tengo acceso|no dispongo de acceso|no puedo (?:generar|adjuntar|crear)|no tengo la capacidad de generar)\b/iu.test(sourceText.slice(0,800))
+    if (pedagogicalContent.trim().length < 500 || refusalSource) {
       failures.push({ subject: signal.subject + ' (PDF: explicación insuficiente)' })
       continue
     }

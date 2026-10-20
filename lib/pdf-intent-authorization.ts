@@ -14,6 +14,8 @@ export function isExplicitPdfRequest(message: string, activeMode?: string): bool
       /\b(?:prepara|genera|crea|entrega|haz|quiero|necesito)\b/iu.test(text)) return true
   const mentionsPdf = /\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)
   if (!mentionsPdf) return false
+  // Late-sentence explicit requests are authorizations, not cognitive routing.
+  if (/\b(?:entr[eé]g(?:a(?:me)?|ue(?:me)?)|adjunta|env[ií]ame|facil[ií]tame)\b[\s\S]{0,130}\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)) return true
   if (/\b(?:genera|prepara|crea|haz|convierte|quiero|necesito|elabora|exporta|descarga|dame|produce|create|generate|make|export|download)\b[\s\S]{0,160}\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)) return true
   if (/\b(?:pdf|archivo imprimible|documento descargable)\b.{0,60}\b(?:ahora|por favor|please|de este|del curso|completo)\b/iu.test(text)) return true
   return false
