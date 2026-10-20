@@ -119,7 +119,7 @@ assert.ok(stream.includes('tutorSignals.filter(s => s.type !== \'emit_pdf\')'),'
 assert.ok(stream.includes("subject: plan.documentContractUpdate.topic,format: plan.documentContractUpdate.format ?? 'pdf'"),'course authoring must materialize a requested PDF rather than merely show native schema')
 assert.ok(stream.includes('documentContractStatePatch(plan, artifacts)'))
 assert.ok(stream.includes('directFormat || plan.documentContractControlOnly'),'the tutor cannot inject artifacts during contract-only turns')
-assert.ok(!stream.includes('groundedMilestoneReview('),'no forced fifth-turn visuals or cancellation artifacts')
+assert.ok(stream.includes("request.uiAction==='create_visual_review'"),'only the explicit Article 27 action can materialize grounded visual reviews')
 assert.ok(stream.includes('documentContractStatePatch(plan)'),'failure path must clear on redirect')
 assert.ok(block.includes('documentContractStatePatch(plan, artifact ? [artifact] : [])'))
 console.log('PASS — Tutor First contract: open/level+topic/ready/cancel/redirect/format/expired/transport/block+SSE')

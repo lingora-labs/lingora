@@ -280,7 +280,7 @@ export function useBetaPage() {
         download_course_pdf: 'Descarga el curso completo en PDF', review_errors: 'Repasa mis errores recurrentes',
         request_correction: 'Corrige lo que he escrito', request_translation: 'Traduce esto',
         hear_audio: 'Lee esto en voz alta', show_schema_pro: 'Hazme un esquema avanzado',
-        show_image: 'Genera un diagrama visual de este tema', create_visual_review: 'Crea un esquema visual interactivo de refuerzo sobre el último contenido que aprendimos. Incluye conceptos verificables y ejemplos reales. Entrégalo ahora como componente táctil.', start_course: 'Empezamos el curso',
+        show_image: 'Genera un diagrama visual de este tema', create_visual_review: 'Desarrolla un esquema de repaso del último tema con al menos cuatro ideas sustantivas, explicaciones claras y ejemplos concretos, en secciones separadas.', start_course: 'Empezamos el curso',
         resume_course: 'Continúa el curso donde lo dejamos', choose_examples: 'Ver ejemplos reales',
         choose_exercise: 'Hacer un ejercicio', request_immersion: 'Cuéntame sobre la inmersión',
         diagnostic_start: 'Evalúa mi nivel de español',

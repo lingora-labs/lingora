@@ -101,6 +101,15 @@ export function executePlanStream(
           artifactFailures = fulfilled.failures
         }
 
+        // Article 27 is explicit UI authorization. The SAME tutor's real
+        // free-text lesson becomes an expandable native review via the existing
+        // validated materializer; no JSON tool output or second teacher.
+        if(request.uiAction==='create_visual_review'){
+          const { groundedMilestoneReview } = await import('./native-artifact')
+          const review=groundedMilestoneReview(fullText,[],state.currentLessonTopic||'Último tema estudiado')
+          if(review)artifacts.push(review)
+          else artifactFailures.push({subject:'Esquema de refuerzo: falta contenido desarrollado'})
+        }
         if (stream.deliveryFailure) console.warn('[tutor-delivery-failure]', stream.deliveryFailure)
         artifactFailures.push(...unfulfilledExplicitDeliverables(request.message,state,plan,artifacts,artifactFailures))
 
