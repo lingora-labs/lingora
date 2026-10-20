@@ -6,6 +6,9 @@ import Module from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import {createRequire} from 'node:module'
+const require=createRequire(import.meta.url)
+require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,file)
 
 function load(relative) {
   const filename = fileURLToPath(new URL('../' + relative, import.meta.url))
