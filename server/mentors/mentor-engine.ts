@@ -388,15 +388,15 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // A clicked Article 27 review is a document-formatting effect, not a
  // need to pack a long teaching explanation into fragile JSON arguments.
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
- const mustDeliver = !wantsPdf && !wantsVisualReview && (isExplicitQuizRequest(n.message)
-   || isExplicitImageRequest(n.message))
+ const wantsQuiz = isExplicitQuizRequest(n.message)
+ const mustDeliver = !wantsPdf && !wantsVisualReview && !wantsQuiz && isExplicitImageRequest(n.message)
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
      stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],
-     tool_choice: wantsPdf || wantsVisualReview ? 'none' : mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
+     tool_choice: wantsPdf || wantsVisualReview || wantsQuiz ? 'none' : mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
      messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
    })
  }catch(e){

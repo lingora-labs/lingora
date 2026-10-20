@@ -44,6 +44,13 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
     if ((c.questions as unknown[]).some(q =>
       obj(q) && ((String(q.question).match(/_{2,}/g) ?? []).length > 1 ||
       (String(q.question).match(/\.{3,}/g) ?? []).length > 1))) return null
+    const isUnscoredReview = c.gradingMode === 'tutor_review' && (c.questions as unknown[]).every(q =>
+      obj(q) && q.correct === -1 && str(q.question) && strings(q.options,2,4))
+    if (isUnscoredReview) {
+      // -1 is an internal NO-KEY sentinel. It is never a correct answer.
+      // The UI must ask the same Tutor to review the student's actual clicks.
+      return {type:'quiz',content:c} as unknown as ArtifactPayload
+    }
     const ok = (c.questions as unknown[]).every(q => obj(q) && str(q.question) &&
       strings(q.options, 2, 4) && typeof q.correct === 'number' &&
       Number.isInteger(q.correct) && q.correct >= 0 &&
@@ -105,5 +112,44 @@ export function groundedMilestoneReview(
     type:'schema_pro',trigger:'pedagogical_completion',subject:topic,format:'native',
     content:{title:'Refuerzo visual · ' + topic.slice(0,90),blocks},
   }
+  return materializeNativeArtifact(signal)
+}
+
+
+/** Syntax-only adapter: extract ONLY the questions/options the sole Tutor wrote.
+ * Never infer correct answers. A review quiz has no machine-verified key.
+ */
+export function tutorQuizFromText(text:string):ArtifactPayload|null {
+  type Draft={question:string;options:string[]}
+  const drafts:Draft[]=[]
+  let current:Draft|null=null
+  const question=/^\s*(?:#{1,4}\s*)?(?:\*{0,2})?(?:(?:pregunta|question)\s*)?([1-8])\s*[).:\-–]?\s*(.*)$/iu
+  const option=/^\s*(?:[-*]\s*)?(?:\*{0,2})?([A-D])(?:\*{0,2})\s*[).:\-]\s*(.*)$/iu
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim().replace(/^\*{2}|\*{2}$/g,'').trim()
+    const q=line.match(question)
+    if(q){
+      if(current)drafts.push(current)
+      current={question:q[2]?.trim()??'',options:[]}
+      continue
+    }
+    const opt=line.match(option)
+    if(opt&&current){
+      const value=opt[2].trim().replace(/^\*{2}|\*{2}$/g,'').trim()
+      if(value)current.options.push(value)
+      continue
+    }
+    if(current&&!current.options.length&&line&&!/^(?:respuestas?|solutions?|instrucciones?|quiz|simulacro)\b/iu.test(line)){
+      current.question=(current.question+' '+line).trim()
+    }
+  }
+  if(current)drafts.push(current)
+  const complete=drafts.filter(q=>q.question.length>=6 && q.question.length<=1800 &&
+    q.options.length>=2 && q.options.length<=4 && new Set(q.options.map(v=>v.toLocaleLowerCase())).size===q.options.length)
+  if(complete.length<2 || complete.length>8 || complete.length!==drafts.length)return null
+  const signal:ArtifactSignal={type:'quiz',trigger:'explicit_user_request',
+    subject:'Quiz solicitado',format:'native',
+    content:{title:'Quiz táctil — revisión con el Tutor',gradingMode:'tutor_review',
+      questions:complete.map(q=>({...q,correct:-1,explanation:''}))}}
   return materializeNativeArtifact(signal)
 }

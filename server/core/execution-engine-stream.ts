@@ -19,6 +19,7 @@ import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-con
 import { creditLearningProgress } from '../../lib/progress-tokens'
 import { unfulfilledExplicitDeliverables } from '../../lib/explicit-delivery'
 import { isExplicitPdfRequest, isPdfAndWebRequest } from '../../lib/pdf-intent-authorization'
+import { isExplicitQuizRequest } from '../../lib/quiz-intent-guard'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
@@ -99,6 +100,16 @@ export function executePlanStream(
           const fulfilled = await fulfillArtifactSignals(signals, fullText, state, request.message, plan)
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
+        }
+
+        // The student requested a tactile quiz. The ONE Tutor authored its real
+        // questions and options in free text; parse structure only, NEVER keys.
+        // Every such quiz is tutor_review: no automatic score from guessed data.
+        if(isExplicitQuizRequest(request.message) && !directFormat && !plan.documentContractControlOnly){
+          const { tutorQuizFromText } = await import('./native-artifact')
+          const quiz=tutorQuizFromText(fullText)
+          if(quiz)artifacts.push(quiz)
+          else artifactFailures.push({subject:'Quiz táctil solicitado: faltan preguntas u opciones válidas'})
         }
 
         // Article 27 is explicit UI authorization. The SAME tutor's real

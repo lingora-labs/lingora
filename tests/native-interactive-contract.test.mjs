@@ -20,7 +20,7 @@ function load(relative) {
 }
 
 const { parseClosedTutorTurn, COMPLETE_TUTOR_TURN_TOOL } = load('lib/artifact-signal.ts')
-const { materializeNativeArtifact, groundedMilestoneReview } = load('server/core/native-artifact.ts')
+const { materializeNativeArtifact, groundedMilestoneReview, tutorQuizFromText } = load('server/core/native-artifact.ts')
 const allowed = COMPLETE_TUTOR_TURN_TOOL.function.parameters.properties.artifacts.items.properties.type.enum
 for (const type of ['emit_pdf','emit_audio','table_matrix','schema_pro','quiz'])
   assert.ok(allowed.includes(type),'single closure must expose '+type)
@@ -74,4 +74,28 @@ assert.equal(review?.type,'schema_pro','a real earlier explanation must yield an
 assert.ok(review.content.blocks.length >= 2)
 assert.equal(groundedMilestoneReview('Hola',[], 'Tema'),null,
   'a greeting must not create a placebo review')
-console.log('PASS — closed tutor turn accepts validated matrix, schema and quiz; rejects empty, malicious and incompatible payloads')
+const quizText=[
+ 'Aquí tienes tu quiz táctil:',
+ '1) Yo ___ estudiante.',
+ 'A) soy',
+ 'B) estoy',
+ 'C) eres',
+ '',
+ '2. María ___ cansada hoy.',
+ 'A) es',
+ 'B) está',
+ 'C) son',
+ '',
+ 'Pregunta 3:',
+ 'Madrid ___ en España.',
+ 'A) es',
+ 'B) está',
+ 'C) soy',
+].join('\n')
+const parsedQuiz=tutorQuizFromText(quizText)
+assert.equal(parsedQuiz?.type,'quiz','Tutor text must materialize to a native tactile component')
+assert.equal(parsedQuiz.content.questions.length,3)
+assert.equal(parsedQuiz.content.gradingMode,'tutor_review','no guessed answer keys')
+assert.ok(parsedQuiz.content.questions.every(q=>q.correct===-1),'every key is unscored sentinel')
+assert.equal(tutorQuizFromText('Hola. Hoy practicaremos español.'),null,'no placebo quiz')
+console.log('PASS — typed interactive artifacts, no-score tactile quiz from Tutor text and truthful failures')
