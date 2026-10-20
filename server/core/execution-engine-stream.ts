@@ -12,10 +12,13 @@ import {
   ArtifactRegistryEntry,
 } from '../../lib/contracts'
 import { mergeStatePatch, documentContractStatePatch, toWireState } from './state-manager'
-import { evaluateCommercial } from './commercial-engine-adapter'
+import { recordedImmersionOfferPatch } from './commercial-context'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
+import { creditLearningProgress } from '../../lib/progress-tokens'
+import { unfulfilledExplicitDeliverables } from '../../lib/explicit-delivery'
+import { isExplicitPdfRequest, isPdfAndWebRequest } from '../../lib/pdf-intent-authorization'
 import { isExplicitQuizRequest } from '../../lib/quiz-intent-guard'
 import type { ArtifactFailure } from './artifact-side-effect'
 
@@ -69,6 +72,16 @@ export function executePlanStream(
         }
         // Direct transformation is user authority for text alone.
         const tutorSignals: ArtifactSignal[] = directFormat || plan.documentContractControlOnly ? [] : (stream.artifactSignals ?? [])
+        // The student's explicit PDF instruction is the typed AUTHORIZATION.
+        // The one Tutor authors fullText without serializing it into tool JSON.
+        // Both formats are deterministically rendered from that same answer.
+        const wantsPdf = !directFormat && !plan.documentContractControlOnly
+          && isExplicitPdfRequest(request.message,state.activeMode)
+        if(wantsPdf && !plan.documentContractReady && !tutorSignals.some(s=>s.type==='emit_pdf')){
+          tutorSignals.push({type:'emit_pdf',trigger:'explicit_user_request',
+            subject:request.message.trim().slice(0,180),
+            format:isPdfAndWebRequest(request.message)?'pdf_html':'pdf'})
+        }
         // The student's existing multi-turn PDF contract, not a model-authored
         // side-effect proposal, authorizes materialization once parameters are
         // complete. Willy remains the sole author of FULL pedagogical content;
@@ -88,6 +101,28 @@ export function executePlanStream(
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
         }
+
+        // The student requested a tactile quiz. The ONE Tutor authored its real
+        // questions and options in free text; parse structure only, NEVER keys.
+        // Every such quiz is tutor_review: no automatic score from guessed data.
+        if(isExplicitQuizRequest(request.message) && !directFormat && !plan.documentContractControlOnly){
+          const { tutorQuizFromText } = await import('./native-artifact')
+          const quiz=tutorQuizFromText(fullText)
+          if(quiz)artifacts.push(quiz)
+          else artifactFailures.push({subject:'Quiz táctil solicitado: faltan preguntas u opciones válidas'})
+        }
+
+        // Article 27 is explicit UI authorization. The SAME tutor's real
+        // free-text lesson becomes an expandable native review via the existing
+        // validated materializer; no JSON tool output or second teacher.
+        if(request.uiAction==='create_visual_review'){
+          const { groundedMilestoneReview } = await import('./native-artifact')
+          const review=groundedMilestoneReview(fullText,[],state.currentLessonTopic||'Último tema estudiado')
+          if(review)artifacts.push(review)
+          else artifactFailures.push({subject:'Esquema de refuerzo: falta contenido desarrollado'})
+        }
+        if (stream.deliveryFailure) console.warn('[tutor-delivery-failure]', stream.deliveryFailure)
+        artifactFailures.push(...unfulfilledExplicitDeliverables(request.message,state,plan,artifacts,artifactFailures))
 
         // P16 — VOICE CONVERSATION: if this turn started as spoken input,
         // the SAME text response Tutor Core just produced is also spoken by
@@ -119,23 +154,10 @@ export function executePlanStream(
           }
         }
 
-        // On a five-turn milestone the tutor's own native schema has priority.
-        // If absent, the existing authored explanation can be reorganized
-        // WITHOUT a second model or invented pedagogical content.
-        const visualDue = ((state.tokens ?? 0) + 1) % 5 === 0 &&
-          (state.tokens ?? 0) > 0 && state.activeMode !== 'free' &&
-          !/\b(no quiero|sin|no generes|don't|without)\b.{0,45}\b(esquema|visual|artifact|diagrama|scheme)\b/i.test(request.message)
-        if (visualDue && !plan.documentContractControlOnly && !artifacts.some(a => a.type === 'schema_pro')
-          && !isExplicitQuizRequest(request.message) && !artifacts.some(a => a.type === 'quiz')) {
-          const { groundedMilestoneReview } = await import('./native-artifact')
-          const review = groundedMilestoneReview(fullText,
-            (request.conversationHistory ?? []) as Array<{role:string;content:string}>,
-            plan.resolvedTopic ?? state.lastConcept ?? 'Tema actual')
-          if (review) artifacts.push(review)
-          else artifactFailures.push({ subject:'Refuerzo visual del quinto turno' })
-        }
         const artifact = artifacts[0]
-        const patch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        const progress=creditLearningProgress(state,request)
+        const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
+        Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
         // student's tactile answers the following turn gives feedback.
@@ -182,10 +204,6 @@ export function executePlanStream(
         // actualización compartido en vez de duplicar reglas").
         Object.assign(patch, documentContractStatePatch(plan, artifacts))
         const updatedState = mergeStatePatch(state, patch)
-        if (!plan.blocking) {
-          const commercial = await evaluateCommercial(updatedState, plan)
-          if (commercial.triggered && commercial.message) emit({ delta: `\n\n${commercial.message}` })
-        }
         // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
         // mergeStatePatch() already translated this turn's null-as-clear
         // sentinel into `undefined` on updatedState (correct for the
@@ -212,13 +230,13 @@ export function executePlanStream(
           // Now shares the same contextual builder as the blocking path —
           // same trigger conditions, same 2-4 relevant actions per mentor
           // specialty, for every transport.
-          suggestedActions: buildContextualActions({
+          suggestedActions: (progress.hitFive ? [{type:'create_visual_review',action:'create_visual_review',label:'Crear mi esquema visual'} as SuggestedAction] : []).concat(artifactFailures.length ? [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] : []).concat(buildContextualActions({
             pedagogicalAction: plan.pedagogicalAction,
             artifactType: artifact?.type,
             mentorProfile: (state as unknown as { mentorProfile?: string }).mentorProfile,
             interfaceLanguage: (state as unknown as { interfaceLanguage?: string }).interfaceLanguage,
             activeMode: (state as unknown as { activeMode?: string }).activeMode,
-          }),
+          })),
         })
         controller.close()
       } catch (err) {
@@ -231,15 +249,17 @@ export function executePlanStream(
         // document contract exactly like the original defect H, just via a
         // second, uncovered code path instead of the main one. Same shared
         // helper, same call shape, even on the error path.
-        const fallbackPatch: Record<string, unknown> = { tokens: (state.tokens ?? 0) + 1 }
+        const progressFallback=creditLearningProgress(state,request)
+        const fallbackPatch: Record<string, unknown> = {tokens:progressFallback.tokens,progressCredits:progressFallback.progressCredits,engagement:progressFallback.engagement}
         Object.assign(fallbackPatch, documentContractStatePatch(plan))
         const fallbackState = mergeStatePatch(state, fallbackPatch)
         // Same wire/internal split as the success path above — see the
         // comment there for why toWireState() must run on top of
         // mergeStatePatch() rather than being skipped on this branch.
-        emit({ delta: '\n\nNo pude completar esta entrega. Los materiales solicitados no están disponibles; inténtalo de nuevo.' })
+        emit({ delta: '\n\nNo se pudo completar la entrega solicitada. Puedes reintentar sin perder la conversación.' })
         emit({ done: true, state: toWireState(fallbackState, fallbackPatch),
-          artifactFailures: [{ subject: 'Entrega no completada en este turno' }] })
+          artifactFailures: [{ subject: 'Entrega no completada en este turno' }],
+          suggestedActions: [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] })
         controller.close()
       }
     },

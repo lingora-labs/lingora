@@ -9,6 +9,7 @@ const accept=[
  'Quiero un PDF y HTML con la explicación y ejercicios',
  'Genera el PDF de esta lección',
  'Prepara una guía descargable en PDF',
+ 'Necesito material de práctica en nivel B1 sobre el pretérito perfecto frente al indefinido: ejemplos en español, cinco ejercicios y claves razonadas. Entrégame un documento PDF descargable y su página HTML en esta misma respuesta.',
  'Exporta esta conversación a PDF',
 ]
 const reject=[
@@ -25,14 +26,23 @@ assert.equal(isExplicitPdfRequest('Modo seleccionado: pdf_course','pdf_course'),
 const mentor=fs.readFileSync(new URL('../server/mentors/mentor-engine.ts',import.meta.url),'utf8')
 const fulfillment=fs.readFileSync(new URL('../server/core/artifact-side-effect.ts',import.meta.url),'utf8')
 assert.ok(!mentor.includes("throw Error('PDF requested without sufficient teaching content')"),'PDF must not destroy the tutor turn')
-assert.ok(mentor.includes("accepted.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized)"))
-assert.ok(fulfillment.includes('if (pedagogicalContent.trim().length < 500)'))
+assert.ok(mentor.includes("closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk)"),'PDF side effect retains explicit authorization')
+assert.ok(mentor.includes("tool_choice: wantsPdf || wantsVisualReview || wantsQuiz ? 'none'"),'PDF and explicit visual content are authored as free text and materialized by typed authorization')
+assert.ok(fulfillment.includes('pedagogicalContent.trim().length < 500 || refusalSource'),'short or refusal source must never generate PDF placebo')
 assert.ok(fulfillment.includes('failures.push('))
 for(const message of [
  'Exporta esta conversación a PDF',
  'Quiero exportar mi historial de chat a PDF',
  'Descarga el historial de esta conversación en PDF',
 ]) assert.equal(isConversationPdfExportRequest(message),true,message)
+for(const message of [
+ 'Cambiemos de tema: crea un PDF descargable y una versión HTML web sobre cómo redactar una reclamación hotelera profesional en inglés de nivel B2; incluye expresiones útiles, diálogo, ejercicios y sus respuestas. Entrega ambos ahora.',
+ 'Prepara un PDF con diálogos de cafetería y la versión web HTML.',
+ 'Crea un PDF sobre una conversación de ficción entre dos huéspedes.',
+]) {
+ assert.equal(isConversationPdfExportRequest(message),false,'not a transcript export: '+message)
+ assert.equal(isExplicitPdfRequest(message),true,'legitimate PDF request: '+message)
+}
 for(const message of [
  'No exportes esta conversación a PDF',
  '¿Cómo se exporta un chat a PDF?',

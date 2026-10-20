@@ -35,6 +35,9 @@ export function useBetaPage() {
     commercialOffers: [], lastTask: null, lastArtifact: null,
   })
   const sessionRef = useRef<SS>(session)
+  // Synchronous navigation authority; async callbacks must never capture first-render mode/phase.
+  const phaseRef = useRef<Phase>(phase)
+  const activeModeRef = useRef<ActiveMode>(activeMode)
   const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
@@ -49,6 +52,8 @@ export function useBetaPage() {
   const mm = useMemo(() => MENTOR_META[mentor], [mentor])
   const copy = useMemo(() => COPY[lang] ?? COPY.en, [lang])
   useEffect(() => { sessionRef.current = session }, [session])
+  useEffect(() => { phaseRef.current = phase }, [phase])
+  useEffect(() => { activeModeRef.current = activeMode }, [activeMode])
   useEffect(() => { mentorRef.current = mentor }, [mentor])
   useEffect(() => { langRef.current = lang }, [lang])
   useEffect(() => { topicRef.current = topic }, [topic])
@@ -65,10 +70,10 @@ export function useBetaPage() {
         setLang(saved.lang); langRef.current = saved.lang
         setMentor(saved.mentor); mentorRef.current = saved.mentor
         setTopic(saved.topic); topicRef.current = saved.topic
-        setActiveMode(saved.activeMode)
+        activeModeRef.current = saved.activeMode; setActiveMode(saved.activeMode)
         setSession(saved.session); sessionRef.current = saved.session
         setMsgs(saved.msgs); msgsRef.current = saved.msgs
-        setPhase(saved.phase)
+        phaseRef.current = saved.phase; setPhase(saved.phase)
         if (saved.reduced) setPersistWarning('Se recuperó una sesión reducida. Comprueba si están todos tus archivos.')
       } else {
         try {
@@ -135,14 +140,14 @@ export function useBetaPage() {
     msgsRef.current = nextMsgs
     setMsgs(nextMsgs)
     const status = await saveBetaSession({
-      phase: phase === 'chat' ? 'chat' : 'onboarding',
+      phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
       lang: langRef.current, mentor: mentorRef.current,
-      topic: topicRef.current, activeMode,
+      topic: topicRef.current, activeMode: activeModeRef.current,
       session: sessionRef.current, msgs: nextMsgs,
     })
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
-  }, [phase, activeMode])
+  }, [])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     const noPdfForTurn = isPdfProhibitedByUser(typeof payload.message === 'string' ? payload.message : '')
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] =>
@@ -186,7 +191,10 @@ export function useBetaPage() {
         const reader = res.body!.getReader()
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
-        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }])
+        const openTurn: Msg = { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }
+        // Keep the canonical snapshot in sync with streamed text, not just React's next render.
+        msgsRef.current = [...msgsRef.current, openTurn]
+        setMsgs(msgsRef.current)
         let accumulated = ''
         let sseBuffer = ''
         while (true) {
@@ -201,26 +209,42 @@ export function useBetaPage() {
               const parsed = JSON.parse(line.slice(6))
               if (parsed.delta) {
                 accumulated += parsed.delta
-                setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, text: accumulated } : m))
+                msgsRef.current = msgsRef.current.map(m => m.id === streamId ? { ...m, text: accumulated } : m)
+                setMsgs(msgsRef.current)
               }
               if (parsed.done) {
-                if (parsed.state) {
-                  setSession(s => {
-                    const n = { ...s, ...parsed.state, samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
-                    sessionRef.current = n
-                    return n
-                  })
-                }
+                const previous = sessionRef.current
+                const nextSession: SS = parsed.state
+                  ? { ...previous, ...parsed.state,
+                    samples: [...(previous.samples ?? []), ...((parsed.state.samples ?? []).filter((x: string) => !(previous.samples ?? []).includes(x)))],
+                    sessionId: previous.sessionId }
+                  : previous
                 const defaultActions = noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
                 const safeActions = Array.isArray(parsed.suggestedActions) ? filterPdfActions(parsed.suggestedActions) : []
                 const finalActions = safeActions.length > 0 ? safeActions : defaultActions
-                setMsgs(prev => prev.map(m => m.id === streamId ? {
-                  ...m,
+                const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
+                  ...m, text: accumulated,
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
                   artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
                   suggestedActions: finalActions,
-                } : m))
+                } : m)
+                // COMMIT BEFORE DISPLAY: an immediate refresh cannot observe a
+                // completed turn until its exact artifacts are durable in IndexedDB.
+                // The existing serialized save path owns both success and failure.
+                const result = await saveBetaSession({
+                  phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
+                  lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
+                  activeMode: activeModeRef.current,
+                  session: nextSession, msgs: completedMsgs,
+                })
+                sessionRef.current = nextSession
+                setSession(nextSession)
+                msgsRef.current = completedMsgs
+                setMsgs(completedMsgs)
+                if (result === 'failed') setPersistWarning('No se pudieron conservar estos archivos. Descárgalos antes de recargar.')
+                else if (result === 'reduced') setPersistWarning('Algunos archivos no se conservaron. Descárgalos antes de recargar.')
+                else setPersistWarning(null)
               }
             } catch {}
           }
@@ -280,19 +304,24 @@ export function useBetaPage() {
         download_course_pdf: 'Descarga el curso completo en PDF', review_errors: 'Repasa mis errores recurrentes',
         request_correction: 'Corrige lo que he escrito', request_translation: 'Traduce esto',
         hear_audio: 'Lee esto en voz alta', show_schema_pro: 'Hazme un esquema avanzado',
-        show_image: 'Genera un diagrama visual de este tema', start_course: 'Empezamos el curso',
+        show_image: 'Genera un diagrama visual de este tema', create_visual_review: 'Desarrolla un esquema de repaso del último tema con al menos cuatro ideas sustantivas, explicaciones claras y ejemplos concretos, en secciones separadas.', start_course: 'Empezamos el curso',
         resume_course: 'Continúa el curso donde lo dejamos', choose_examples: 'Ver ejemplos reales',
         choose_exercise: 'Hacer un ejercicio', request_immersion: 'Cuéntame sobre la inmersión',
         diagnostic_start: 'Evalúa mi nivel de español',
       }
       const actionKey = a.action ?? a.type ?? ''
-      const msg = actionMessages[actionKey] ?? a.label
+      const msg = actionKey === 'retry_delivery' && typeof (a as SuggestedAction).payload?.message === 'string'
+        ? String((a as SuggestedAction).payload!.message).slice(0,4000)
+        : actionMessages[actionKey] ?? a.label
       if (!['export_chat_pdf', 'download_pdf', 'hear_audio'].includes(actionKey)) {
         addMsg({ sender: 'user', text: msg })
       }
       if (actionKey === 'export_chat_pdf') {
         const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
         callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
+      } else if (actionKey === 'create_visual_review') {
+        // Exact touch intent, not a PDF keyword and not a cognitive router.
+        callAPI({ message: msg, uiAction: 'create_visual_review' })
       } else if (actionKey === 'download_pdf' || actionKey === 'hear_audio') {
         // Instrumental touch actions operate on the tutor content already on
         // screen. They do not inject an artificial student utterance.
@@ -447,18 +476,18 @@ export function useBetaPage() {
     mentorRef.current = m; topicRef.current = t; langRef.current = l
     setSession(s => { const n = {...s, mentor:m, topic:t, lang:l}; sessionRef.current = n; return n })
     const c = COPY[l] ?? COPY.en
-    setSplashMsg(c.lnw); setSplashRev(false); setPhase('splash')
+    setSplashMsg(c.lnw); setSplashRev(false); phaseRef.current = 'splash'; setPhase('splash')
     setTimeout(() => setSplashRev(true), 1800)
-    setTimeout(() => setPhase('mode'), 3600)
+    setTimeout(() => { phaseRef.current = 'mode'; setPhase('mode') }, 3600)
   }, [])
   const selectMode = useCallback((mode: ActiveMode) => {
-    setActiveMode(mode)
+    activeModeRef.current = mode; setActiveMode(mode)
     // Set authoritative transport state BEFORE the opening request.
     const selected: SS = { ...sessionRef.current, activeMode: mode, tutorPhase:'guide' }
     sessionRef.current = selected
     pendingQuizFeedbackRef.current = null
     setSession(selected)
-    setPhase('chat')
+    phaseRef.current = 'chat'; setPhase('chat')
     // A session-open event has no student utterance: render the existing
     // localized welcome in UI. The FIRST real user message reaches Tutor
     // Maestro unchanged, with no synthetic LLM prompt or surprise PDF.
@@ -493,8 +522,8 @@ export function useBetaPage() {
     setMsgs([]); msgsRef.current = []
     setInput(''); setPersistWarning(null)
     setSession(freshSession)
-    setActiveMode('interact')
-    setPhase('onboarding')
+    activeModeRef.current = 'interact'; setActiveMode('interact')
+    phaseRef.current = 'onboarding'; setPhase('onboarding')
     resetInProgressRef.current = false
   }, [])
   const toggleRec = useCallback(async () => {

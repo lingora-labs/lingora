@@ -97,11 +97,12 @@ import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/con
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
 import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
+import { isExplicitImageRequest } from '@/server/core/artifact-side-effect'
+import { commercialContextForTurn } from '@/server/core/commercial-context'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
   parseClosedTutorTurn,
-  streamedTutorReplyPrefix,
   type ArtifactSignal,
 } from '@/lib/artifact-signal'
 import type {
@@ -164,7 +165,7 @@ type NormalizedMentorCall = {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[] }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; deliveryFailure?: string }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -314,16 +315,12 @@ export function buildMentorPrompt(params: {
   const pack = resolveTurnContextPack(params.message, state, params.plan)
   // A runtime milestone, not an independent pedagogical brain. The tutor
   // writes the actual review content through the same typed turn closure.
-  const milestone = (state.tokens ?? 0) > 0 && ((state.tokens ?? 0) + 1) % 5 === 0
-    && state.activeMode !== 'free' && !isExplicitQuizRequest(params.message)
-    ? '\n\nVISUAL REVIEW MILESTONE: This is the fifth study exchange. In addition to the requested answer, provide one brief, meaningful schema_pro native artifact that reviews actual subject matter already taught. Use at least two accurate concept/flow/highlight blocks grounded in the conversation. No PDF, unless independently requested. If the student explicitly forbids visual extras, obey the student.'
-    : ''
   // Data from completed UI quiz: actual selected, expected, and graded answers.
   // This is context to inform Willy, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
   const localeEnvelope = `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. The tutor's initial greeting and explanations use interfaceLanguage; Spanish examples use targetLanguage. A later explicit change of language overrides this default.]\n\n`
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, milestone, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack)].filter(Boolean).join('')
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
@@ -377,154 +374,77 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
+/** 7.2: one Tutor, optional typed tools, no destruction of streamed text. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
-  const n = normalizeRuntimeCall(params)
-  const { system, user } = buildMentorPrompt({
-    message: n.message, state: n.state, systemDirective: n.systemDirective,
-    plan: n.plan, action: n.action, priorContext: n.priorContext,
-  })
-  const signals: ArtifactSignal[] = []
-  try {
-    const model = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
-    const pack = resolveTurnContextPack(n.message, n.state, n.plan)
-    // Instrumental checks buffer only quiz/Arabic turns until the selected Tutor
-    // has delivered a verified response; ordinary turns retain live streaming.
-    const protectQuiz = isExplicitQuizRequest(n.message)
-    const protectArabic = (pack.detectedScriptLanguage === 'Arabic' || resolveInterfaceLanguage(n.state) === 'ar')
-      && !/\b(?:responde|explica|contesta)\s+(?:en\s+)?espa[nñ]ol\b/iu.test(n.message)
-      && !/\b(?:translate|traduce)\b/iu.test(n.message)
-    // An explicitly requested start-to-expert curriculum is a quality
-    // contract, never a route or a separate author.
-    const protectCurriculum = /(?:desde\s+cero\s+hasta\s+(?:nivel\s+)?experto|curso\s+completo\s+estructurado|from\s+(?:zero|beginner)\s+to\s+expert)/iu.test(n.message)
-    const delayUntilValidated = protectQuiz || protectArabic || protectCurriculum
-    const response = await openai.chat.completions.create({
-      ...buildModelParams(model, resolveOutputBudget(n.plan, pack), 0.7, 0.88),
-      stream: true,
-      tools: [COMPLETE_TUTOR_TURN_TOOL],
-      tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
-      messages: [{ role: 'system', content: system }, ...n.history, { role: 'user', content: user }],
-    })
-    const gen = (async function* () {
-      const calls = new Map<number, { name: string; args: string }>()
-      let emitted = ''
-      for await (const chunk of response) {
-        for (const item of chunk.choices?.[0]?.delta?.tool_calls ?? []) {
-          const prior = calls.get(item.index) ?? { name: '', args: '' }
-          prior.name += item.function?.name ?? ''
-          prior.args += item.function?.arguments ?? ''
-          calls.set(item.index, prior)
-          if (prior.name === 'complete_tutor_turn') {
-            const candidate = streamedTutorReplyPrefix(prior.args)
-            if (candidate.startsWith(emitted) && candidate.length > emitted.length) {
-              const delta = candidate.slice(emitted.length)
-              emitted = candidate
-              if (!delayUntilValidated) yield delta
-            }
-          }
-        }
-      }
-      if (calls.size !== 1) throw Error('Tutor closure count invalid')
-      const call = [...calls.values()][0]
-      if (call.name !== 'complete_tutor_turn') throw Error('Tutor closure type invalid')
-      let decoded: unknown
-      try { decoded = JSON.parse(call.args) }
-      catch { throw Error('Tutor closure JSON invalid') }
-      const closure = parseClosedTutorTurn(decoded)
-      if (!closure) throw Error('Tutor turn did not close with a valid artifact decision')
-      if (!closure.reply.startsWith(emitted)) throw Error('Tutor streamed content mismatch')
-      const { materializeNativeArtifact } = await import('../core/native-artifact')
-      const violations = (turn: typeof closure): string[] => {
-        const findings: string[] = []
-        if (protectQuiz) {
-          const quizzes = turn.artifacts.filter(a => a.type === 'quiz')
-          if (!quizzes.length) findings.push('missing_touch_quiz')
-          else if (!quizzes.some(q => materializeNativeArtifact(q)?.type === 'quiz')) findings.push('quiz_answer_key_not_verified')
-        }
-        if (protectCurriculum) {
-          const stages = (turn.reply.match(/(?:^|\n)\s*(?:#{1,3}\s*)?(?:[1-9][0-9]?[.)]|(?:fase|etapa|módulo)\s+[1-9])/gimu) ?? []).length
-          if (turn.reply.length < 2300 || stages < 4) findings.push('full_curriculum_missing_depth_or_stages')
-        }
-        if (protectArabic) {
-          const arabicChars = (turn.reply.match(/[\u0600-\u06FF]/gu) ?? []).length
-          if (arabicChars < 20) findings.push('reply_not_in_selected_arabic')
-          // Instrumental contract: a long Arabic-language PDF+HTML lesson
-          // cannot pass by inserting a few Arabic words into Spanish prose.
-          // Spanish examples may remain Spanish. Validate the authored source
-          // before either representation is materialized.
-          const dualLesson = n.plan?.documentContractUpdate?.format === 'pdf_html'
-          if (dualLesson && turn.reply.length < Math.max(2400, closure.reply.length * 0.70)) {
-            findings.push('dual_document_revision_lost_original_coverage')
-          }
-          if (dualLesson && turn.reply.length > 2000) {
-            const letters = (turn.reply.match(/\p{L}/gu) ?? []).length
-            if (arabicChars < 350 || arabicChars / Math.max(letters, 1) < 0.18) {
-              findings.push('arabic_explanation_insufficient_in_dual_document')
-            }
-          }
-        }
-        return findings
-      }
-      let accepted = closure
-      const originalViolations = delayUntilValidated ? violations(closure) : []
-      if (originalViolations.length) {
-        // Same selected Tutor Maestro may revise one rejected turn. Runtime
-        // supplies only factual validation findings, never a fabricated key.
-        try {
-          // One bounded quality-recovery attempt by the SAME selected Tutor Maestro,
-          // using the SAME default model (or an explicitly configured override) when its output failed
-          // an observable instrumental contract. No independent planner or router.
-          const recoveryModel = process.env.OPENAI_RECOVERY_MODEL || model
-          const revised = await openai.chat.completions.create({
-            ...buildModelParams(recoveryModel, resolveOutputBudget(n.plan, pack), 0.2, 0.88),
-            tools: [COMPLETE_TUTOR_TURN_TOOL],
-            tool_choice: { type: 'function', function: { name: 'complete_tutor_turn' } },
-            messages: [
-              { role: 'system', content: system },
-              ...n.history,
-              ...(n.plan?.documentContractUpdate?.format === 'pdf_html' ? [
-                { role: 'assistant' as const, content: 'DRAFT FOR FIDELITY REVIEW (not a new user request):\n' + closure.reply },
-                { role: 'system' as const, content: 'This is a language/fidelity revision of the complete draft just supplied, not a shortened new lesson. Preserve every section, Spanish example, exercise, solution and the original pedagogical depth. Rewrite explanatory prose in Arabic, while retaining Spanish examples. Do not abbreviate the document.' },
-              ] : []),
-              ...(protectCurriculum ? [
-                { role: 'assistant' as const, content: 'INCOMPLETE CURRICULUM DRAFT FOR EXPANSION:\n' + closure.reply },
-                { role: 'system' as const, content: 'The user already requested a full curriculum from beginner to expert, not an offer to make one. Expand this SAME draft into a substantial, clearly staged curriculum with domain terminology, objectives, practical progression, assessment milestones and safety boundaries where relevant. Cover at least six substantive stages. No generic five-point teaser and no unsolicited artifacts.' },
-              ] : []),
-              { role: 'system', content: 'Instrumental validation rejected the preceding draft: ' +
-                originalViolations.join(', ') + '. Re-author THIS turn faithfully with the same Tutor Maestro. ' +
-                'For a touch quiz use only independently verifiable, unique single-gap questions with explicit subjects and simple present-tense SER/ESTAR predicates; avoid ambiguous adjectives, multiple gaps and hidden subjects. The correct index must match the grammatical form exactly. ' +
-                'For Arabic explanations use Arabic for ALL instructional prose, keeping Spanish phrases and conjugation examples unchanged. The language of the question must not override a user-selected Arabic interface. ' +
-                'Do not add an unrequested PDF.' },
-              { role: 'user', content: user },
-            ],
-          })
-          const candidate = revised.choices?.[0]?.message?.tool_calls?.find(c => c.function.name === 'complete_tutor_turn')
-          const replacement = candidate ? parseClosedTutorTurn(JSON.parse(candidate.function.arguments)) : null
-          if (replacement && violations(replacement).length === 0) accepted = replacement
-          else console.warn('[tutor-validation] revision did not close all checks:', originalViolations.join(','))
-        } catch (err) {
-          console.warn('[tutor-validation] revision unavailable:', err instanceof Error ? err.message : err)
-        }
-      }
-      if (delayUntilValidated) yield accepted.reply
-      else if (closure.reply.length > emitted.length) yield closure.reply.slice(emitted.length)
-      // A PDF tool request is only authorized by the student's CURRENT
-      // explicit intent. A malformed/undersized PDF signal must never tear
-      // down an otherwise valid tutor turn or suppress its native schema.
-      const requested=isExplicitPdfRequest(n.message,n.state.activeMode)
-      const awaitingDocument=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
-      const pdfAuthorized=!awaitingDocument&&(requested||Boolean(n.plan?.documentContractReady))
-      signals.push(...accepted.artifacts.filter(s => s.type !== 'emit_pdf' || pdfAuthorized))
-    })()
-    const wrapped = gen as MentorStream
-    wrapped.artifactSignals = signals
-    return wrapped
-  } catch (err: unknown) {
-    console.error('[MENTOR] tutor closure failure', err instanceof Error ? err.message : err)
-    const gen = (async function* () {
-      yield FALLBACKS[resolveInterfaceLanguage(n.state)] ?? FALLBACKS.en
-    })()
-    const wrapped = gen as MentorStream
-    wrapped.artifactSignals = signals
-    return wrapped
-  }
+ const n=normalizeRuntimeCall(params)
+ const {system,user}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext})
+ const signals:ArtifactSignal[]=[]
+ const pack=resolveTurnContextPack(n.message,n.state,n.plan)
+ // An explicit student authorization is a binding delivery contract, not a
+ // classifier deciding what the Tutor may teach. Free conversation stays auto.
+ const wantsPdf = isExplicitPdfRequest(n.message,n.state.activeMode)
+ // Full documents are authored as ordinary text, then deterministically
+ // materialized from those exact words. Large JSON tool arguments truncate.
+ // A clicked Article 27 review is a document-formatting effect, not a
+ // need to pack a long teaching explanation into fragile JSON arguments.
+ const wantsVisualReview = params.request.uiAction==='create_visual_review'
+ const wantsQuiz = isExplicitQuizRequest(n.message)
+ const mustDeliver = !wantsPdf && !wantsVisualReview && !wantsQuiz && isExplicitImageRequest(n.message)
+ const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
+ let response:AsyncIterable<any>|undefined
+ try{
+   response=await openai.chat.completions.create({
+     ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
+     stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],
+     tool_choice: wantsPdf || wantsVisualReview || wantsQuiz ? 'none' : mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
+     messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
+   })
+ }catch(e){
+   const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
+   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError'}))
+ }
+ const wrapped=(async function*(){
+   const calls=new Map<number,{name:string;args:string}>()
+   let spoken=''
+   const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
+   if(!response){fail('provider_unavailable');yield fallback;return}
+   try{
+     for await(const chunk of response){
+       const d=chunk.choices?.[0]?.delta
+       if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
+       for(const t of d?.tool_calls??[]){
+         const c=calls.get(t.index)??{name:'',args:''}
+         c.name+=t.function?.name??''
+         c.args+=t.function?.arguments??''
+         calls.set(t.index,c)
+       }
+     }
+   }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
+   if(!calls.size){if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   if(calls.size!==1){fail('multiple_tool_calls');if(!spoken.trim())yield fallback;return}
+   const call=[...calls.values()][0]
+   if(call.name!=='complete_tutor_turn'){fail('unknown_tool');if(!spoken.trim())yield fallback;return}
+   let raw:unknown
+   try{raw=JSON.parse(call.args)}catch{fail('invalid_tool_json');if(!spoken.trim())yield fallback;return}
+   // Preserve valid independent deliverables even if another entry in the
+   // same closure was malformed. Never bypass any artifact validator.
+   let closed=parseClosedTutorTurn(raw)
+   if(!closed && raw && typeof raw==='object'){
+     const item=raw as Record<string,unknown>
+     const reply=typeof item.reply==='string'?item.reply:''
+     const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
+     if(reply.trim()){
+       const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
+       if(valid.length) closed={reply,artifacts:valid}
+     }
+   }
+   if(!closed){fail('invalid_tool_contract');if(!spoken.trim())yield fallback;return}
+   if(spoken.trim()&&spoken.trim()!==closed.reply.trim()){fail('tool_reply_mismatch');return}
+   if(!spoken.trim()){spoken=closed.reply;yield closed.reply}
+   const pending=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
+   const pdfOk=!pending&&(isExplicitPdfRequest(n.message,n.state.activeMode)||Boolean(n.plan?.documentContractReady))
+   signals.push(...closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk))
+ })() as MentorStream
+ wrapped.artifactSignals=signals
+ return wrapped
 }

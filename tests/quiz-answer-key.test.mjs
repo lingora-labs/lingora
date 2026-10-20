@@ -36,6 +36,11 @@ fail('La fiesta ___ mañana.',['es','está','estamos'],1)
 
 // Conjugation, transitory states, origin, events, identity, legitimate infinitives.
 pass('María ___ cansada hoy.',['es','está'],1)
+pass('María ___ muy cansada hoy.',['es','está'],1)
+pass('María ___ bastante cansada hoy.',['es','está'],1)
+pass('Ella ___ muy nerviosa.',['es','está'],1)
+pass('Mi hermano ___ bastante ocupado.',['es','está'],1)
+fail('María ___ muy cansada hoy.',['es','está'],0)
 fail('María ___ cansada hoy.',['es','está'],0)
 pass('Ahora nosotros ___ en casa.',['somos','estamos'],1)
 fail('Ahora nosotros ___ en casa.',['somos','estamos'],0)
@@ -49,8 +54,28 @@ pass('Yo quiero ___ en casa.',['ser','estar','estoy'],1)
 fail('Yo quiero ___ en casa.',['ser','estar','estoy'],0)
 pass('La clase ___ mañana.',['es','está'],0)
 pass('El cielo ___ azul.',['es','está','somos'],0)
-pass('La puerta ___ cerrada.',['es','está'],1)
+// DAE: 'cerrada' admits a context-dependent interpretation.
+fail('La puerta ___ cerrada.',['es','está'],1)
 pass('Las llaves ___ en la caja.',['están','son','está'],0)
+
+// DAE negative controls: ambiguous predicates must NEVER be auto-graded,
+ // regardless of whether the Tutor supplies the SER or ESTAR index.
+for (const phrase of [
+  'La película ___ triste.',
+  'Ella ___ muy lista.',
+  'El café ___ muy abierto.',
+  'Mi hermano ___ muy cerrado.',
+  'La puerta ___ cerrada.',
+  'Ella ___ lista.',
+  'Mi hermano ___ feliz.',
+  'Mi hermano ___ bastante feliz.',
+]) {
+  for (const key of [0,1]) {
+    const check=valid(phrase,['es','está'],key)
+    assert.equal(check.ok,false,phrase+' must remain tutor_review')
+    assert.match(check.reason,/^unverified_copula_cloze:0$/,phrase)
+  }
+}
 
 // No guessed grading for unverified semantic clozes.
 fail('María ___ en casa.',['está','está','es'],0)
@@ -101,22 +126,27 @@ const prefixedCorrected=materializeNativeArtifact(quiz([
   personCorrect
 ]))
 assert.equal(prefixedCorrected?.type,'quiz')
-assert.equal(prefixedCorrected?.content?.questions[0].correct,0,
-  'prefixed options must be semantically verified, not trusted by index')
+assert.equal(prefixedCorrected?.content?.questions[0].correct,1,
+  'the tutor key must not be silently overwritten')
 const correctedEvent=materializeNativeArtifact(quiz([
   {...eventCorrect,correct:1},personCorrect
 ]))
-assert.equal(correctedEvent?.content?.questions[0].correct,0,
-  'event-location index is proof-corrected, not rejected')
+assert.equal(correctedEvent?.content?.questions[0].correct,1,
+  'event-location contradiction must stay visible for tutor review')
 const correctedPerson=materializeNativeArtifact(quiz([
   eventCorrect,{...personCorrect,correct:0}
 ]))
-assert.equal(correctedPerson?.content?.questions[1].correct,1,
-  'person-location index is proof-corrected, not rejected')
+assert.equal(correctedPerson?.content?.questions[1].correct,0,
+  'person-location contradiction must stay visible for tutor review')
 const unverified = materializeNativeArtifact(quiz([
   eventCorrect,question('El tren ___ rápido.',['es','está'],0)
 ]))
 assert.equal(unverified?.content?.gradingMode,'tutor_review','unverified semantic quiz is tutor-reviewed, never auto-scored')
+const ambiguousCorrect = question('La película ___ triste.',['es','está'],0)
+const ambiguousQuiz=materializeNativeArtifact(quiz([eventCorrect,ambiguousCorrect]))
+assert.equal(ambiguousQuiz?.content?.gradingMode,'tutor_review')
+assert.equal(ambiguousQuiz?.content?.questions[1].correct,0,
+  'the runtime must NEVER rewrite the correct SER key to an unproven ESTAR key')
 const client=fs.readFileSync(require.resolve('../app/beta/beta-schema-a.tsx'),'utf8')
 assert.ok(client.includes('validateQuizAnswerKey(quiz)'))
 console.log('PASS — semantic answer-key proof, event/person location, UI+runtime guards and prior grammar regression')

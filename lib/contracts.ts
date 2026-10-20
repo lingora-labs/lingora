@@ -441,6 +441,8 @@ export interface SessionState {
   activeMode: ActiveMode;
   tutorPhase: TutorPhase;
   tokens: number;
+  /** Credited evidence IDs: deduplication only; tokens is the single balance. */
+  progressCredits?: string[];
 
   mentorProfile?: 'Alex' | 'Sarah' | 'Nick';
   interfaceLanguage: InterfaceLanguage;
@@ -480,6 +482,9 @@ export interface SessionState {
   // Persists full artifact payloads across turns for session export (SEEK 4.2).
   // Survives mergeStatePatch via { ...current, ...patch } spread (verified SEEK 4.1a).
   artifactRegistry?: ArtifactRegistryEntry[];
+  // Tutor-owned immersion invitations, persisted with ordinary session state.
+  sessionId?: string;
+  commercialOffers?: CommercialOffer[];
 
   // SEEK 4.1c2 — sovereign document contract
   pendingDocumentRequest?: PendingDocumentRequest;
@@ -525,7 +530,9 @@ export type SuggestedActionType =
   | 'resume_course'
   | 'request_immersion'
   | 'request_pronunciation'
-  | 'diagnostic_start';
+  | 'diagnostic_start'
+  | 'create_visual_review'
+  | 'retry_delivery';
 
 export interface SuggestedAction {
   type: SuggestedActionType;
@@ -549,7 +556,7 @@ export interface ChatRequest {
   message: string;
   exportTranscript?: string;
   // 7.1 — explicit UI operation, not language intent inferred from conversation.
-  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio';
+  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review';
   // Material currently visible to the student, supplied by an explicit UI click.
   materialText?: string;
   state: SessionState;

@@ -44,46 +44,35 @@ export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPaylo
     if ((c.questions as unknown[]).some(q =>
       obj(q) && ((String(q.question).match(/_{2,}/g) ?? []).length > 1 ||
       (String(q.question).match(/\.{3,}/g) ?? []).length > 1))) return null
+    const isUnscoredReview = c.gradingMode === 'tutor_review' && (c.questions as unknown[]).every(q =>
+      obj(q) && q.correct === -1 && str(q.question) && strings(q.options,2,4))
+    if (isUnscoredReview) {
+      // -1 is an internal NO-KEY sentinel. It is never a correct answer.
+      // The UI must ask the same Tutor to review the student's actual clicks.
+      return {type:'quiz',content:c} as unknown as ArtifactPayload
+    }
     const ok = (c.questions as unknown[]).every(q => obj(q) && str(q.question) &&
       strings(q.options, 2, 4) && typeof q.correct === 'number' &&
       Number.isInteger(q.correct) && q.correct >= 0 &&
       q.correct < (q.options as string[]).length &&
       str(q.explanation))
     if (!ok) return null
-    // DAE P1-02: use ONLY the unique answer already proven by the existing
-    // semantic verifier. Never alter its person/tense/semantic heuristics,
-    // questions, options or explanations; never let an unproven key auto-grade.
-    // Repair each independently verified wrong index on a local copy, bounded
-    // by the number of questions. An unverified/absent unique answer is always
-    // returned as a touch quiz with tutor_review, never as an automatic score.
-    type QuizQuestion = {question:string;options:string[];correct:number;explanation?:string}
-    const verifiedQuestions = (c.questions as QuizQuestion[]).map(q => ({...q}))
-    for (let attempt = 0; attempt <= verifiedQuestions.length; attempt++) {
-      const quality = validateQuizAnswerKey(verifiedQuestions)
-      if (quality.ok) {
-        return { type:'quiz', content:{...c,questions:verifiedQuestions} } as unknown as ArtifactPayload
-      }
-      console.warn('[quiz-quality] validation finding:', quality.reason)
-      if (quality.reason?.startsWith('incorrect_model_answer_key:')) {
-        const i = quality.questionIndex
-        const correct = quality.correctedIndex
-        if (i === undefined || correct === undefined ||
-            !Number.isInteger(i) || i < 0 || i >= verifiedQuestions.length ||
-            !Number.isInteger(correct) || correct < 0 ||
-            correct >= verifiedQuestions[i].options.length ||
-            verifiedQuestions[i].correct === correct) return null
-        verifiedQuestions[i].correct = correct
-        continue
-      }
-      if (quality.reason?.startsWith('unverified_copula_cloze:') ||
-          quality.reason?.startsWith('missing_or_ambiguous_correct_option:')) {
-        return { type:'quiz', content:{...c,questions:verifiedQuestions,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
-      }
-      // compound_copula_cloze / invalid_answer_key / duplicate_options /
-      // empty_quiz and unknown validation errors retain fail-closed behavior.
-      return null
-    }
-    return null
+    // A native quiz is always the Tutor's own work. Never silently rewrite
+    // a correct index while leaving its explanation unchanged: that caused
+    // the Gate C "Madrid es en España" contradiction.
+    // The existing verifier can PROVE keys only inside its limited domain.
+    // Outside that proof or on disagreement, deliver a tactile tutor_review
+    // quiz; never fabricate an automatic score.
+    const audit = validateQuizAnswerKey(c.questions as Array<{
+      question: string; options: string[]; correct: number; explanation?: string
+    }>)
+    if (audit.reason?.startsWith('duplicate_options:')) return null
+    if (audit.ok && (c.questions as Array<{question:string; options:string[]}>).every(q =>
+      /_{2,}|\.{3,}|…/u.test(q.question) &&
+      q.options.every(option => /\b(?:soy|eres|es|somos|sois|son|estoy|estás|está|estamos|estáis|están|ser|estar)\b/iu.test(option))
+    )) return { type:'quiz', content:c } as unknown as ArtifactPayload
+    console.info('[quiz-quality] auto grading withheld:', audit.reason ?? 'outside_proven_domain')
+    return { type:'quiz', content:{...c,gradingMode:'tutor_review'} } as unknown as ArtifactPayload
   }
   return null
 }
@@ -123,5 +112,44 @@ export function groundedMilestoneReview(
     type:'schema_pro',trigger:'pedagogical_completion',subject:topic,format:'native',
     content:{title:'Refuerzo visual · ' + topic.slice(0,90),blocks},
   }
+  return materializeNativeArtifact(signal)
+}
+
+
+/** Syntax-only adapter: extract ONLY the questions/options the sole Tutor wrote.
+ * Never infer correct answers. A review quiz has no machine-verified key.
+ */
+export function tutorQuizFromText(text:string):ArtifactPayload|null {
+  type Draft={question:string;options:string[]}
+  const drafts:Draft[]=[]
+  let current:Draft|null=null
+  const question=/^\s*(?:#{1,4}\s*)?(?:\*{0,2})?(?:(?:pregunta|question)\s*)?([1-8])\s*[).:\-–]?\s*(.*)$/iu
+  const option=/^\s*(?:[-*]\s*)?(?:\*{0,2})?([A-D])(?:\*{0,2})\s*[).:\-]\s*(.*)$/iu
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim().replace(/^\*{2}|\*{2}$/g,'').trim()
+    const q=line.match(question)
+    if(q){
+      if(current)drafts.push(current)
+      current={question:q[2]?.trim()??'',options:[]}
+      continue
+    }
+    const opt=line.match(option)
+    if(opt&&current){
+      const value=opt[2].trim().replace(/^\*{2}|\*{2}$/g,'').trim()
+      if(value)current.options.push(value)
+      continue
+    }
+    if(current&&!current.options.length&&line&&!/^(?:respuestas?|solutions?|instrucciones?|quiz|simulacro)\b/iu.test(line)){
+      current.question=(current.question+' '+line).trim()
+    }
+  }
+  if(current)drafts.push(current)
+  const complete=drafts.filter(q=>q.question.length>=6 && q.question.length<=1800 &&
+    q.options.length>=2 && q.options.length<=4 && new Set(q.options.map(v=>v.toLocaleLowerCase())).size===q.options.length)
+  if(complete.length<2 || complete.length>8 || complete.length!==drafts.length)return null
+  const signal:ArtifactSignal={type:'quiz',trigger:'explicit_user_request',
+    subject:'Quiz solicitado',format:'native',
+    content:{title:'Quiz táctil — revisión con el Tutor',gradingMode:'tutor_review',
+      questions:complete.map(q=>({...q,correct:-1,explanation:''}))}}
   return materializeNativeArtifact(signal)
 }

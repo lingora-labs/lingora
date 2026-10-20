@@ -74,6 +74,7 @@ export type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 export interface SS {
   lang: Lang; mentor: MK; topic: TK; level: string; tokens: number
   samples: string[]; sessionId: string; commercialOffers: unknown[]
+  progressCredits?: string[]
   lastTask: string | null; lastArtifact: string | null
   tutorMode?:          string
   tutorPhase?:         string

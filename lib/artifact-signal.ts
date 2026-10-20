@@ -102,10 +102,9 @@ export const SIGNAL_ARTIFACT_TOOL = {
 // runs) — see that file's P19-F note for the full picture.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 TUTOR TURN CONTRACT:
-Make exactly one complete_tutor_turn call per response. It includes your complete pedagogical reply and an artifacts array.
-You alone decide which NEW deliverables the CURRENT student requested. Use artifacts: [] for ordinary questions, greetings and continuation of prior exercises without a new document request.
-When the student requests a PDF, printable learning sheet, take-away document or both PDF and web HTML, compose actual useful study content and declare emit_pdf with trigger explicit_user_request, subject specifying its contents, format pdf_html for both versions or pdf for PDF alone.
-When the student's CURRENT message explicitly requests generation or drawing of a new image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. Do not request an image merely because a lesson is complete or the student discusses images; ordinary greetings, explanations, quizzes, schemas, and tables do not authorize image generation. Never request an image when the student says not to create one.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For an explicitly requested visual matrix, schema or touch quiz, author the respective native artifact and a concise accompanying reply. QUIZ QUALITY GATE: each question must be independently evaluable, with exactly one grammatical/true option. Use ONE fill-in blank at most per question; NEVER combine two fill-in sentences with slash-separated answer pairs. The correct-indexed option and its explanation must agree. If you cannot establish a correct option, do not emit the quiz. In structured mode, a genuine study lesson contains a guide and explanation plus a native schema_pro and quiz; the quiz collects responses before feedback. In pdf_course mode, never create a PDF on mode selection alone.
+Respond to ordinary conversation directly as normal streamed assistant text. Do not call any tool for simple conversation. Use complete_tutor_turn only if a newly requested native component or document needs materialization; include the tutor-authored answer and its typed artifacts. You decide what to teach and how to explain it. A structured call is not a second teacher.
+When the student requests a PDF, printable learning sheet, take-away document or both PDF and web HTML, write the ENTIRE requested material in the text reply now, including all requested languages, exercises and solutions. The execution runtime renders PDF and web HTML deterministically from that exact Tutor-authored reply after you finish: you do NOT need to serialize the document as a tool-call JSON. Never answer with an outline, a promise, or only a proposed contents list.
+When the student's CURRENT message explicitly requests generation or drawing of a new image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. Do not request an image merely because a lesson is complete or the student discusses images; ordinary greetings, explanations, quizzes, schemas, and tables do not authorize image generation. Never request an image when the student says not to create one.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For an explicitly requested tactile quiz, write the actual numbered questions and their A), B), C) options as ordinary text (not tool JSON): the runtime converts those exact options into tactile choices and routes grading to tutor_review, without guessing a key. For other visual matrices or schemas, author a validated native artifact when appropriate. QUIZ INTEGRITY: author meaningful questions, answer indices and explanations that agree. Do not invent a score: an unverified key will be sent for tutor review without automatic grading. The tutor decides whether a lesson calls for a quiz or schema unless the student explicitly requests one. In pdf_course mode, never create a PDF on mode selection alone.
 Do not claim files already exist: the runtime will materialize your choices or visibly report an execution failure. Do not emit raw tool metadata to the student.
 `
 
@@ -113,7 +112,7 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
   type: 'function' as const,
   function: {
     name: 'complete_tutor_turn',
-    description: 'The sole tutor turn closure. Give a substantive reply and zero or more newly requested deliverables. Always invoke once; artifacts: [] is normal conversation.',
+    description: 'Optional typed delivery of tutor-authored native components and files. Ordinary dialogue remains free assistant text; no tool call required.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -158,6 +157,34 @@ export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
   }
   return { reply: r.reply, artifacts: dedupeSignals(artifacts) }
 }
+/** First factual rejection, in parser order. No source content is returned. */
+export function diagnoseClosedTutorTurn(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return 'closure_invalid'
+  const r = raw as Record<string, unknown>
+  if (typeof r.reply !== 'string' || !r.reply.trim()) return 'reply_empty'
+  if (!Array.isArray(r.artifacts)) return 'artifacts_invalid'
+  if (r.artifacts.length > 5) return 'artifact_count'
+  for (const [i, item] of r.artifacts.entries()) {
+    if (!item || typeof item !== 'object') return `artifact_invalid:${i}`
+    const o = item as Record<string, unknown>
+    if (!TYPES.includes(o.type as ArtifactSignalType)) return `invalid_type:${i}`
+    if (!TRIGGERS.includes(o.trigger as ArtifactSignalTrigger)) return `invalid_trigger:${i}`
+    if (typeof o.subject !== 'string' || o.subject.trim().length < 2) return `bad_subject:${i}`
+    const s = parseArtifactSignal(item)!
+    if (s.type === 'emit_pdf') {
+      if (s.trigger !== 'explicit_user_request' || !['pdf', 'pdf_html'].includes(s.format ?? '')) return `pdf_contract:${i}`
+    } else if (s.type === 'emit_audio') {
+      if (s.format !== 'audio') return `audio_contract:${i}`
+    } else if (s.type === 'emit_image') {
+      if (s.trigger !== 'explicit_user_request' || s.format !== 'image') return `image_contract:${i}`
+    } else if (s.type === 'table_matrix' || s.type === 'schema_pro' || s.type === 'quiz') {
+      if (s.format !== 'native') return `native_format:${i}`
+      if (!s.content) return `native_missing_content:${i}`
+    } else return `unsupported_type:${i}`
+  }
+  return null
+}
+
 /** Stream the tutor's reply string only, decoding complete JSON escape sequences. */
 export function streamedTutorReplyPrefix(json: string): string {
   const marker = /"reply"\s*:\s*"/.exec(json)

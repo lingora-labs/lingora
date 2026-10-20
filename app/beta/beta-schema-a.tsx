@@ -29,43 +29,6 @@ export function normSchema(c?: Record<string, unknown>): Norm {
   return { title: ss(r.title) || 'LINGORA Schema', objective: ss(r.objective), block: ss(r.block) || 'LINGORA', keyConcepts: sa(r.keyConcepts), subtopics, quiz, tableRows, summary: ss(r.summary) || ss(r.globalTakeaway) || ss(r.keyTakeaway), examples: sa(r.examples), errors }
 }
 
-export function fmt(t: string): string {
-  if (!t) return ''
-  let s = t.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>')
-  s = s.replace(
-    /\|(.+)\|\n\|([-| :]+)\|\n((?:\|.+\|\n?)+)/g,
-    (_match, header, _sep, body) => {
-      const ths = header.split('|').filter((c: string) => c.trim())
-        .map((h: string) => `<th style="padding:6px 10px;text-align:left;font-size:11px;font-weight:800;color:var(--teal);letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid rgba(0,201,167,.2);white-space:nowrap">${h.trim()}</th>`).join('')
-      const trs = body.trim().split('\n').map((row: string) => {
-        const cells = row.split('|').filter((c: string) => c !== undefined && row.includes('|'))
-          .filter((_: string, i: number, arr: string[]) => i > 0 && i < arr.length)
-          .map((c: string) => `<td style="padding:7px 10px;color:var(--silver);border-bottom:1px solid rgba(255,255,255,.04)">${c.trim()}</td>`).join('')
-        return `<tr>${cells}</tr>`
-      }).join('')
-      return `<div style="overflow-x:auto;margin:8px 0"><table style="width:100%;border-collapse:collapse;font-size:13px;background:rgba(255,255,255,.02);border-radius:10px;overflow:hidden"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`
-    }
-  )
-  s = s.replace(/^### (.+)$/gm, '<div style="font-size:13px;font-weight:800;color:var(--teal);margin:10px 0 4px;letter-spacing:.04em;text-transform:uppercase">$1</div>')
-  s = s.replace(/^## (.+)$/gm,  '<div style="font-size:15px;font-weight:800;color:#fff;margin:12px 0 6px">$1</div>')
-  s = s.replace(/^# (.+)$/gm,   '<div style="font-size:17px;font-weight:800;color:#fff;margin:14px 0 8px">$1</div>')
-  s = s.replace(/((?:^- .+\n?)+)/gm, (block) => {
-    const items = block.trim().split('\n').map((line: string) => `<li style="margin:3px 0;color:var(--silver)">${line.replace(/^- /, '')}</li>`).join('')
-    return `<ul style="margin:6px 0 6px 16px;padding:0;list-style:none">${items}</ul>`
-  })
-  s = s.replace(/((?:^\d+\. .+\n?)+)/gm, (block) => {
-    let n = 0
-    const items = block.trim().split('\n').map((line: string) => { n++; return `<li style="margin:3px 0;color:var(--silver)"><span style="color:var(--teal);font-weight:700;margin-right:6px">${n}.</span>${line.replace(/^\d+\. /, '')}</li>` }).join('')
-    return `<ol style="margin:6px 0 6px 8px;padding:0;list-style:none">${items}</ol>`
-  })
-  s = s.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#fff;font-weight:700">$1</strong>')
-  s = s.replace(/\*(.+?)\*/g,     '<em style="color:var(--silver);font-style:italic">$1</em>')
-  s = s.replace(/`(.+?)`/g,       '<code style="background:rgba(0,0,0,.4);padding:1px 6px;border-radius:4px;font-family:monospace;font-size:.86em;color:#7dd3fc">$1</code>')
-  s = s.replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0">')
-  s = s.replace(/\n/g, '<br>')
-  return s
-}
-
 export function Badge({ children, t = 'd' }: { children: ReactNode; t?: 'd'|'teal'|'gold'|'purple'|'coral' }) {
   const s = { d:{ color:'var(--muted)',bg:'var(--card)',br:'1px solid var(--border)'}, teal:{color:'var(--teal)',bg:'rgba(0,201,167,.1)',br:'1px solid rgba(0,201,167,.22)'}, gold:{color:'var(--gold)',bg:'rgba(245,200,66,.1)',br:'1px solid rgba(245,200,66,.22)'}, purple:{color:'#c4b5fd',bg:'rgba(124,58,237,.14)',br:'1px solid rgba(124,58,237,.24)'}, coral:{color:'var(--coral)',bg:'rgba(255,107,107,.1)',br:'1px solid rgba(255,107,107,.22)'} }[t]
   return <span style={{ fontSize:11, padding:'4px 10px', borderRadius:999, fontWeight:700, color:s.color, background:s.bg, border:s.br }}>{children}</span>
@@ -84,8 +47,10 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
 export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewMode?: boolean }) {
   const [ans, setAns] = useState<Record<number, number|null>>({})
   const reported = useRef(false)
+  const validity = validateQuizAnswerKey(quiz)
+  const requiresReview = reviewMode || !validity.ok
   useEffect(() => {
-    if (reviewMode || reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
+    if (requiresReview || reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
     reported.current = true
     const responses = quiz.map((q, i) => ({
       question:q.question, chosen:q.options[ans[i] as number],
@@ -93,14 +58,8 @@ export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewM
       explanation:q.explanation ?? '',
     }))
     window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
-  }, [ans, quiz, reviewMode])
+  }, [ans, quiz, requiresReview])
   if (!quiz.length) return null
-  const validity = validateQuizAnswerKey(quiz)
-  if (!validity.ok && !reviewMode) return (
-    <div role="alert" style={{padding:14,border:'1px solid var(--coral)',borderRadius:12,color:'var(--coral)'}}>
-      Este quiz contiene una clave que no permite una corrección gramatical fiable. No se ha puntuado.
-    </div>
-  )
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {quiz.map((q, qi) => {
@@ -112,16 +71,16 @@ export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewM
               {q.options.map((opt, oi) => {
                 const isSel = oi === sel
                 let bg='transparent', bc='var(--border)', col='var(--silver)'
-                if (reviewMode && isSel) { bg='rgba(0,201,167,.1)'; bc='var(--teal)'; col='var(--teal)' }
-                if (done && !reviewMode) {
+                if (requiresReview && isSel) { bg='rgba(0,201,167,.1)'; bc='var(--teal)'; col='var(--teal)' }
+                if (done && !requiresReview) {
                   const isOk = oi === q.correct
                   if (isOk)           { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
                   if (isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
                 }
-                return <button key={oi} disabled={done && !reviewMode} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done && !reviewMode?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
+                return <button key={oi} disabled={done && !requiresReview} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done && !requiresReview?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
               })}
             </div>
-            {done && !reviewMode && (
+            {done && !requiresReview && (
               <div style={{ marginTop:8, fontSize:12, fontWeight:700, display:'flex', flexDirection:'column', gap:4 }}>
                 {sel === q.correct
                   ? <span style={{ color:'var(--teal)' }}>✅ Correcto</span>
@@ -132,7 +91,7 @@ export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewM
           </div>
         )
       })}
-      {reviewMode && (
+      {requiresReview && (
         <div style={{ border:'1px solid var(--border)',borderRadius:12,padding:12 }}>
           <div style={{fontSize:12,color:'var(--silver)',marginBottom:8}}>
             La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática.

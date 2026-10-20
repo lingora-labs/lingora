@@ -27,11 +27,11 @@ const multiWrong={...signal,content:{...signal.content,questions:[
 const originalKeys=multiWrong.content.questions.map(q=>q.correct)
 const repaired=materializeNativeArtifact(multiWrong)
 assert.equal(repaired?.type,'quiz')
-assert.deepEqual(repaired?.content?.questions.map(q=>q.correct),[0,1,0],
-  'correct ALL wrong indices, not merely the first')
+assert.deepEqual(repaired?.content?.questions.map(q=>q.correct),originalKeys,
+  'never silently correct keys or leave contradictory explanations')
 assert.deepEqual(multiWrong.content.questions.map(q=>q.correct),originalKeys,
   'never mutate the Tutor-authored source signal')
-assert.equal(repaired?.content?.gradingMode,undefined)
+assert.equal(repaired?.content?.gradingMode,'tutor_review')
 assert.deepEqual(repaired?.content?.questions.map(q=>q.question),
   multiWrong.content.questions.map(q=>q.question))
 const malformed={...signal,content:{...signal.content,questions:[
@@ -47,8 +47,12 @@ assert.equal(materializeNativeArtifact(duplicates),null,'duplicate options remai
 const ui=fs.readFileSync(new URL('../app/beta/beta-schema-a.tsx',import.meta.url),'utf8')
 const hook=fs.readFileSync(new URL('../app/beta/use-beta-page.ts',import.meta.url),'utf8')
 assert.ok(ui.includes('lingora-quiz-review-request'))
-assert.ok(ui.includes('if (reviewMode || reported.current'))
+assert.ok(ui.includes('if (requiresReview || reported.current'))
 assert.ok(ui.includes('No se asignará una puntuación automática'))
 assert.ok(hook.includes("window.addEventListener('lingora-quiz-review-request'"))
 assert.ok(hook.includes("sin calificación automática"))
 console.log('PASS — tutor-reviewed unverified native quiz is interactive, never auto-graded')
+
+const {isExplicitQuizRequest}=require('../lib/quiz-intent-guard.ts')
+for(const yes of ['Convierte esa explicación en un quiz táctil de tres preguntas. Quiero responder tocando opciones, sin PDF.','Hazme un quiz táctil de tres preguntas sobre SER y ESTAR. No generes una imagen ni un PDF.','Quiero otro quiz sobre verbos','Prepara un simulacro de gramática','Quiz de vocabulario'])assert.equal(isExplicitQuizRequest(yes),true,yes)
+for(const no of ['He respondido a este quiz táctil. Mis respuestas, sin calificación automática:','He completado el quiz: 1/3','Revisa pedagógicamente las respuestas del quiz','No quiero un quiz','Explica qué es un cuestionario'])assert.equal(isExplicitQuizRequest(no),false,no)
