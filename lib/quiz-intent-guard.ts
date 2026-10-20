@@ -3,8 +3,7 @@
 // new quiz. The Tutor can discuss a quiz freely without materializing one.
 export function isExplicitQuizRequest(message:string):boolean {
  const text=message.trim()
- const noun=String.raw
-/\b(?:quiz|simulacro|cuestionario|test(?:\s+interactivo)?|interactive\s+test)\b/iu
+ const noun=/\b(?:quiz|simulacro|cuestionario|test(?:\s+interactivo)?|interactive\s+test)\b/iu
  if(!noun.test(text))return false
  // Explicit refusal has higher authority than any positive mention.
  if(/\b(?:no\s+(?:quiero|necesito|generes|hagas|prepares)|sin|without|do\s+not|don't)\b[\s\S]{0,80}\b(?:quiz|simulacro|cuestionario|test)\b/iu.test(text))return false
