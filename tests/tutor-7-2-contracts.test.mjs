@@ -30,3 +30,13 @@ const pageSource=read('app/beta/use-beta-page.ts')
 assert.ok(pageSource.includes('const result = await saveBetaSession({'))
 assert.ok(pageSource.indexOf('const result = await saveBetaSession({') < pageSource.indexOf('msgsRef.current = completedMsgs'))
 assert.ok(pageSource.includes('msgs: completedMsgs'))
+
+// Regression: SSE/exports cannot reuse the initial onboarding/interact closure.
+const beta=read('app/beta/use-beta-page.ts')
+assert.match(beta,/const phaseRef = useRef<Phase>\(phase\)/)
+assert.match(beta,/const activeModeRef = useRef<ActiveMode>\(activeMode\)/)
+assert.match(beta,/phase: phaseRef\.current === 'chat' \? 'chat' : 'onboarding'/)
+assert.match(beta,/activeMode: activeModeRef\.current/)
+assert.match(beta,/phaseRef\.current = 'chat'; setPhase\('chat'\)/)
+assert.match(beta,/activeModeRef\.current = mode; setActiveMode\(mode\)/)
+assert.doesNotMatch(beta,/phase: phase === 'chat' \? 'chat' : 'onboarding'/)

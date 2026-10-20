@@ -35,6 +35,9 @@ export function useBetaPage() {
     commercialOffers: [], lastTask: null, lastArtifact: null,
   })
   const sessionRef = useRef<SS>(session)
+  // Synchronous navigation authority; async callbacks must never capture first-render mode/phase.
+  const phaseRef = useRef<Phase>(phase)
+  const activeModeRef = useRef<ActiveMode>(activeMode)
   const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
@@ -49,6 +52,8 @@ export function useBetaPage() {
   const mm = useMemo(() => MENTOR_META[mentor], [mentor])
   const copy = useMemo(() => COPY[lang] ?? COPY.en, [lang])
   useEffect(() => { sessionRef.current = session }, [session])
+  useEffect(() => { phaseRef.current = phase }, [phase])
+  useEffect(() => { activeModeRef.current = activeMode }, [activeMode])
   useEffect(() => { mentorRef.current = mentor }, [mentor])
   useEffect(() => { langRef.current = lang }, [lang])
   useEffect(() => { topicRef.current = topic }, [topic])
@@ -65,10 +70,10 @@ export function useBetaPage() {
         setLang(saved.lang); langRef.current = saved.lang
         setMentor(saved.mentor); mentorRef.current = saved.mentor
         setTopic(saved.topic); topicRef.current = saved.topic
-        setActiveMode(saved.activeMode)
+        activeModeRef.current = saved.activeMode; setActiveMode(saved.activeMode)
         setSession(saved.session); sessionRef.current = saved.session
         setMsgs(saved.msgs); msgsRef.current = saved.msgs
-        setPhase(saved.phase)
+        phaseRef.current = saved.phase; setPhase(saved.phase)
         if (saved.reduced) setPersistWarning('Se recuperó una sesión reducida. Comprueba si están todos tus archivos.')
       } else {
         try {
@@ -135,14 +140,14 @@ export function useBetaPage() {
     msgsRef.current = nextMsgs
     setMsgs(nextMsgs)
     const status = await saveBetaSession({
-      phase: phase === 'chat' ? 'chat' : 'onboarding',
+      phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
       lang: langRef.current, mentor: mentorRef.current,
-      topic: topicRef.current, activeMode,
+      topic: topicRef.current, activeMode: activeModeRef.current,
       session: sessionRef.current, msgs: nextMsgs,
     })
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
-  }, [phase, activeMode])
+  }, [])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     const noPdfForTurn = isPdfProhibitedByUser(typeof payload.message === 'string' ? payload.message : '')
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] =>
@@ -228,9 +233,9 @@ export function useBetaPage() {
                 // completed turn until its exact artifacts are durable in IndexedDB.
                 // The existing serialized save path owns both success and failure.
                 const result = await saveBetaSession({
-                  phase: phase === 'chat' ? 'chat' : 'onboarding',
+                  phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
                   lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
-                  activeMode: nextSession.activeMode ?? activeMode,
+                  activeMode: activeModeRef.current,
                   session: nextSession, msgs: completedMsgs,
                 })
                 sessionRef.current = nextSession
@@ -471,18 +476,18 @@ export function useBetaPage() {
     mentorRef.current = m; topicRef.current = t; langRef.current = l
     setSession(s => { const n = {...s, mentor:m, topic:t, lang:l}; sessionRef.current = n; return n })
     const c = COPY[l] ?? COPY.en
-    setSplashMsg(c.lnw); setSplashRev(false); setPhase('splash')
+    setSplashMsg(c.lnw); setSplashRev(false); phaseRef.current = 'splash'; setPhase('splash')
     setTimeout(() => setSplashRev(true), 1800)
-    setTimeout(() => setPhase('mode'), 3600)
+    setTimeout(() => { phaseRef.current = 'mode'; setPhase('mode') }, 3600)
   }, [])
   const selectMode = useCallback((mode: ActiveMode) => {
-    setActiveMode(mode)
+    activeModeRef.current = mode; setActiveMode(mode)
     // Set authoritative transport state BEFORE the opening request.
     const selected: SS = { ...sessionRef.current, activeMode: mode, tutorPhase:'guide' }
     sessionRef.current = selected
     pendingQuizFeedbackRef.current = null
     setSession(selected)
-    setPhase('chat')
+    phaseRef.current = 'chat'; setPhase('chat')
     // A session-open event has no student utterance: render the existing
     // localized welcome in UI. The FIRST real user message reaches Tutor
     // Maestro unchanged, with no synthetic LLM prompt or surprise PDF.
@@ -517,8 +522,8 @@ export function useBetaPage() {
     setMsgs([]); msgsRef.current = []
     setInput(''); setPersistWarning(null)
     setSession(freshSession)
-    setActiveMode('interact')
-    setPhase('onboarding')
+    activeModeRef.current = 'interact'; setActiveMode('interact')
+    phaseRef.current = 'onboarding'; setPhase('onboarding')
     resetInProgressRef.current = false
   }, [])
   const toggleRec = useCallback(async () => {
