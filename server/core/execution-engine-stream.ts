@@ -78,7 +78,7 @@ export function executePlanStream(
           && isExplicitPdfRequest(request.message,state.activeMode)
         if(wantsPdf && !plan.documentContractReady && !tutorSignals.some(s=>s.type==='emit_pdf')){
           tutorSignals.push({type:'emit_pdf',trigger:'explicit_user_request',
-            subject:(state.currentLessonTopic || request.message).trim().slice(0,180),
+            subject:request.message.trim().slice(0,180),
             format:isPdfAndWebRequest(request.message)?'pdf_html':'pdf'})
         }
         // The student's existing multi-turn PDF contract, not a model-authored
