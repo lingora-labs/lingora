@@ -186,7 +186,10 @@ export function useBetaPage() {
         const reader = res.body!.getReader()
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
-        setMsgs(prev => [...prev, { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }])
+        const openTurn: Msg = { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }
+        // Keep the canonical snapshot in sync with streamed text, not just React's next render.
+        msgsRef.current = [...msgsRef.current, openTurn]
+        setMsgs(msgsRef.current)
         let accumulated = ''
         let sseBuffer = ''
         while (true) {
@@ -201,26 +204,42 @@ export function useBetaPage() {
               const parsed = JSON.parse(line.slice(6))
               if (parsed.delta) {
                 accumulated += parsed.delta
-                setMsgs(prev => prev.map(m => m.id === streamId ? { ...m, text: accumulated } : m))
+                msgsRef.current = msgsRef.current.map(m => m.id === streamId ? { ...m, text: accumulated } : m)
+                setMsgs(msgsRef.current)
               }
               if (parsed.done) {
-                if (parsed.state) {
-                  setSession(s => {
-                    const n = { ...s, ...parsed.state, samples: [...(s.samples ?? []), ...((parsed.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
-                    sessionRef.current = n
-                    return n
-                  })
-                }
+                const previous = sessionRef.current
+                const nextSession: SS = parsed.state
+                  ? { ...previous, ...parsed.state,
+                    samples: [...(previous.samples ?? []), ...((parsed.state.samples ?? []).filter((x: string) => !(previous.samples ?? []).includes(x)))],
+                    sessionId: previous.sessionId }
+                  : previous
                 const defaultActions = noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
                 const safeActions = Array.isArray(parsed.suggestedActions) ? filterPdfActions(parsed.suggestedActions) : []
                 const finalActions = safeActions.length > 0 ? safeActions : defaultActions
-                setMsgs(prev => prev.map(m => m.id === streamId ? {
-                  ...m,
+                const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
+                  ...m, text: accumulated,
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
                   artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
                   suggestedActions: finalActions,
-                } : m))
+                } : m)
+                // COMMIT BEFORE DISPLAY: an immediate refresh cannot observe a
+                // completed turn until its exact artifacts are durable in IndexedDB.
+                // The existing serialized save path owns both success and failure.
+                const result = await saveBetaSession({
+                  phase: phase === 'chat' ? 'chat' : 'onboarding',
+                  lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
+                  activeMode: nextSession.activeMode ?? activeMode,
+                  session: nextSession, msgs: completedMsgs,
+                })
+                sessionRef.current = nextSession
+                setSession(nextSession)
+                msgsRef.current = completedMsgs
+                setMsgs(completedMsgs)
+                if (result === 'failed') setPersistWarning('No se pudieron conservar estos archivos. Descárgalos antes de recargar.')
+                else if (result === 'reduced') setPersistWarning('Algunos archivos no se conservaron. Descárgalos antes de recargar.')
+                else setPersistWarning(null)
               }
             } catch {}
           }

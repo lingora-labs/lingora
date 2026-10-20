@@ -24,3 +24,9 @@ assert.ok(read('app/beta/use-beta-page.ts').includes("window.addEventListener('l
 assert.doesNotMatch(profile,/No menciones URLs, precios ni programas/)
 assert.ok(read('app/api/immersion-interest/route.ts').includes('!LEAD_CAPTURE_RELEASED'))
 console.log('PASS — Tutor First 7.2 static source contracts')
+
+// The SSE closure must commit its complete artifact snapshot before UI completion.
+const pageSource=read('app/beta/use-beta-page.ts')
+assert.ok(pageSource.includes('const result = await saveBetaSession({'))
+assert.ok(pageSource.indexOf('const result = await saveBetaSession({') < pageSource.indexOf('msgsRef.current = completedMsgs'))
+assert.ok(pageSource.includes('msgs: completedMsgs'))
