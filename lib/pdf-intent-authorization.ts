@@ -1,23 +1,36 @@
 // Side-effect authorization belongs to the execution contract, not to
 // the mentor's self-reported trigger. Mode entry or a wish for export
 // CONTROLS does not authorize creation of a PDF file.
+const strip = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '')
+
+// Request verbs are matched as accent-insensitive STEMS (with clitics such as
+// "preparame", "entregame") in ES and EN, so that phrasing variants of the same
+// explicit request ("Preparame un PDF", "I need a printable PDF") authorize alike.
+const REQUEST_STEMS =
+  '(?:prepar\\w*|gener\\w*|cre[ae]\\w*|haz\\w*|hac\\w*|convierte\\w*|convertir\\w*|quier\\w*|necesit\\w*|elabor\\w*|export\\w*|descarg\\w*|d[ae]me\\w*|dam\\w*|produc\\w*|redact\\w*|escrib\\w*|arma\\w*|entreg\\w*|envi\\w*|adjunt\\w*|facilit\\w*|pued\\w*|podr\\w*|me\\s+gustar\\w*|' +
+  'need|want|create|generate|make|export|download|prepare|produce|write|build|provide|give|send|get|can\\s+you|could\\s+you|would\\s+like|i\'d\\s+like)'
+
 export function isExplicitPdfRequest(message: string, activeMode?: string): boolean {
-  const text = message.trim()
-  if (!text) return false
+  const raw = message.trim()
+  if (!raw) return false
+  const text = strip(raw)
   if (/\b(?:sin|no quiero|no generes|no hagas|without|don't generate)\b.{0,70}\bpdf\b/iu.test(text)) return false
-  if (/\b(?:opci[oó]n(?:es)?|posibilidad|bot[oó]n(?:es)?|capacidad)\s+(?:de\s+)?(?:exportar|exportaci[oó]n|descarga|descargar)\b/iu.test(text)
-      && !/\b(?:genera|prepara|crea|haz|exporta|descarga|desc[aá]rgame)\b.{0,70}\bpdf\b/iu.test(text)) return false
+  if (/\b(?:opcion(?:es)?|posibilidad|boton(?:es)?|capacidad)\s+(?:de\s+)?(?:exportar|exportacion|descarga|descargar)\b/iu.test(text)
+      && !/\b(?:genera|prepara|crea|haz|exporta|descarga|descargame)\b.{0,70}\bpdf\b/iu.test(text)) return false
   // In PDF-course mode, an explicit request for an actual course DELIVERY
   // is sufficient; selecting that mode or greeting alone is not.
   if (activeMode === 'pdf_course' &&
-      /\b(?:primera entrega|siguiente entrega|m[oó]dulo|lecci[oó]n|curso)\b/iu.test(text) &&
+      /\b(?:primera entrega|siguiente entrega|modulo|leccion|curso)\b/iu.test(text) &&
       /\b(?:prepara|genera|crea|entrega|haz|quiero|necesito)\b/iu.test(text)) return true
   const mentionsPdf = /\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)
   if (!mentionsPdf) return false
+  // Pure informational questions about the format are not delivery requests.
+  if (/^\s*[¿]?\s*(?:como\s+(?:se\s+)?(?:hace|crea|genera|exporta)|que\s+es|what\s+is|how\s+(?:do|does|can)\b)/iu.test(text)
+      && !/\b(?:me|for me|para mi)\b/iu.test(text)) return false
+  const doc = '(?:pdf|archivo imprimible|documento descargable)'
   // Late-sentence explicit requests are authorizations, not cognitive routing.
-  if (/\b(?:entr[eé]g(?:a(?:me)?|ue(?:me)?)|adjunta|env[ií]ame|facil[ií]tame)\b[\s\S]{0,130}\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)) return true
-  if (/\b(?:genera|prepara|crea|haz|convierte|quiero|necesito|elabora|exporta|descarga|dame|produce|create|generate|make|export|download)\b[\s\S]{0,160}\b(?:pdf|archivo imprimible|documento descargable)\b/iu.test(text)) return true
-  if (/\b(?:pdf|archivo imprimible|documento descargable)\b.{0,60}\b(?:ahora|por favor|please|de este|del curso|completo)\b/iu.test(text)) return true
+  if (new RegExp(`\\b${REQUEST_STEMS}\\b[\\s\\S]{0,160}\\b${doc}\\b`, 'iu').test(text)) return true
+  if (new RegExp(`\\b${doc}\\b.{0,60}\\b(?:ahora|por favor|please|de este|del curso|completo)\\b`, 'iu').test(text)) return true
   return false
 }
 
