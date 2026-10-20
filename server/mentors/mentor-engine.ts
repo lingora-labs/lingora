@@ -99,6 +99,7 @@ import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
 import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
 import { isExplicitImageRequest } from '@/server/core/artifact-side-effect'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
+import { deliveryContextForTurn } from './delivery-context'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -320,7 +321,7 @@ export function buildMentorPrompt(params: {
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
   const localeEnvelope = `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. The tutor's initial greeting and explanations use interfaceLanguage; Spanish examples use targetLanguage. A later explicit change of language overrides this default.]\n\n`
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state), deliveryContextForTurn(params.message, state.activeMode, params.plan)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
