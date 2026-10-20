@@ -28,7 +28,7 @@ const fulfillment=fs.readFileSync(new URL('../server/core/artifact-side-effect.t
 assert.ok(!mentor.includes("throw Error('PDF requested without sufficient teaching content')"),'PDF must not destroy the tutor turn')
 assert.ok(mentor.includes("closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk)"),'PDF side effect retains explicit authorization')
 assert.ok(mentor.includes("tool_choice: wantsPdf || wantsVisualReview || wantsQuiz ? 'none'"),'PDF and explicit visual content are authored as free text and materialized by typed authorization')
-assert.ok(fulfillment.includes('if (pedagogicalContent.trim().length < 500)'))
+assert.ok(fulfillment.includes('pedagogicalContent.trim().length < 500 || refusalSource'),'short or refusal source must never generate PDF placebo')
 assert.ok(fulfillment.includes('failures.push('))
 for(const message of [
  'Exporta esta conversación a PDF',
