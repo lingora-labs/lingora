@@ -5,6 +5,7 @@ import {
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
+import { selectHistoryWindow } from '@/lib/tutor-memory'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
@@ -163,10 +164,11 @@ export function useBetaPage() {
       // messages, not dialogue — excluded. Text only: artifacts/audio are
       // materializations of what was already said in the text, not
       // additional dialogue content.
-      const conversationHistory = msgsRef.current
+      // 7.3.3f: the whole thread that fits a token budget (never a fixed message count); the
+      // Tutor's typed memory (state.tutorMemory) covers whatever the budget can no longer hold.
+      const conversationHistory = selectHistoryWindow(msgsRef.current
         .filter(m => m.sender !== 'ln' && (m.text || '').trim().length > 0)
-        .slice(-16)
-        .map(m => ({ role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }))
+        .map(m => ({ role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }))).kept
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
