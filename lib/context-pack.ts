@@ -73,10 +73,21 @@ export function buildContextPack(input: {
   };
 }
 
+/** 7.3.2c: the language fact is delivered adjacent to the student's turn (a
+ *  trailing system note), not buried mid-prompt: where the model's attention is
+ *  strongest. It is the ONLY runtime statement about the explanatory language. */
+export function formatLanguageTurnNote(pack: ContextPack): string {
+  return pack.explanatoryLanguage
+    ? `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}". Write your explanations, corrections and the reasons for each correction in this language, even though the student's message below may be Spanish practice. Spanish stays only for the examples, sentences and exercises you teach. Change language only if the student asks or clearly moves to another one; then call set_explanatory_language (small call; keep writing your reply as usual).`
+    : '[LANGUAGE FOR THIS TURN] No explanatory language has been declared yet. interfaceLanguage is only the starting default offered by the UI, not a limit: you may use ANY language you can write well, whether or not it appears in the UI picker. Use the language the student actually writes in or asks for. Once you settle on the language of your explanations, call set_explanatory_language once (small call; keep writing your reply as usual).'
+}
+
 export function formatContextPack(pack: ContextPack): string {
   const lines = [
     '[ContextPack — information for this turn; not a decision procedure]',
-    `interfaceLanguage: ${pack.interfaceLanguage}`,
+    // Once the Tutor has declared its explanatory language, the UI default is
+    // superseded and is not shown: one language statement, no competing value.
+    ...(pack.explanatoryLanguage ? [] : [`interfaceLanguage: ${pack.interfaceLanguage}`]),
     `targetLanguage: ${pack.targetLanguage}`,
     `languageProficiency: ${pack.languageProficiency}`,
     `domain: ${pack.domain ?? 'null'}`,
@@ -90,13 +101,5 @@ export function formatContextPack(pack: ContextPack): string {
     `explanatoryLanguage: ${pack.explanatoryLanguage ?? 'not declared yet'}`,
     'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
   ];
-  // 7.3.2: language is the Tutor's decision, remembered by the session.
-  // interfaceLanguage is a starting default, never a limit on what the Tutor
-  // can speak. The student's language, declared or evident, always wins.
-  lines.push(
-    pack.explanatoryLanguage
-      ? `LANGUAGE: you previously settled on "${pack.explanatoryLanguage}" as the language of your explanations for this student. Keep explaining in it, including when the student writes Spanish practice, short answers or exercises (Spanish stays the target language of vocabulary, examples and exercises). Change only if the student asks for another language or clearly moves to one; when you change it, call set_explanatory_language (small call; keep writing your normal reply as usual).`
-      : 'LANGUAGE: no explanatory language has been declared yet. interfaceLanguage is only the starting default offered by the UI, not a limit: you may use ANY language you can write well, whether or not it appears in the UI picker. Use the language the student actually writes in or asks for. Once you settle on the language of your explanations, call set_explanatory_language once (small call; keep writing your normal reply as usual).',
-  );
   return lines.join('\n');
 }
