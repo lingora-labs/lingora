@@ -19,6 +19,8 @@ export interface Artifact {
   dataUrl?: string
   content?: Record<string, unknown>
   metadata?: Record<string, unknown>
+  // 7.4: what the student did with an interactive artifact (quiz). Persisted with the message.
+  progress?: { answers: Array<number | null>; sent?: boolean }
 }
 
 export type SuggestedAction = {
@@ -90,6 +92,9 @@ export interface SS {
   currentLessonTopic?:    string
   currentExercise?:       string
   quizEvidence?: import('../../lib/quiz-evidence').QuizEvidence
+  // 7.4: the Tutor's typed memory about this student (server-validated) and its id counter.
+  tutorMemory?: import('../../lib/tutor-memory').TutorMemoryEntry[]
+  tutorMemorySeq?: number
   expectedResponseMode?:  'exercise_answer' | 'free' | 'quiz_answer'
   _exerciseAttemptCount?: number
 }
