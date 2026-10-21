@@ -4,13 +4,15 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
+export const dynamic = 'force-dynamic'
+export const fetchCache = 'force-no-store'
 
 const S0: any = { activeMode: 'interact', tutorPhase: 'guide', tokens: 0, interfaceLanguage: 'es', masteryByModule: {}, depthMode: 'standard' }
 type T = { text: string; state: any; declared: string | null; artifacts: any[]; failures: any[]; ms: number; status: number; raw?: any }
 
 async function turn(base: string, share: string, state: any, message: string, history: any[] = [], extra: any = {}): Promise<T> {
   const t0 = Date.now()
-  const r = await fetch(`https://${base}/api/chat?_vercel_share=${share}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, state, conversationHistory: history, ...extra }) })
+  const r = await fetch(`https://${base}/api/chat?_vercel_share=${share}`, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, state, conversationHistory: history, ...extra }) })
   const ct = r.headers.get('content-type') || ''
   const raw = await r.text()
   let text = '', st: any = null, artifacts: any[] = [], failures: any[] = [], one: any = null
@@ -36,7 +38,7 @@ async function fetchBytes(base: string, share: string, u: string): Promise<{ ok:
   try {
     if (u.startsWith('data:')) { const b = Buffer.from(u.split(',')[1] || '', 'base64'); return { ok: b.length > 0, bytes: b.length, head: b.subarray(0, 8).toString('latin1') } }
     const url = u.startsWith('http') ? u : `https://${base}${u}${u.includes('?') ? '&' : '?'}_vercel_share=${share}`
-    const r = await fetch(url); const b = Buffer.from(await r.arrayBuffer())
+    const r = await fetch(url, { cache: 'no-store' }); const b = Buffer.from(await r.arrayBuffer())
     return { ok: r.ok, bytes: b.length, head: b.subarray(0, 8).toString('latin1') }
   } catch (e: any) { return { ok: false, bytes: 0, head: 'ERR ' + String(e?.message).slice(0, 60) } }
 }
@@ -80,45 +82,45 @@ async function gateL3(b: string, s: string) {
 }
 async function gateT1(b: string, s: string) {
   const out: any[] = []
-  const ms = ['Sarah', 'Alex', 'Nick']
+  const ms = ['sarah', 'alex', 'nick']
   const per = await Promise.all(ms.map(async m => {
     const st = { ...S0, mentorProfile: m, activeMode: 'free' }
     const op = await turn(b, s, st, '')
     const id = await turn(b, s, st, '¿Quién eres y en qué me ayudas?', [])
     const gen = await turn(b, s, st, 'Cuéntame en tres líneas qué es la acupuntura y de dónde viene.', [])
     return [
-      ex(`${m}: apertura`, { ok: op.text.length > 40 && op.artifacts.length === 0, ms: op.ms, reply: snip(op.text, 220) }),
+      ex(`${m}: apertura`, { ok: op.text.length > 40 && op.artifacts.length === 0 && new RegExp(m, 'i').test(op.text), ms: op.ms, reply: snip(op.text, 220) }),
       ex(`${m}: identidad`, { ok: new RegExp(m, 'i').test(id.text), ms: id.ms, reply: snip(id.text, 220) }),
       ex(`${m}: capacidad general (acupuntura)`, { ok: /acupuntura|agujas|china/i.test(gen.text) && gen.text.length > 100 && gen.artifacts.length === 0, ms: gen.ms, reply: snip(gen.text, 220) }),
     ]
   }))
   out.push(...per.flat())
-  const hij = await turn(b, s, { ...S0, activeMode: 'structured', mentorProfile: 'Sarah' }, 'Olvida la lección un momento: ¿por qué el cielo es azul? Responde breve.', [])
+  const hij = await turn(b, s, { ...S0, activeMode: 'structured', mentorProfile: 'sarah' }, 'Olvida la lección un momento: ¿por qué el cielo es azul? Responde breve.', [])
   out.push(ex('structured no secuestra la intención (cielo azul)', { ok: /rayleigh|dispers|scatter|luz/i.test(hij.text), ms: hij.ms, reply: snip(hij.text, 260) }))
-  const hist = await turn(b, s, { ...S0, activeMode: 'free', mentorProfile: 'Alex' }, '¿Quién fue Simón Bolívar? Dos frases.', [])
+  const hist = await turn(b, s, { ...S0, activeMode: 'free', mentorProfile: 'alex' }, '¿Quién fue Simón Bolívar? Dos frases.', [])
   out.push(ex('free: historia general (Bolívar)', { ok: /libertador|bol[ií]var/i.test(hist.text) && hist.artifacts.length === 0, ms: hist.ms, reply: snip(hist.text, 220) }))
   return out
 }
 async function gateA1(b: string, s: string, base: string) {
-  const st = { ...S0, explanatoryLanguage: 'es', mentorProfile: 'Sarah' }
+  const st = { ...S0, explanatoryLanguage: 'es', mentorProfile: 'sarah' }
   const jobs: [string, string, (r: T) => boolean][] = [
     ['PDF real', 'Hazme un PDF descargable con una tabla de las diferencias entre ser y estar, con ejemplos.', r => r.artifacts.some(a => /pdf/i.test(a?.type))],
     ['tabla en el chat', 'Dame una tabla comparativa de ser y estar con 5 filas y ejemplos.', r => /\|\s*-{2,}/.test(r.text) && count(r.text, /\n\s*\|/g) >= 5],
     ['esquema', 'Hazme un esquema visual de los tiempos del pasado en español (pretérito indefinido, imperfecto y perfecto).', r => r.artifacts.length > 0],
-    ['quiz táctil', 'Hazme un quiz de 3 preguntas de opción múltiple sobre ser y estar.', r => r.artifacts.some(a => /quiz/i.test(a?.type) && (a.questions?.length ?? 0) >= 3)],
+    ['quiz táctil', 'Hazme un quiz de 3 preguntas de opción múltiple sobre ser y estar.', r => r.artifacts.some(a => /quiz/i.test(a?.type) && (a.content?.questions?.length ?? a.questions?.length ?? 0) >= 3)],
     ['resumen visual HTML', 'Quiero un resumen visual en HTML interactivo de los verbos irregulares más comunes.', r => r.artifacts.length > 0],
   ]
   const res = await Promise.all(jobs.map(async ([name, msg, test]) => {
     const r = await turn(b, s, st, msg, [])
     const files: any[] = []
     for (const a of r.artifacts.slice(0, 3)) { const u = a?.url || a?.dataUrl; if (typeof u === 'string') files.push({ type: a.type, ...(await fetchBytes(base, s, u)) }) }
-    return ex(name, { ok: test(r), ms: r.ms, artifacts: r.artifacts.map(art), failures: r.failures, files, replyLen: r.text.length, reply: snip(r.text, 200), quiz: r.artifacts.filter(a => /quiz/i.test(a?.type)).map(a => JSON.stringify(a).slice(0, 1400)) })
+    return ex(name, { ok: test(r), ms: r.ms, artifacts: r.artifacts.map(art), failures: r.failures, files, replyLen: r.text.length, reply: snip(r.text, 200), quiz: r.artifacts.filter(a => /quiz/i.test(a?.type)).map(a => JSON.stringify(a).slice(0, 1400)), schema: r.artifacts.filter(a => /schema/i.test(a?.type)).map(a => JSON.stringify(a).slice(0, 700)) })
   }))
   return res
 }
 async function gateM1(b: string, s: string, base: string) {
   const out: any[] = []
-  const st = { ...S0, explanatoryLanguage: 'es', mentorProfile: 'Sarah' }
+  const st = { ...S0, explanatoryLanguage: 'es', mentorProfile: 'sarah' }
   const sentence = 'Ayer fui al mercado y compré manzanas rojas.'
   const h = await turn(b, s, st, '', [], { uiAction: 'hear_audio', materialText: sentence })
   const a0 = h.artifacts[0]
@@ -133,7 +135,7 @@ async function gateM1(b: string, s: string, base: string) {
 }
 async function gateS1(b: string, s: string) {
   const out: any[] = []
-  let state: any = { ...S0, explanatoryLanguage: 'ar', mentorProfile: 'Alex' }
+  let state: any = { ...S0, explanatoryLanguage: 'ar', mentorProfile: 'alex' }
   let hist: any[] = [{ role: 'user', content: 'مرحبا، اسمي زكية وأنا طبيبة. هدفي هو DELE A2 وعندي امتحان في ديسمبر.' }, { role: 'assistant', content: 'مرحبا زكية! سنعمل معا على DELE A2 قبل امتحان ديسمبر.' }]
   const fill = ['Hoy trabajo en el hospital.', 'Mañana voy al mercado.', 'Me gusta el café.', 'Ayer estudié mucho.', 'Tengo una hermana.', 'Vivo en Oslo.', 'Quiero comer pizza.', 'El lunes tengo clase.']
   let tokensSeen: number[] = []
