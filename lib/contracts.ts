@@ -471,6 +471,10 @@ export interface SessionState {
   currentLessonTopic?: string;
   currentExercise?: string;
   quizEvidence?: import('./quiz-evidence').QuizEvidence;
+  // 7.4: notes the Tutor itself recorded (typed, with provenance) and the persisted id counter
+  // that guarantees ids are never reused. Validated at the boundary (lib/tutor-memory.ts).
+  tutorMemory?: import('./tutor-memory').TutorMemoryEntry[];
+  tutorMemorySeq?: number;
   expectedResponseMode?: 'exercise_answer' | 'free' | 'quiz_answer';
   _exerciseAttemptCount?: number;
   lastUserAudioTranscript?: string;
@@ -588,6 +592,8 @@ export interface ChatRequest {
   // summary standing in for it. Additive and optional — omitting it
   // preserves prior behavior exactly.
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  // 7.4: transport only. `false` asks for one JSON document instead of SSE; the engine is the same.
+  stream?: boolean;
 }
 
 export interface ChatResponse {
