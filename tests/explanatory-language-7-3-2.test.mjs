@@ -30,3 +30,10 @@ assert.ok(!/withRecentScriptLanguage/.test(mentor))
 const stream=fs.readFileSync(root+'server/core/execution-engine-stream.ts','utf8')
 assert.ok(stream.includes('patch.explanatoryLanguage = stream.explanatoryLanguage'))
 console.log('PASS 7.3.2 — explanatory language: Tutor-declared, any code, persisted, no detector')
+
+// 7.3.2b: the persona must not contain a competing, higher-ranked language rule.
+const profiles=fs.readFileSync(root+'server/mentors/profiles.ts','utf8')
+assert.ok(!/van en interfaceLanguage/.test(profiles),'persona must not bind explanations to interfaceLanguage')
+assert.match(profiles,/CONTRATO DE IDIOMA \(7\.3\.2/)
+assert.match(profiles,/NO cambia el idioma de tus explicaciones/)
+console.log('PASS 7.3.2b — persona language contract agrees with explanatoryLanguage')
