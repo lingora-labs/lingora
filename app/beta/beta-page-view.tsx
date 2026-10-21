@@ -9,7 +9,7 @@ import { useBetaPage } from './use-beta-page'
 export default function BetaPageView() {
   const [exportStatus, setExportStatus] = React.useState<string | null>(null)
   const {
-    phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
+    phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
@@ -78,13 +78,19 @@ export default function BetaPageView() {
                 <div style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)', marginBottom:14 }}>{copy.l1}</div>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(100px,1fr))', gap:8 }}>
                   {LANG_GRID.map(l => (
-                    <button key={l.value} onClick={() => setLang(l.value)}
-                      style={{ background: lang === l.value ? 'rgba(0,201,167,.12)' : 'var(--card)', border:`1px solid ${lang===l.value?'var(--teal)':'var(--border)'}`, borderRadius:12, padding:'12px 8px', cursor:'pointer' }}>
+                    <button key={l.value} onClick={() => pickLang(l.value)}
+                      style={{ background: lang === l.value && !otherLang ? 'rgba(0,201,167,.12)' : 'var(--card)', border:`1px solid ${lang===l.value&&!otherLang?'var(--teal)':'var(--border)'}`, borderRadius:12, padding:'12px 8px', cursor:'pointer' }}>
                       <div style={{ fontSize:22 }}>{l.flag}</div>
-                      <div style={{ fontSize:12, fontWeight:700, color: lang===l.value ? 'var(--teal)' : '#fff' }}>{l.label}</div>
+                      <div style={{ fontSize:12, fontWeight:700, color: lang===l.value&&!otherLang ? 'var(--teal)' : '#fff' }}>{l.label}</div>
                       <div style={{ fontSize:10, color:'var(--dim)' }}>{l.sub}</div>
                     </button>
                   ))}
+                  <button key="other" onClick={() => pickOther()}
+                    style={{ background: otherLang ? 'rgba(0,201,167,.12)' : 'var(--card)', border:`1px solid ${otherLang?'var(--teal)':'var(--border)'}`, borderRadius:12, padding:'12px 8px', cursor:'pointer' }}>
+                    <div style={{ fontSize:22 }}>🌍</div>
+                    <div style={{ fontSize:12, fontWeight:700, color: otherLang ? 'var(--teal)' : '#fff' }}>OTROS</div>
+                    <div style={{ fontSize:10, color:'var(--dim)' }}>Other · any language</div>
+                  </button>
                 </div>
               </div>
               <div>
