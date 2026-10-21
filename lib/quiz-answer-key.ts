@@ -127,3 +127,24 @@ export function validateQuizAnswerKey(questions:Question[]):AnswerKeyAudit {
   }
   return {ok:true}
 }
+
+/**
+ * 7.4 dual evaluation. The index of the option that an INDEPENDENT verifier proves correct for this
+ * single question, or null when nothing can be proven. The model's own `correct` is never an input:
+ * only the question text and the offered options are. Null means "the Tutor reviews this one".
+ */
+export function verifiedKeyFor(question:string, options:string[]):number|null {
+  if (typeof question!=='string' || !Array.isArray(options) || options.some(o=>typeof o!=='string')) return null
+  const expected=expectedSerEstarForm(question)
+  if (!expected) return null
+  const hits=options.map(normalizeOption).map((v,k)=>v===expected?k:-1).filter(k=>k!==-1)
+  return hits.length===1?hits[0]:null
+}
+
+/** Stable identity of a quiz (questions + options) so progress can be stored against the right artifact. */
+export function quizFingerprint(questions:Array<{question:string;options:string[]}>):string {
+  const src=questions.map(q=>q.question+'\u0001'+q.options.join('\u0002')).join('\u0003')
+  let h=5381
+  for(let i=0;i<src.length;i++) h=((h<<5)+h+src.charCodeAt(i))|0
+  return 'q'+(h>>>0).toString(36)+'-'+questions.length
+}
