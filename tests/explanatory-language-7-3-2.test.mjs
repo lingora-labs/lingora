@@ -57,3 +57,8 @@ assert.ok(!/Do not call any tool for simple conversation/.test(art),'closure con
 assert.match(art,/the one exception is set_explanatory_language/)
 assert.match(mentor,/\[tutor-language\]/,'bounded language observability must exist')
 console.log('PASS 7.3.2b — persona language contract agrees with explanatoryLanguage')
+
+// 7.3.2d: the continuation after a language declaration must carry the declared language itself.
+assert.ok(mentor.includes('Language recorded: ${declared}'),'continuation tool result must restate the declared language')
+assert.ok(!/Language recorded\. Now write/.test(mentor),'generic language-free tool result must be gone')
+console.log('PASS 7.3.2d — continuation carries the declared language')
