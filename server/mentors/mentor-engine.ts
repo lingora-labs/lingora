@@ -301,13 +301,20 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // Only a clicked Article 27 review (a direct uiAction) is a pure formatting effect.
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
- const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
+ // DIAGNOSTIC 7.3.3c/d (temporary, never part of the candidate): controlled comparison switch _lx.
+ // Model selection: closed list of three identifiers, honoured only outside production.
+ const lx=String((n.state as {_lx?:unknown})._lx??'').split(';')
+ const diagOk=process.env.VERCEL_ENV!=='production'
+ const ALLOWED_MODELS=['gpt-5.4-mini','gpt-5.4','gpt-5.6-sol']
+ const lxModel=(lx.find(x=>x.startsWith('model='))??'').slice(6)
+ const model=diagOk&&ALLOWED_MODELS.includes(lxModel)?lxModel:(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini')
+ const diagReasoning={...(diagOk&&lx.includes('rx=none')?{reasoning_effort:'none'}:{})}
+ const diagStreamOpts={...(diagOk&&lxModel?{stream_options:{include_usage:true}}:{})}
+ let diagErr=''
  const budget=resolveOutputBudget(n.plan,pack)
  const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user},{role:'system',content:languageNote}]
  // The opening greeting settles no language: that tool exists only once the student has written.
  const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
- // DIAGNOSTIC 7.3.3c (temporary, never part of the candidate): controlled comparison switch _lx.
- const lx=String((n.state as {_lx?:unknown})._lx??'').split(';')
  const toolset=lx.includes('notool')&&n.state.explanatoryLanguage?tools.filter(t=>t!==SET_EXPLANATORY_LANGUAGE_TOOL):tools
  const noteMsg={role:'system',content:languageNote}
  const userMsg={role:'user',content:user}
@@ -322,21 +329,25 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(model,budget,0.7,0.88),
+     ...(diagReasoning as {}),...(diagStreamOpts as {}),
      stream:true,tools:toolset,tool_choice:wantsVisualReview?'none':'auto',
      messages:msgs,
    })
  }catch(e){
-   const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
-   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError'}))
+   const p=e&&typeof e==='object'?e as {status?:number;name?:string;code?:string;message?:string}:{}
+   diagErr=`${p.status??'?'}/${p.code??p.name??'Err'}: ${String(p.message??'').slice(0,160)}`
+   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError',model,lx:lx.join('+')}))
  }
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
    let spoken=''
+   let usage:unknown=null
    const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    const publishLanguage=(l:string)=>{wrapped.explanatoryLanguage=l}
-   if(!response){fail('provider_unavailable');yield fallback;return}
+   if(!response){fail('provider_unavailable');yield (diagOk&&lxModel?`[[PROVIDER_ERROR ${model} ${diagErr}]]`:fallback);return}
    try{
      for await(const chunk of response){
+       if(chunk.usage)usage=chunk.usage
        const d=chunk.choices?.[0]?.delta
        if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
        for(const t of d?.tool_calls??[]){
@@ -348,7 +359,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        }
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
-   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,lx:lx.join('+')}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   const logUsage=usage as {prompt_tokens?:number;completion_tokens?:number}|null
+   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,lx:lx.join('+'),model,pt:logUsage?.prompt_tokens??null,ct:logUsage?.completion_tokens??null}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let closureSeen=false
    let declared:string|undefined
@@ -378,7 +390,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }else{fail('unknown_tool')}
    }
    // Bounded observability (no user text): how the language state moved this turn.
-   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,lx:lx.join('+')}))
+   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,lx:lx.join('+'),model,pt:logUsage?.prompt_tokens??null,ct:logUsage?.completion_tokens??null}))
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
    const declaredOnly=!deliveries.length&&!closed&&Boolean(declared)
    if(!closed&&((deliveries.length&&spoken.trim().length<400)||(declaredOnly&&!spoken.trim()))){
@@ -387,6 +399,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      try{
        const more:AsyncIterable<any>=await openai.chat.completions.create({
          ...buildModelParams(model,budget,0.7,0.88),
+         ...(diagReasoning as {}),
          stream:true,tools:toolset,tool_choice:'none',
          messages:[...msgs,asst,...results],
        })
