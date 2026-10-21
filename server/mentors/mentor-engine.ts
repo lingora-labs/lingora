@@ -141,6 +141,8 @@ type LegacyMentorState = Partial<SessionState> & {
   awaitingQuizAnswer?: boolean
   samples?: unknown[]
   explanatoryLanguage?: string
+  // UI fact: the student picked OTROS (their language is not in the picker).
+  uiLanguageChoice?: string
 }
 
 type MentorRuntimeParams = {
@@ -319,6 +321,8 @@ export function buildMentorPrompt(params: {
   const opening = Boolean(params.opening)
   const localeEnvelope = state.explanatoryLanguage
     ? `[SESSION LOCALE: explanatoryLanguage=${state.explanatoryLanguage}; targetLanguage=es. The language of your explanations is the one you settled on for this student; Spanish examples use targetLanguage.]\n\n`
+    : opening && state.uiLanguageChoice === 'other'
+      ? '[SESSION LOCALE: the student picked OTHER because their language is not in the picker. Open in English with a short greeting and invite them to write one sentence in any language they like, or anything at all; from there use the language they write in. targetLanguage=es.]\n\n'
     : opening
       ? `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)} (starting default for the opening greeting only, never a limit); targetLanguage=es. Spanish examples use targetLanguage.]\n\n`
       : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
