@@ -44,14 +44,15 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
   return <TableArtifactBlock content={content} />
 }
 
-export function QuizBlock({ quiz, reviewMode = false, initial }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean } }) {
+export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean }; instanceId?: string }) {
   const [ans, setAns] = useState<Record<number, number|null>>(() => {
     const out: Record<number, number|null> = {}
     ;(initial?.answers ?? []).forEach((v, i) => { if (typeof v === 'number') out[i] = v })
     return out
   })
   const [sent, setSent] = useState<boolean>(Boolean(initial?.sent))
-  const reported = useRef(false)
+  // A quiz restored fully answered (reload) must not re-announce its completion to the Tutor.
+  const reported = useRef(Boolean(initial?.answers && initial.answers.length >= quiz.length && quiz.length > 0 && initial.answers.slice(0, quiz.length).every(v => typeof v === 'number')))
   const validity = validateQuizAnswerKey(quiz)
   // Dual evaluation: a score is only ever produced from a key the system proved itself
   // (verifiedKeyFor), never from the model's own `correct` index. Items without a proven key are
@@ -63,11 +64,16 @@ export function QuizBlock({ quiz, reviewMode = false, initial }: { quiz: QuizQ[]
   const checkable = verified.filter(v => v !== null).length
   const rightCount = quiz.reduce((n, _, i) => n + (verified[i] !== null && ans[i] === verified[i] ? 1 : 0), 0)
   const answeredCheckable = quiz.reduce((n, _, i) => n + (verified[i] !== null && ans[i] !== undefined && ans[i] !== null ? 1 : 0), 0)
-  const first = useRef(true)
+  // Progress is emitted only when THIS instance's answers/sent actually change (never on re-render),
+  // and carries the instance id so two identical quizzes in one thread never share state.
+  const sig = JSON.stringify([quiz.map((_, i) => ans[i] ?? null), sent])
+  const lastSig = useRef<string>(JSON.stringify([quiz.map((_, i) => (initial?.answers?.[i] ?? null)), Boolean(initial?.sent)]))
   useEffect(() => {
-    if (first.current) { first.current = false; return }
-    window.dispatchEvent(new CustomEvent('lingora-quiz-progress', { detail: { key: fingerprint, answers: quiz.map((_, i) => ans[i] ?? null), sent } }))
-  }, [ans, sent, fingerprint, quiz])
+    if (sig === lastSig.current) return
+    lastSig.current = sig
+    window.dispatchEvent(new CustomEvent('lingora-quiz-progress', { detail: { key: fingerprint, instanceId, answers: quiz.map((_, i) => ans[i] ?? null), sent } }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig])
   useEffect(() => {
     if (requiresReview || reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
     reported.current = true
