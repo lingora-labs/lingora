@@ -95,6 +95,7 @@ import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, formatLanguageTurnNote, type ContextPack } from '@/lib/context-pack'
 import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage } from '@/lib/explanatory-language'
+import { UPDATE_STUDENT_MEMORY_TOOL, parseMemoryOps, formatMemoryBlock, selectHistoryWindow, type TutorMemoryOp } from '@/lib/tutor-memory'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
 import {
@@ -141,6 +142,8 @@ type LegacyMentorState = Partial<SessionState> & {
   awaitingQuizAnswer?: boolean
   samples?: unknown[]
   explanatoryLanguage?: string
+  // 7.3.3f: notes the Tutor itself recorded (validated shape; shown back each turn).
+  tutorMemory?: unknown
   // UI fact: the student picked OTROS (their language is not in the picker).
   uiLanguageChoice?: string
 }
@@ -171,7 +174,7 @@ type NormalizedMentorCall = {
   opening: boolean
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; deliveryFailure?: string }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; deliveryFailure?: string }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -325,7 +328,7 @@ export function buildMentorPrompt(params: {
     : opening
       ? '[SESSION LOCALE: targetLanguage=es. This is the opening greeting; its language format is given in the language note.]\n\n'
       : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), formatMemoryBlock(state.tutorMemory), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
   return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
 }
 
@@ -337,9 +340,13 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall
   // A blank opening turn is a real UI session-start event, not an audio file.
   const message = rawMessage ? rawMessage : params.priorContext?.trim() ? params.priorContext : '[Session opened without a written message]'
   const rawHistory = params.request?.conversationHistory
-  const history = Array.isArray(rawHistory)
+  const valid = Array.isArray(rawHistory)
     ? rawHistory.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim().length > 0)
     : []
+  // 7.3.3f: the Tutor sees the whole thread that fits a token budget (not a message count).
+  const envBudget = Number(process.env.LINGORA_HISTORY_TOKEN_BUDGET)
+  const { kept: history, dropped } = selectHistoryWindow(valid, Number.isFinite(envBudget) && envBudget > 0 ? envBudget : undefined)
+  if (dropped > 0) console.info('[tutor-history]', JSON.stringify({ received: valid.length, kept: history.length, dropped }))
   return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history, opening: !rawMessage }
 }
 
@@ -400,7 +407,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const budget=resolveOutputBudget(n.plan,pack)
  const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user},{role:'system',content:languageNote}]
  // The opening greeting settles no language: that tool exists only once the student has written.
- const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
+ const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL,UPDATE_STUDENT_MEMORY_TOOL]
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
@@ -418,6 +425,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    let served=''
    const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    const publishLanguage=(l:string)=>{wrapped.explanatoryLanguage=l}
+   const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
    if(!response){fail('provider_unavailable');yield fallback;return}
    try{
      for await(const chunk of response){
@@ -437,6 +445,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let closureSeen=false
    let declared:string|undefined
+   let memoryCalled=false
+   let memoryCount=0
    for(const call of calls.values()){
      let raw:unknown
      try{raw=JSON.parse(call.args||'{}')}catch{fail('invalid_tool_json');continue}
@@ -460,17 +470,20 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }else if(call.name==='set_explanatory_language'){
        const lang=parseExplanatoryLanguage(raw)
        if(lang){declared=lang;publishLanguage(lang)}else fail('invalid_language_code')
+     }else if(call.name==='update_student_memory'){
+       const ops=parseMemoryOps(raw)
+       if(ops){publishMemory(ops);memoryCount+=ops.length;memoryCalled=true}else fail('invalid_memory_ops')
      }else{fail('unknown_tool')}
    }
    // Bounded observability (no user text): how the language state moved this turn.
-   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,model,served}))
+   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,memoryOps:memoryCount,memoryIn:Array.isArray(n.state.tutorMemory)?n.state.tutorMemory.length:0,spokenChars:spoken.length,model,served}))
    // The Tutor declared a delivery but wrote (almost) nothing: let the same
    // Tutor write the material now, in this same turn. No second author.
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
-   const declaredOnly=!deliveries.length&&!closed&&Boolean(declared)
+   const declaredOnly=!deliveries.length&&!closed&&(Boolean(declared)||memoryCalled)
    if(!closed&&((deliveries.length&&spoken.trim().length<400)||(declaredOnly&&!spoken.trim()))){
      const asst:any={role:'assistant',content:spoken||null,tool_calls:[...calls.values()].filter(c=>c.id).map(c=>({id:c.id,type:'function',function:{name:c.name,arguments:c.args||'{}'}}))}
-     const results=[...calls.values()].filter(c=>c.id).map(c=>({role:'tool',tool_call_id:c.id,content:deliveries.length?'Delivery registered. Now write the complete material as your reply text, starting with its title. The platform will render exactly your text.':`Language recorded: ${declared}. Now write your reply to the student as normal text. Your explanations, corrections and the reasons for each correction are in ${declared}, even if the student's message is Spanish practice; Spanish stays only for the examples and exercises you teach.`}))
+     const results=[...calls.values()].filter(c=>c.id).map(c=>({role:'tool',tool_call_id:c.id,content:deliveries.length?'Delivery registered. Now write the complete material as your reply text, starting with its title. The platform will render exactly your text.':`${declared?`Language recorded: ${declared}. `:''}${memoryCalled?'Memory notes recorded. ':''}Now write your reply to the student as normal text.${declared?` Your explanations, corrections and the reasons for each correction are in ${declared}, even if the student's message is Spanish practice; Spanish stays only for the examples and exercises you teach.`:''}`}))
      try{
        const more:AsyncIterable<any>=await openai.chat.completions.create({
          ...buildModelParams(model,budget,0.7,0.88),
