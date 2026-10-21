@@ -426,19 +426,26 @@ export function useBetaPage() {
   // reload restores what was answered and whether the Tutor already reviewed it.
   useEffect(() => {
     const handler = (event: Event) => {
-      const d = (event as CustomEvent).detail as { key?: unknown; answers?: unknown; sent?: unknown } | undefined
+      const d = (event as CustomEvent).detail as { key?: unknown; instanceId?: unknown; answers?: unknown; sent?: unknown } | undefined
       if (!d || typeof d.key !== 'string' || !Array.isArray(d.answers)) return
       const answers = d.answers.map(v => (typeof v === 'number' ? v : null))
       const sent = d.sent === true
-      const apply = (a: Artifact): Artifact => {
-        if (a.type !== 'quiz') return a
+      const target = typeof d.instanceId === 'string' ? d.instanceId.split('#') : null
+      const matches = (a: Artifact): boolean => {
+        if (a.type !== 'quiz') return false
         const c = (a.content ?? a) as { questions?: Array<{ question?: unknown; options?: unknown }> }
         const qs = Array.isArray(c.questions) ? c.questions.map(q => ({ question: String(q.question ?? ''), options: Array.isArray(q.options) ? q.options.map(o => (typeof o === 'object' && o && 'text' in o ? String((o as { text: unknown }).text) : String(o))) : [] })) : []
-        return qs.length && quizFingerprint(qs) === d.key ? { ...a, progress: { answers, sent } } : a
+        return qs.length > 0 && quizFingerprint(qs) === d.key
       }
-      const next = msgsRef.current.map(m => (m.artifacts || m.artifact)
-        ? { ...m, artifact: m.artifact ? apply(m.artifact) : m.artifact, artifacts: m.artifacts ? m.artifacts.map(apply) : m.artifacts }
-        : m)
+      const next = msgsRef.current.map(m => {
+        if (!(m.artifacts || m.artifact)) return m
+        if (target && m.id !== target[0]) return m
+        const idx = target ? Number(target[1]) : -1
+        const list: Artifact[] = m.artifacts && m.artifacts.length > 0 ? m.artifacts : (m.artifact ? [m.artifact] : [])
+        const upd = list.map((a, i) => ((idx < 0 || i === idx) && matches(a) ? { ...a, progress: { answers, sent } } : a))
+        if (m.artifacts && m.artifacts.length > 0) return { ...m, artifacts: upd }
+        return { ...m, artifact: upd[0] ?? m.artifact }
+      })
       msgsRef.current = next
       setMsgs(next)
     }
