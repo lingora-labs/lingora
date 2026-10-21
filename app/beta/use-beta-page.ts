@@ -15,6 +15,12 @@ export function useBetaPage() {
   const [splashMsg, setSplashMsg] = useState('')
   const [splashRev, setSplashRev] = useState(false)
   const [lang, setLang] = useState<Lang>('en')
+  // OTROS: the student's language is not in the picker. The UI starts in English; the Tutor is free from there.
+  const [otherLang, setOtherLang] = useState(false)
+  const otherRef = useRef(false)
+  const lastCallFailedRef = useRef(false)
+  const pickLang = useCallback((l: Lang) => { otherRef.current = false; setOtherLang(false); setLang(l) }, [])
+  const pickOther = useCallback(() => { otherRef.current = true; setOtherLang(true); setLang('en') }, [])
   const [mentor, setMentor] = useState<MK>('sarah')
   const [topic, setTopic] = useState<TK>('conversation')
   const [msgs, setMsgs] = useState<Msg[]>([])
@@ -149,6 +155,7 @@ export function useBetaPage() {
   }, [])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
+    lastCallFailedRef.current = false
     setLoading(true)
     try {
       // BASE-MODEL-PARITY — recent real turns (not a code-derived summary),
@@ -176,6 +183,7 @@ export function useBetaPage() {
             activeMode: sessionRef.current.activeMode,
             mentorProfile: mentorRef.current,
             interfaceLanguage: BACKEND_LANG(langRef.current),
+            uiLanguageChoice: otherRef.current ? 'other' : undefined,
             currentLessonTopic: sessionRef.current.currentLessonTopic,
             currentExercise: sessionRef.current.currentExercise,
             expectedResponseMode: sessionRef.current.expectedResponseMode,
@@ -276,6 +284,7 @@ export function useBetaPage() {
         ? filterPdfActions(data.suggestedActions)
         : ([{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
     } catch (e) {
+      lastCallFailedRef.current = true
       const m = e instanceof Error ? e.message : String(e)
       const langNow = langRef.current ?? 'en'
       let msg = langNow === 'es' ? 'Ocurrió un error inesperado. El tutor sigue activo.' : 'An unexpected error occurred. The tutor is still active.'
@@ -473,16 +482,23 @@ export function useBetaPage() {
     pendingQuizFeedbackRef.current = null
     setSession(selected)
     phaseRef.current = 'chat'; setPhase('chat')
-    // A session-open event has no student utterance: render the existing
-    // localized welcome in UI. The FIRST real user message reaches Tutor
-    // Maestro unchanged, with no synthetic LLM prompt or surprise PDF.
-    const greeting = GREETINGS[mentorRef.current]?.[langRef.current]
-      ?? GREETINGS[mentorRef.current]?.en ?? ''
-    const opening: Msg[] = greeting
-      ? [{id: Date.now()+'-welcome',sender:mentorRef.current,text:greeting}]
-      : []
-    msgsRef.current = opening
-    setMsgs(opening)
+    // A session-open event has no student utterance: the Tutor itself opens, in
+    // streaming, in the language the student selected (OTROS opens in English).
+    // The thinking bubble shows while it starts. If the request fails, the
+    // localized static welcome keeps the session usable.
+    msgsRef.current = []
+    setMsgs([])
+    void (async () => {
+      await callAPI({ message: '' })
+      if (!lastCallFailedRef.current) return
+      const greeting = GREETINGS[mentorRef.current]?.[langRef.current]
+        ?? GREETINGS[mentorRef.current]?.en ?? ''
+      const fallback: Msg[] = greeting
+        ? [{id: Date.now()+'-welcome',sender:mentorRef.current,text:greeting}]
+        : []
+      msgsRef.current = fallback
+      setMsgs(fallback)
+    })()
   }, [callAPI])
   const resetChat = useCallback(async () => {
     if (resetInProgressRef.current) return
@@ -535,7 +551,7 @@ export function useBetaPage() {
     r.readAsDataURL(file); e.target.value = ''
   }, [])
   return {
-    phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, mentor, setMentor, topic, setTopic,
+    phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
