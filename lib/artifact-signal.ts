@@ -64,47 +64,15 @@ export const SIGNAL_ARTIFACT_TOOL = {
   },
 }
 
-// SEEK 5.0 P14 — CAPABILITY TRUTH.
-// Root gap: this block already declared what the tutor CANNOT do
-// ("emit_audio is unavailable in this runtime") but never declared the
-// symmetric positive truth for PDF materialization, which IS always
-// available in this runtime (composeDocumentFromTaught/renderCoursePdf are
-// not gated by any external flag). Left to its own judgment, the model
-// sometimes denied a capability the runtime actually has — a false,
-// commercially damaging denial.
-// Fix: state PDF availability explicitly, in the same declarative style as
-// the existing audio line, with the required distinction spelled out —
-// capability availability is not the same as a specific file already being
-// ready. The tutor may truthfully offer to prepare/materialize a PDF; it
-// must never claim one is already generated before signal_artifact and the
-// side-effect pipeline actually produce it. No new capability system: this
-// reuses the exact mechanism already governing the audio statement.
-//
-// SEEK 5.0 P15 — AUDIO CAPABILITY RECOVERY.
-// The "emit_audio is unavailable" line was accurate about the RUNTIME AS IT
-// STOOD, but that runtime state was itself a regression: STT input was
-// disconnected from the streaming path and TTS output was never wired to
-// signal_artifact at all (see artifact-side-effect.ts P15 for the
-// execution-side fix; execution-engine-stream.ts and route.ts P15 for the
-// input-side fix). Declarative text must describe truth — it cannot BE the
-// fix for a missing capability (Manifiesto 7.0 Art. 16). Now that the
-// underlying mechanism is actually wired, the line is flipped to match,
-// mirroring the emit_pdf pattern exactly: availability, not a promise that
-// audio already exists.
-//
-// SEEK 5.0 P19-F — TRIVIAL-TURN EXCLUSION.
-// Root gap confirmed in production: nothing here ever told the model that
-// "pedagogical completion" requires actual taught content — a bare
-// greeting or opening question could be (and, ~1 in 3-4 tries, was)
-// interpreted as complete enough to materialize. Added an explicit
-// negative example. Paired with a matching guard in mentor-engine.ts
-// (the taught-length threshold gating whether the decision call even
-// runs) — see that file's P19-F note for the full picture.
+// Capability truth (P14/P15/P19-F, condensed in 7.3; full history in git):
+// the instruction below declares what the runtime really can do, so the Tutor
+// never denies a real capability and never claims a file exists before the
+// runtime materializes it.
 export const ARTIFACT_CHANNEL_INSTRUCTION = `
 TUTOR TURN CONTRACT:
-Respond to ordinary conversation directly as normal streamed assistant text. Do not call any tool for simple conversation. Use complete_tutor_turn only if a newly requested native component or document needs materialization; include the tutor-authored answer and its typed artifacts. You decide what to teach and how to explain it. A structured call is not a second teacher.
-When the student requests a PDF, printable learning sheet, take-away document or both PDF and web HTML, write the ENTIRE requested material in the text reply now, including all requested languages, exercises and solutions. The execution runtime renders PDF and web HTML deterministically from that exact Tutor-authored reply after you finish: you do NOT need to serialize the document as a tool-call JSON. Never answer with an outline, a promise, or only a proposed contents list.
-When the student's CURRENT message explicitly requests generation or drawing of a new image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. Do not request an image merely because a lesson is complete or the student discusses images; ordinary greetings, explanations, quizzes, schemas, and tables do not authorize image generation. Never request an image when the student says not to create one.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For an explicitly requested tactile quiz, write the actual numbered questions and their A), B), C) options as ordinary text (not tool JSON): the runtime converts those exact options into tactile choices and routes grading to tutor_review, without guessing a key. For other visual matrices or schemas, author a validated native artifact when appropriate. QUIZ INTEGRITY: author meaningful questions, answer indices and explanations that agree. Do not invent a score: an unverified key will be sent for tutor review without automatic grading. The tutor decides whether a lesson calls for a quiz or schema unless the student explicitly requests one. In pdf_course mode, never create a PDF on mode selection alone.
+Respond to ordinary conversation directly as normal streamed assistant text. Do not call any tool for simple conversation. Use complete_tutor_turn only if a newly requested native component needs materialization; include the tutor-authored answer and its typed artifacts. You decide what to teach and how to explain it. A structured call is not a second teacher.
+DELIVERY: you can deliver real downloadable files. When the student wants a PDF, a printable sheet, a take-away document, a web (HTML) version, a tactile quiz or a PDF of their own conversation, call deliver_from_text with the kind and a short title AND write the ENTIRE material as your reply text in the same turn: all requested languages, exercises and solutions; begin directly with the document title, with no preface or closing about files or formats. The platform renders exactly your text as the real PDF/HTML and attaches it with download buttons. Never say you cannot create or attach files, and never answer with an outline or a promise instead of the material. Call it only when the student wants the deliverable.
+When the student wants a newly generated or drawn image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. Do not request an image merely because a lesson is complete or the student discusses images.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For a tactile quiz, write the actual numbered questions and their A), B), C) options as ordinary text and call deliver_from_text with kind quiz: the runtime converts those exact options into tactile choices and routes grading to tutor_review, without guessing a key. For other visual matrices or schemas, author a validated native artifact when appropriate. QUIZ INTEGRITY: author meaningful questions, answer indices and explanations that agree. Do not invent a score: an unverified key will be sent for tutor review without automatic grading. The tutor decides whether a lesson calls for a quiz or schema.
 Do not claim files already exist: the runtime will materialize your choices or visibly report an execution failure. Do not emit raw tool metadata to the student.
 `
 
@@ -133,6 +101,36 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
     },
   },
 }
+// The Tutor's own decision to deliver text it has authored as a real file or
+// native component. The call is the authorization (same mechanism as any LLM
+// tool call); the document itself is ordinary streamed text, never JSON.
+export type TextDeliveryKind = 'pdf' | 'pdf_html' | 'quiz' | 'conversation_pdf'
+export interface TextDelivery { kind: TextDeliveryKind; title: string }
+const DELIVERY_KINDS: TextDeliveryKind[] = ['pdf', 'pdf_html', 'quiz', 'conversation_pdf']
+export const DELIVER_FROM_TEXT_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'deliver_from_text',
+    description: 'Deliver the material you write in THIS reply as a real file or tactile component: pdf = downloadable PDF of your reply; pdf_html = PDF plus a web (HTML) version of your reply; quiz = your numbered questions with A) B) C) options become touchable choices; conversation_pdf = the student\'s own conversation transcript as a PDF. Call it only when the student wants that deliverable. Write the complete material as your reply text in the same turn; the arguments stay small.',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        kind: { type: 'string', enum: DELIVERY_KINDS },
+        title: { type: 'string', description: 'Short title of the material (max 120 characters).' },
+      },
+      required: ['kind', 'title'],
+    },
+  },
+}
+export function parseTextDelivery(raw: unknown): TextDelivery | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (!DELIVERY_KINDS.includes(o.kind as TextDeliveryKind)) return null
+  const title = typeof o.title === 'string' ? o.title.trim().slice(0, 120) : ''
+  if (title.length < 2) return null
+  return { kind: o.kind as TextDeliveryKind, title }
+}
+
 export interface ClosedTutorTurn { reply: string; artifacts: ArtifactSignal[] }
 export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
   if (!raw || typeof raw !== 'object') return null
