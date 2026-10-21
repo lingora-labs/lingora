@@ -1,9 +1,11 @@
 // =============================================================================
 // lib/context-pack.ts
 // SEEK 5.0 S1 E-11 — ContextPack informs the tutor. It does not reason.
+// SEEK 5.0 P2 — compoundPedagogicalAct is information, not a state machine.
 //
 // 7.3: no regex classification of the student's intent lives here. The pack
-// carries facts (language, level, continuity, script) — the Tutor decides.
+// carries facts (language, level, continuity) — the Tutor decides.
+// 7.3.2: the explanatory language is the Tutor's own declared decision.
 // =============================================================================
 import type { CEFRLevel } from './contracts';
 
@@ -24,9 +26,9 @@ export interface ContextPack {
   lastUserGoal: string | null;
   activeFlowType: ActiveFlowType;
   turnCount: number;
-  // P19-F4 — ZAKIA LANGUAGE AUTHORITY. See detectScriptLanguage() below.
-  // Null when the message is Latin-script or too short/ambiguous to classify.
-  detectedScriptLanguage: string | null;
+  // 7.3.2: the language the Tutor itself declared for its explanations (any
+  // language code), carried by the session. Null until the Tutor declares one.
+  explanatoryLanguage: string | null;
 }
 
 export type LevelConfirmed = boolean;
@@ -44,34 +46,6 @@ export function hasExplicitArtifactRequest(_message: string): boolean {
   return false;
 }
 
-// P19-F4 — ZAKIA LANGUAGE AUTHORITY.
-// A student writing entirely in a non-Latin script (e.g. Arabic) must be
-// answered in that language even when interfaceLanguage is a fallback default.
-// Script detection is a FACT about the characters typed (reliable by range),
-// not an intent classification; the mentor still decides how to use it.
-// Latin-script languages are deliberately not distinguished here.
-const SCRIPT_RANGES: Array<{ name: string; pattern: RegExp }> = [
-  { name: 'Arabic', pattern: /[؀-ۿݐ-ݿ]/ },
-  { name: 'Cyrillic (Russian/Ukrainian/etc.)', pattern: /[Ѐ-ӿ]/ },
-  { name: 'Hebrew', pattern: /[֐-׿]/ },
-  { name: 'Chinese', pattern: /[一-鿿]/ },
-  { name: 'Japanese', pattern: /[぀-ヿ]/ },
-  { name: 'Korean', pattern: /[가-힯]/ },
-  { name: 'Devanagari (Hindi/etc.)', pattern: /[ऀ-ॿ]/ },
-  { name: 'Greek', pattern: /[Ͱ-Ͽ]/ },
-  { name: 'Thai', pattern: /[฀-๿]/ },
-];
-
-// A short fragment in a non-Latin script is still an unambiguous signal.
-export function detectScriptLanguage(message: string): string | null {
-  const t = (message || '').trim();
-  if (!t) return null;
-  for (const { name, pattern } of SCRIPT_RANGES) {
-    if (pattern.test(t)) return name;
-  }
-  return null;
-}
-
 export function buildContextPack(input: {
   interfaceLanguage?: string;
   languageProficiency?: string;
@@ -80,6 +54,7 @@ export function buildContextPack(input: {
   lastUserGoal?: string;
   turnCount?: number;
   activeMode?: string;
+  explanatoryLanguage?: string;
 }): ContextPack {
   const domain = input.lastConcept?.trim() || null;
   return {
@@ -94,7 +69,7 @@ export function buildContextPack(input: {
     lastUserGoal: input.lastUserGoal ?? null,
     activeFlowType: input.activeMode === 'pdf_course' || input.activeMode === 'structured' ? 'course' : null,
     turnCount: input.turnCount ?? 0,
-    detectedScriptLanguage: detectScriptLanguage(input.message),
+    explanatoryLanguage: input.explanatoryLanguage?.trim() || null,
   };
 }
 
@@ -112,18 +87,16 @@ export function formatContextPack(pack: ContextPack): string {
     `lastUserGoal: ${pack.lastUserGoal ?? 'null'}`,
     `activeFlowType: ${pack.activeFlowType ?? 'null'}`,
     `turnCount: ${pack.turnCount}`,
-    `detectedScriptLanguage: ${pack.detectedScriptLanguage ?? 'null'}`,
+    `explanatoryLanguage: ${pack.explanatoryLanguage ?? 'not declared yet'}`,
     'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
   ];
-  // P19-F4 — placed as an outright override, not a suggestion weighed against
-  // interfaceLanguage (the prose-only version lost to the explicit state value).
-  if (pack.detectedScriptLanguage) {
-    lines.push(
-      `LANGUAGE OVERRIDE: the student's current message is written in ${pack.detectedScriptLanguage} script — this was detected deterministically from the actual characters typed, not inferred. `
-      + `Respond to this turn in that same language, REGARDLESS of what interfaceLanguage says above (interfaceLanguage is only ever a fallback default — a starting point the UI happened to offer, e.g. because the student's real language wasn't an option in the picker — never an instruction to answer in a language the student is not using). `
-      + 'This does not apply to the Spanish target-language content itself (vocabulary, example sentences, exercises the student is learning) — those stay in Spanish as always. It applies to your own explanatory prose, questions, and conversation. '
-      + 'If the student explicitly asks to continue in a different language, honor that request on this and subsequent turns instead.',
-    );
-  }
+  // 7.3.2: language is the Tutor's decision, remembered by the session.
+  // interfaceLanguage is a starting default, never a limit on what the Tutor
+  // can speak. The student's language, declared or evident, always wins.
+  lines.push(
+    pack.explanatoryLanguage
+      ? `LANGUAGE: you previously settled on "${pack.explanatoryLanguage}" as the language of your explanations for this student. Keep explaining in it, including when the student writes Spanish practice, short answers or exercises (Spanish stays the target language of vocabulary, examples and exercises). Change only if the student asks for another language or clearly moves to one; when you change it, call set_explanatory_language (small call; keep writing your normal reply as usual).`
+      : 'LANGUAGE: no explanatory language has been declared yet. interfaceLanguage is only the starting default offered by the UI, not a limit: you may use ANY language you can write well, whether or not it appears in the UI picker. Use the language the student actually writes in or asks for. Once you settle on the language of your explanations, call set_explanatory_language once (small call; keep writing your normal reply as usual).',
+  );
   return lines.join('\n');
 }

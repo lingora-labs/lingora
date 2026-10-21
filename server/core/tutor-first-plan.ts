@@ -39,6 +39,7 @@ export function buildTutorFirstPlan(
     lastUserGoal: state.lastUserGoal,
     turnCount: state.tokens ?? 0,
     activeMode: state.activeMode,
+    explanatoryLanguage: (state as SessionState & { explanatoryLanguage?: string }).explanatoryLanguage,
   });
 
   return {
