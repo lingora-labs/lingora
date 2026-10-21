@@ -87,3 +87,18 @@ assert.ok(!/Student interface language/.test(mentor),'no second interface-langua
 assert.match(mentor,/n\.opening\?\[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL\]/,'the opening settles no language')
 assert.ok(!/about today in Spanish/.test(mentor),'first-turn directive must not fix the greeting language')
 console.log('PASS 7.3.3 — streamed Tutor opening + OTROS')
+
+// 7.3.3e: model parameters for the validated tutor contract (functional, runs the real function).
+{
+  const src = mentor.slice(mentor.indexOf('export function buildModelParams'), mentor.indexOf('export async function getMentorResponse'))
+  const js = ts.transpileModule(src.replace('export function', 'function'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText
+  const buildModelParams = new Function(js + '\nreturn buildModelParams')()
+  for (const m of ['gpt-5.6-sol', 'gpt-5.4', 'gpt-5.4-mini']) {
+    assert.deepEqual(buildModelParams(m, 8192, 0.7, 0.88), { model: m, max_completion_tokens: 8192, reasoning_effort: 'none', temperature: 0.7 }, m)
+  }
+  assert.deepEqual(buildModelParams('gpt-5', 100, 0.3), { model: 'gpt-5', max_completion_tokens: 100, temperature: 0.3 }, 'original gpt-5 has no "none" effort')
+  assert.deepEqual(buildModelParams('gpt-4o-mini', 100, 0.7, 0.88), { model: 'gpt-4o-mini', max_tokens: 100, temperature: 0.7, top_p: 0.88 })
+  assert.match(mentor, /served/, 'effective model served by the provider is logged')
+  assert.ok(!/diag-battery|_lx|ALLOWED_MODELS|lxModel/.test(mentor), 'no experimental switch in the candidate')
+  console.log('PASS 7.3.3e — model parameters (reasoning_effort=none, temperature 0.7) and clean candidate')
+}

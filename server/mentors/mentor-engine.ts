@@ -349,10 +349,16 @@ export interface ModelParams {
   top_p?: number
   max_tokens?: number
   max_completion_tokens?: number
+  // 'none' is valid for gpt-5.1+ but the installed SDK typings predate it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reasoning_effort?: any
 }
 export function buildModelParams(model: string, tokens: number, temperature?: number, topP?: number): ModelParams {
   const isGPT5Family = /^gpt-5/i.test(model) || /^o[0-9]/i.test(model)
-  if (isGPT5Family) return { model, max_completion_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}) }
+  // 7.3.3d/e: gpt-5.1+ reasons by default; the tutor contract was validated with reasoning off
+  // (reasoning_effort=none + temperature 0.7). One place, every product call site.
+  const noReasoning = /^gpt-5\.[1-9]/i.test(model)
+  if (isGPT5Family) return { model, max_completion_tokens: tokens, ...(noReasoning ? { reasoning_effort: 'none' as const } : {}), ...(temperature !== undefined ? { temperature } : {}) }
   return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) }
 }
 
@@ -409,11 +415,13 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
    let spoken=''
+   let served=''
    const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    const publishLanguage=(l:string)=>{wrapped.explanatoryLanguage=l}
    if(!response){fail('provider_unavailable');yield fallback;return}
    try{
      for await(const chunk of response){
+       if(chunk.model)served=chunk.model
        const d=chunk.choices?.[0]?.delta
        if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
        for(const t of d?.tool_calls??[]){
@@ -425,7 +433,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        }
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
-   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,model,served}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let closureSeen=false
    let declared:string|undefined
@@ -455,7 +463,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }else{fail('unknown_tool')}
    }
    // Bounded observability (no user text): how the language state moved this turn.
-   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length}))
+   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,model,served}))
    // The Tutor declared a delivery but wrote (almost) nothing: let the same
    // Tutor write the material now, in this same turn. No second author.
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
