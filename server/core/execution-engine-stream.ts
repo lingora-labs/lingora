@@ -160,10 +160,14 @@ export function executePlanStream(
         const progress=creditLearningProgress(state,request)
         const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
         if (stream.explanatoryLanguage) patch.explanatoryLanguage = stream.explanatoryLanguage
-        // 7.3.3f: notes the Tutor itself recorded; the platform stores them with provenance.
+        // 7.4: notes the Tutor itself recorded; the platform stores them with provenance and a
+        // persisted id counter so a forgotten id is never reissued to a different note.
         if (stream.memoryOps?.length) {
           const { applyMemoryOps } = await import('../../lib/tutor-memory')
-          patch.tutorMemory = applyMemoryOps((state as unknown as { tutorMemory?: unknown }).tutorMemory, stream.memoryOps, progress.tokens, new Date().toISOString())
+          const applied = applyMemoryOps(state.tutorMemory, stream.memoryOps, progress.tokens, new Date().toISOString(), state.tutorMemorySeq)
+          patch.tutorMemory = applied.entries
+          patch.tutorMemorySeq = applied.seq
+          if (applied.rejected.length || applied.evicted) console.warn('[tutor-memory]', JSON.stringify({ rejectedIds: applied.rejected, evicted: applied.evicted, total: applied.entries.length }))
         }
         Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
