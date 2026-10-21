@@ -1,7 +1,7 @@
 'use client'
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TableRow, QuizQ, Sub, Norm } from './beta-model'
-import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
+import { validateQuizAnswerKey, verifiedKeyFor, quizFingerprint } from '../../lib/quiz-answer-key'
 
 export const ss = (v: unknown): string => typeof v === 'string' ? v : ''
 export const sa = (v: unknown): string[] => Array.isArray(v) ? v.map(ss).filter(Boolean) : []
@@ -44,26 +44,48 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
   return <TableArtifactBlock content={content} />
 }
 
-export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewMode?: boolean }) {
-  const [ans, setAns] = useState<Record<number, number|null>>({})
+export function QuizBlock({ quiz, reviewMode = false, initial }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean } }) {
+  const [ans, setAns] = useState<Record<number, number|null>>(() => {
+    const out: Record<number, number|null> = {}
+    ;(initial?.answers ?? []).forEach((v, i) => { if (typeof v === 'number') out[i] = v })
+    return out
+  })
+  const [sent, setSent] = useState<boolean>(Boolean(initial?.sent))
   const reported = useRef(false)
   const validity = validateQuizAnswerKey(quiz)
-  const requiresReview = reviewMode || !validity.ok
+  // Dual evaluation: a score is only ever produced from a key the system proved itself
+  // (verifiedKeyFor), never from the model's own `correct` index. Items without a proven key are
+  // reviewed by the Tutor, who remains the pedagogical authority.
+  const verified = useMemo(() => quiz.map(q => verifiedKeyFor(q.question, q.options)), [quiz])
+  const requiresReview = reviewMode || !validity.ok || verified.some(v => v === null)
+  const fingerprint = useMemo(() => quizFingerprint(quiz), [quiz])
+  const allAnswered = quiz.length > 0 && quiz.every((_, i) => ans[i] !== undefined && ans[i] !== null)
+  const checkable = verified.filter(v => v !== null).length
+  const rightCount = quiz.reduce((n, _, i) => n + (verified[i] !== null && ans[i] === verified[i] ? 1 : 0), 0)
+  const answeredCheckable = quiz.reduce((n, _, i) => n + (verified[i] !== null && ans[i] !== undefined && ans[i] !== null ? 1 : 0), 0)
+  const first = useRef(true)
+  useEffect(() => {
+    if (first.current) { first.current = false; return }
+    window.dispatchEvent(new CustomEvent('lingora-quiz-progress', { detail: { key: fingerprint, answers: quiz.map((_, i) => ans[i] ?? null), sent } }))
+  }, [ans, sent, fingerprint, quiz])
   useEffect(() => {
     if (requiresReview || reported.current || quiz.length === 0 || quiz.some((_, i) => ans[i] === undefined || ans[i] === null)) return
     reported.current = true
     const responses = quiz.map((q, i) => ({
       question:q.question, chosen:q.options[ans[i] as number],
-      expected:q.options[q.correct], correct: ans[i] === q.correct,
-      explanation:q.explanation ?? '',
+      expected:q.options[verified[i] as number], correct: ans[i] === verified[i],
+      explanation:q.correct === verified[i] ? (q.explanation ?? '') : '',
     }))
     window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
-  }, [ans, quiz, requiresReview])
+  }, [ans, quiz, requiresReview, verified])
   if (!quiz.length) return null
   return (
-    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }} data-testid="quiz-block">
       {quiz.map((q, qi) => {
         const sel = ans[qi] ?? null; const done = sel !== null
+        const key = verified[qi]; const hasKey = key !== null
+        // Verified items lock at first tap (no retry-until-right); unverified ones stay editable until sent.
+        const locked = sent || (done && hasKey)
         return (
           <div key={qi} style={{ border:'1px solid var(--border)', borderRadius:14, padding:14, background:'rgba(255,255,255,.02)' }}>
             <div style={{ fontSize:14, fontWeight:700, color:'#fff', marginBottom:10, lineHeight:1.5 }}>{qi+1}. {q.question}</div>
@@ -71,40 +93,62 @@ export function QuizBlock({ quiz, reviewMode = false }: { quiz: QuizQ[]; reviewM
               {q.options.map((opt, oi) => {
                 const isSel = oi === sel
                 let bg='transparent', bc='var(--border)', col='var(--silver)'
-                if (requiresReview && isSel) { bg='rgba(0,201,167,.1)'; bc='var(--teal)'; col='var(--teal)' }
-                if (done && !requiresReview) {
-                  const isOk = oi === q.correct
+                if (isSel) { bg='rgba(0,201,167,.1)'; bc='var(--teal)'; col='var(--teal)' }
+                if (done && hasKey) {
+                  const isOk = oi === key
                   if (isOk)           { bg='rgba(0,201,167,.12)'; bc='var(--teal)'; col='var(--teal)' }
                   if (isSel && !isOk) { bg='rgba(255,107,107,.1)'; bc='var(--coral)'; col='var(--coral)' }
                 }
-                return <button key={oi} disabled={done && !requiresReview} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:done && !requiresReview?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
+                return <button key={oi} type="button" data-testid={`quiz-opt-${qi}-${oi}`} disabled={locked} aria-pressed={isSel} onClick={() => setAns(p => ({...p,[qi]:oi}))} style={{ textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:`1px solid ${bc}`, background:bg, color:col, cursor:locked?'default':'pointer', fontSize:13, fontWeight:600 }}>{'ABCD'[oi]}) {opt}</button>
               })}
             </div>
-            {done && !requiresReview && (
-              <div style={{ marginTop:8, fontSize:12, fontWeight:700, display:'flex', flexDirection:'column', gap:4 }}>
-                {sel === q.correct
-                  ? <span style={{ color:'var(--teal)' }}>✅ Correcto</span>
-                  : <span style={{ color:'var(--coral)' }}>❌ Incorrecto — la respuesta correcta es: <strong style={{ color:'#fff' }}>{q.options[q.correct]}</strong></span>}
-                {q.explanation && <span style={{ color:'var(--muted)', fontWeight:400, fontSize:11 }}>{q.explanation}</span>}
+            {done && hasKey && (
+              <div style={{ marginTop:8, fontSize:12, fontWeight:700, display:'flex', flexDirection:'column', gap:4 }} data-testid={`quiz-verified-${qi}`}>
+                {sel === key
+                  ? <span style={{ color:'var(--teal)' }}>✅ Correcto <span style={{ fontWeight:400, color:'var(--muted)' }}>(verificado automáticamente)</span></span>
+                  : <span style={{ color:'var(--coral)' }}>❌ Incorrecto — la respuesta correcta es: <strong style={{ color:'#fff' }}>{q.options[key as number]}</strong> <span style={{ fontWeight:400, color:'var(--muted)' }}>(verificado automáticamente)</span></span>}
+                {q.explanation && q.correct === key && <span style={{ color:'var(--muted)', fontWeight:400, fontSize:11 }}>{q.explanation}</span>}
               </div>
+            )}
+            {done && !hasKey && (
+              <div style={{ marginTop:8, fontSize:11, color:'var(--muted)' }} data-testid={`quiz-pending-${qi}`}>Pendiente de la revisión de tu Tutor.</div>
             )}
           </div>
         )
       })}
+      {checkable > 0 && answeredCheckable > 0 && (
+        <div style={{ fontSize:12, color:'var(--silver)' }} data-testid="quiz-autoscore">
+          Autocorrección verificable: {rightCount}/{checkable} {checkable < quiz.length ? `(en ${checkable} de ${quiz.length} preguntas; el resto lo revisa tu Tutor)` : ''}
+        </div>
+      )}
       {requiresReview && (
         <div style={{ border:'1px solid var(--border)',borderRadius:12,padding:12 }}>
           <div style={{fontSize:12,color:'var(--silver)',marginBottom:8}}>
-            La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática.
+            La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática a las preguntas sin clave verificable; tu Tutor las revisa y explica cada resultado.
           </div>
-          <button
-            disabled={!quiz.every((_,i)=>ans[i]!==undefined && ans[i]!==null)}
-            onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-review-request', {
-              detail:{responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number]}))}
-            }))}
-            style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--teal)',color:'var(--teal)',background:'rgba(0,201,167,.1)',cursor:'pointer'}}>
-            Revisar mis respuestas con Sarah
-          </button>
+          {!sent ? (
+            <button
+              type="button" data-testid="quiz-review-send"
+              disabled={!allAnswered}
+              onClick={() => {
+                setSent(true)
+                window.dispatchEvent(new CustomEvent('lingora-quiz-review-request', {
+                  detail:{responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number],...(verified[i]!==null?{verified:ans[i]===verified[i]?'correct':'incorrect'}:{})}))}
+                }))
+              }}
+              style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--teal)',color:'var(--teal)',background:'rgba(0,201,167,.1)',cursor:allAnswered?'pointer':'default',opacity:allAnswered?1:.5}}>
+              Revisar mis respuestas con mi Tutor
+            </button>
+          ) : (
+            <div style={{fontSize:12,color:'var(--teal)',fontWeight:700}} data-testid="quiz-sent">Enviado a tu Tutor ✓ — su revisión aparece en el chat.</div>
+          )}
         </div>
+      )}
+      {(sent || (!requiresReview && allAnswered)) && (
+        <button type="button" data-testid="quiz-continue" onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-continue'))}
+          style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--border)',color:'var(--silver)',background:'transparent',cursor:'pointer'}}>
+          Seguir aprendiendo con mi Tutor
+        </button>
       )}
     </div>
   )
