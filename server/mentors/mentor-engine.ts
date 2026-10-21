@@ -1,93 +1,6 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// SEEK 5.0 P4 budget + E-06 structured artifact channel (post-content)
-// SEEK 5.0 P8b — multi-signal decision: tokens 400→700 + explicit multi-call reminder
-// SEEK 5.0 P8c — root cause fix: decision call only saw taught.slice(0, 8000).
-// Forensic WILLY FREE run produced 16,941 chars; the second taught domain
-// (Acupuntura) landed past the 8000-char cut and was invisible to the model
-// deciding signal_artifact calls — so only the first domain could ever be
-// signalled. Raised to 40000 (comfortably above observed compound-act length,
-// well within model context).
-//
-// SEEK 5.0 P10 — ARTIFACT EMISSION RELIABILITY.
-// Root cause: the decision call relied on the model spontaneously emitting
-// MULTIPLE tool_calls (signal_artifact) within a single completion. Measured
-// via an isolated harness (20 controlled runs against one fixed captured
-// taught text, decision temperature 0): 16/20 (80%) produced 2 signals, 4/20
-// produced only 1 — and in every failure, the FIRST domain (Español) was kept
-// and the SECOND (Acupuntura) was silently dropped. finish_reason was
-// "tool_calls" (never "length") in 100% of sampled runs — ruling out token
-// truncation. This is inherent unreliability in multi-tool-call emission,
-// not a token budget or context-window problem.
-// Fix: replaced multi-tool-calling with a single structured JSON list
-// ("list every subject that warrants materialization"), which CODE then
-// iterates deterministically to build one ArtifactSignal per listed entry.
-// The model still decides WHAT/WHETHER to materialize — unchanged authority
-// over pedagogical/materialization judgment. The CODE now executes that
-// decision deterministically instead of depending on the API returning N
-// tool_calls in one turn. Validated in the same harness: 40/40 (100%) across
-// two independent captured taught texts, versus the tool-calling baseline's
-// measured 80%. Teaching/streaming untouched; only the decision mechanism
-// after teaching changed.
-//
-// SEEK 5.0 P19-F — SPONTANEOUS ARTIFACT ON TRIVIAL TURNS.
-// Root cause confirmed in production (reproduced ~1 in 3-4 tries, so
-// non-deterministic — an LLM decision at temperature > 0, not a fixed
-// routing bug): a bare first-turn greeting + opening question ("¡Hola!
-// ... escribe 2 frases sobre ti") sometimes triggered emit_pdf and
-// materialized the greeting itself as a downloadable PDF titled "Saludo
-// inicial...". Two contributing factors, both fixed together:
-// 1) FIRST_TURN_DIRECTIVE / DIAGNOSTIC_FIRST_TURN_DIRECTIVE and
-//    ARTIFACT_CHANNEL_INSTRUCTION (lib/artifact-signal.ts) never told the
-//    model that a greeting/opening-question/diagnostic-prompt turn does
-//    NOT constitute "pedagogical completion" worth materializing — both
-//    now say so explicitly.
-// 2) The `taught.trim().length < 200` guard below decided whether
-//    decideArtifactSignals ran at all. A real first-turn greeting response
-//    naturally lands at 150-270 characters — straddling that threshold, so
-//    the guard was close to a coin flip rather than a reliable filter.
-//    Raised to 350 (see inline comment) as a deterministic backstop
-//    alongside the instruction-level fix, not a replacement for it.
-//
-// SEEK 5.0 BASE-MODEL-PARITY — CONVERSATION HISTORY RESTORED.
-// Root gap confirmed by direct code inspection (not theory): every OpenAI
-// call below sent exactly [{system}, {user: current turn}] — two messages,
-// always. No prior turn ever reached the model as real dialogue; only a
-// handful of derived SessionState scalars (lastConcept, lastUserGoal,
-// confirmedLevel) survived across turns, extracted by regex
-// (context-pack.ts's extractDomain). This is a materially different, far
-// poorer signal than an actual multi-turn conversation: the Zakia
-// benchmark's class of intelligence (profile, hesitation, and goal
-// surfacing gradually across 8 real turns) is exactly what this bottleneck
-// prevents — the model answering turn 6 could never see what was actually
-// said in turn 3, only whatever a regex happened to extract. Fix: recent
-// real turns now flow through end to end — ChatRequest.conversationHistory
-// (contracts.ts) -> NormalizedMentorCall.history -> spliced into the actual
-// `messages` array sent to OpenAI, between system and the current turn, in
-// both getMentorResponse and getMentorResponseStream. Additive: any caller
-// that doesn't supply history (legacy normalizeLegacyCall, existing
-// harnesses) gets an empty array and behaves exactly as before.
-//
-// SEEK 5.0 BASE-MODEL-PARITY — GENERAL-QUESTION OVERSTRUCTURING.
-// Root cause confirmed via same-model harness (general_control_comparison):
-// the SAME model, asked "Explícame brevemente por qué el cielo es azul"
-// with only a minimal purpose statement, answered in 252 chars with no
-// table. Through the normal runtime (RICH_CONTENT_DIRECTIVE — the DEFAULT
-// mentor directive for 'interact' mode, i.e. most ordinary conversation;
-// see orchestrator.ts line ~635), the same question produced 770 chars
-// with a markdown table, an added "matiz importante" aside, and a closing
-// menu of follow-up offers. The directive's own wording — "Use tables,
-// structured explanations... when they serve the student" — was being
-// read as a standing default for ANY substantive answer, not a condition
-// tied to whether THIS content actually benefits from that structure.
-// Fix: reworded RICH_CONTENT_DIRECTIVE to make depth explicitly
-// proportional to the question, reserving tables/structure for content
-// that genuinely needs it (comparisons, vocab sets, grammar contrasts,
-// explicit step-by-step requests) and stating plainly that a simple
-// factual aside gets a direct, ordinary-conversation-length answer unless
-// the student's own wording asks for depth. This is a single directive's
-// text, not a new mechanism — routing, artifact authority and memory are
-// untouched.
+// (header history condensed in this DIAGNOSTIC branch copy; the candidate branch keeps the full header)
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -162,9 +75,6 @@ type NormalizedMentorCall = {
   plan?: ExecutionPlan
   action?: string
   priorContext?: string
-  // BASE-MODEL-PARITY — see ChatRequest.conversationHistory (contracts.ts)
-  // for the root-gap rationale. Empty/undefined for any caller that hasn't
-  // opted in (legacy path, harnesses) — behavior there is unchanged.
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   // True only when the student has written nothing yet (session-open turn): a
   // structural fact about the request, not a reading of anyone's words.
@@ -313,10 +223,6 @@ export function buildMentorPrompt(params: {
   const baseModeInstructions = getModeInstruction(resolveProtocolMode(mode), topic)
   const modeInstructions = baseModeInstructions
   const pack = resolveTurnContextPack(params.message, state, params.plan)
-  // A runtime milestone, not an independent pedagogical brain. The tutor
-  // writes the actual review content through the same typed turn closure.
-  // Data from completed UI quiz: actual selected, expected, and graded answers.
-  // This is context to inform Willy, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
   const opening = Boolean(params.opening)
@@ -325,7 +231,12 @@ export function buildMentorPrompt(params: {
     : opening
       ? '[SESSION LOCALE: targetLanguage=es. This is the opening greeting; its language format is given in the language note.]\n\n'
       : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
+  // DIAGNOSTIC 7.3.3c (temporary): bisect the system prompt by piece via state._lx 'drop:a+b' / 'only:a+b'.
+  const lxs = String((state as { _lx?: unknown })._lx ?? '')
+  const dropSet = (/drop:([a-z+]+)/.exec(lxs)?.[1] ?? '').split('+')
+  const onlySet = /only:([a-z+]+)/.exec(lxs)?.[1]?.split('+')
+  const keep = (k: string) => (onlySet ? onlySet.includes(k) : !dropSet.includes(k))
+  const system = [keep('env') ? localeEnvelope : '', keep('persona') ? profile.system : '', keep('artifact') ? ARTIFACT_CHANNEL_INSTRUCTION : '', keep('directive') ? executionDirective : '', keep('mode') ? modeInstructions : '', keep('prohib') ? TUTOR_PROHIBITIONS : '', keep('ctx') ? buildContext(state, opening) : '', recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', keep('pack') ? '\n\n' + formatContextPack(pack, { opening }) : '', keep('comm') ? commercialContextForTurn(params.message, state) : ''].filter(Boolean).join('')
   return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
 }
 
@@ -396,7 +307,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // The opening greeting settles no language: that tool exists only once the student has written.
  const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
  // DIAGNOSTIC 7.3.3c (temporary, never part of the candidate): controlled comparison switch _lx.
- const lx=String((n.state as {_lx?:unknown})._lx??'').split(',')
+ const lx=String((n.state as {_lx?:unknown})._lx??'').split(';')
  const toolset=lx.includes('notool')&&n.state.explanatoryLanguage?tools.filter(t=>t!==SET_EXPLANATORY_LANGUAGE_TOOL):tools
  const noteMsg={role:'system',content:languageNote}
  const userMsg={role:'user',content:user}
@@ -465,8 +376,6 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    }
    // Bounded observability (no user text): how the language state moved this turn.
    console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,lx:lx.join('+')}))
-   // The Tutor declared a delivery but wrote (almost) nothing: let the same
-   // Tutor write the material now, in this same turn. No second author.
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
    const declaredOnly=!deliveries.length&&!closed&&Boolean(declared)
    if(!closed&&((deliveries.length&&spoken.trim().length<400)||(declaredOnly&&!spoken.trim()))){
