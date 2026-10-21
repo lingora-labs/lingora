@@ -15,15 +15,25 @@ assert.deepEqual(SET_EXPLANATORY_LANGUAGE_TOOL.function.parameters.required,['la
 
 // Declared language persists across a Spanish-practice turn; the UI default is superseded and not shown.
 const dp=buildContextPack({interfaceLanguage:'es',message:'Yo vivo en Madrid',explanatoryLanguage:'ar'})
-const declared=formatContextPack(dp)
-assert.match(declared,/explanatoryLanguage: ar/)
-assert.ok(!/interfaceLanguage:/.test(declared),'declared language must not coexist with the UI default')
+for(const opening of [false,true]){
+  const declared=formatContextPack(dp,{opening})
+  assert.match(declared,/explanatoryLanguage: ar/)
+  assert.ok(!/interfaceLanguage/.test(declared),'declared language must not coexist with the UI default')
+}
 const note=formatLanguageTurnNote(dp)
 assert.match(note,/explanatoryLanguage = "ar"/)
 assert.match(note,/even though the student's message below may be Spanish practice/)
-const fresh=buildContextPack({interfaceLanguage:'en',message:'hola'})
-assert.match(formatContextPack(fresh),/interfaceLanguage: en/)
-assert.match(formatLanguageTurnNote(fresh),/ANY language you can write well, whether or not it appears in the UI picker/)
+
+// 7.3.2d: before any declaration, the UI default is visible ONLY for the opening greeting.
+const fresh=buildContextPack({interfaceLanguage:'es',message:'مرحبا'})
+assert.match(formatContextPack(fresh,{opening:true}),/interfaceLanguage \(starting default for the opening greeting only\): es/)
+assert.match(formatLanguageTurnNote(fresh,{opening:true}),/opening greeting only/)
+const afterWrite=formatContextPack(fresh,{opening:false})
+assert.ok(!/interfaceLanguage/.test(afterWrite),'once the student writes, the UI default has no voice')
+const freshNote=formatLanguageTurnNote(fresh,{opening:false})
+assert.ok(!/interfaceLanguage|"es"/.test(freshNote),'undeclared note must not mention the UI default')
+assert.match(freshNote,/any language you can write well/)
+assert.match(freshNote,/call set_explanatory_language once/)
 
 // Source barriers: no script detector, not required every turn, state carried.
 const pack=fs.readFileSync(root+'lib/context-pack.ts','utf8')
@@ -42,4 +52,8 @@ const profiles=fs.readFileSync(root+'server/mentors/profiles.ts','utf8')
 assert.ok(!/van en interfaceLanguage/.test(profiles),'persona must not bind explanations to interfaceLanguage')
 assert.match(profiles,/CONTRATO DE IDIOMA \(7\.3\.2/)
 assert.match(profiles,/NO cambia el idioma de tus explicaciones/)
+const art=fs.readFileSync(root+'lib/artifact-signal.ts','utf8')
+assert.ok(!/Do not call any tool for simple conversation/.test(art),'closure contract must not forbid the one language call')
+assert.match(art,/the one exception is set_explanatory_language/)
+assert.match(mentor,/\[tutor-language\]/,'bounded language observability must exist')
 console.log('PASS 7.3.2b — persona language contract agrees with explanatoryLanguage')
