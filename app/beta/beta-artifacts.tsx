@@ -4,6 +4,56 @@ import type { Artifact } from './beta-model'
 import type { QuizQ } from './beta-model'
 import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock, fmt } from './beta-schema'
 
+// 7.4 — Chromium blocks top-level navigation to data: URLs, so a plain <a href="data:text/html…">
+// never opens. The same bytes are turned into a Blob in the browser and opened (or downloaded)
+// from a blob: URL. The HTML stays self-contained: its interactions travel inside the file.
+export function dataUrlToHtmlBlob(dataUrl: string): Blob | null {
+  const m = /^data:text\/html(?:;charset=[^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl)
+  if (!m) return null
+  try {
+    if (m[1]) {
+      const bin = atob(m[2])
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      return new Blob([bytes], { type: 'text/html;charset=utf-8' })
+    }
+    return new Blob([decodeURIComponent(m[2])], { type: 'text/html;charset=utf-8' })
+  } catch { return null }
+}
+
+function HtmlVersionActions({ webUrl }: { webUrl: string }) {
+  const [err, setErr] = React.useState('')
+  const make = () => {
+    const blob = dataUrlToHtmlBlob(webUrl)
+    if (!blob) { setErr('No se pudo preparar la versión web.'); return null }
+    setErr('')
+    return URL.createObjectURL(blob)
+  }
+  const open = () => {
+    const url = make()
+    if (!url) return
+    const w = window.open(url, '_blank')
+    if (!w) setErr('El navegador bloqueó la ventana. Usa «Descargar HTML».')
+    setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000)
+  }
+  const download = () => {
+    const url = make()
+    if (!url) return
+    const a = document.createElement('a')
+    a.href = url; a.download = 'lingora-material-interactivo.html'
+    document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 60 * 1000)
+  }
+  const btn: React.CSSProperties = { display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.25)', color:'var(--teal)', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }
+  return (
+    <>
+      <button type="button" data-testid="html-open" onClick={open} style={btn}>🌐 Abrir versión interactiva</button>
+      <button type="button" data-testid="html-download" onClick={download} style={btn}>⬇ Descargar HTML</button>
+      {err && <span role="alert" style={{ fontSize:12, color:'var(--gold)', alignSelf:'center' }}>{err}</span>}
+    </>
+  )
+}
+
 export function ArtifactRender({ a }: { a: Artifact }) {
   if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
@@ -28,7 +78,7 @@ export function ArtifactRender({ a }: { a: Artifact }) {
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
           <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{title}</span>
         </div>
-        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} /></div>
+        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} /></div>
       </div>
     )
   }
@@ -45,9 +95,7 @@ export function ArtifactRender({ a }: { a: Artifact }) {
     const webUrl = (a as { webUrl?: string }).webUrl
     return (
       <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:6 }}>
-        {webUrl && (
-          <a href={webUrl} target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.25)', color:'var(--teal)', fontSize:13, fontWeight:700 }}>🌐 Abrir versión web</a>
-        )}
+        {webUrl && <HtmlVersionActions webUrl={webUrl} />}
         <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>{label}</a>
       </div>
     )
