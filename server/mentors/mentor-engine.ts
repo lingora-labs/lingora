@@ -88,15 +88,6 @@
 // the student's own wording asks for depth. This is a single directive's
 // text, not a new mechanism — routing, artifact authority and memory are
 // untouched.
-//
-// 7.3.2 — LANGUAGE IS THE TUTOR'S DECISION. interfaceLanguage is only the
-// starting default. The Tutor may call set_explanatory_language (optional,
-// small, never required per turn); the session remembers it and the
-// ContextPack returns it as a fact. No script detector, no word lists.
-// 7.3.2c — once declared, explanatoryLanguage is the ONLY language value shown
-// (interfaceLanguage is withdrawn from the locale envelope, the session
-// context and the ContextPack), and the language note is sent as a system
-// message adjacent to the student's turn.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -173,6 +164,9 @@ type NormalizedMentorCall = {
   // for the root-gap rationale. Empty/undefined for any caller that hasn't
   // opted in (legacy path, harnesses) — behavior there is unchanged.
   history: Array<{ role: 'user' | 'assistant'; content: string }>
+  // True only when the student has written nothing yet (session-open turn): a
+  // structural fact about the request, not a reading of anyone's words.
+  opening: boolean
 }
 
 export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; deliveryFailure?: string }
@@ -241,11 +235,11 @@ function resolveTurnContextPack(message: string, state: LegacyMentorState, plan?
     explanatoryLanguage: state.explanatoryLanguage,
   })
 }
-function buildContext(state: LegacyMentorState): string {
+function buildContext(state: LegacyMentorState, opening: boolean): string {
   const parts: string[] = []
   const level = resolveLevel(state)
   const topic = resolveTopic(state)
-  const lang = state.explanatoryLanguage ?? resolveInterfaceLanguage(state)
+  const lang = state.explanatoryLanguage ?? (opening ? resolveInterfaceLanguage(state) : undefined)
   if (level && level !== 'A0') parts.push(`Level: ${level}`)
   if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
   if (topic) parts.push(`Current topic: ${topic}`)
@@ -300,6 +294,7 @@ export function buildMentorPrompt(params: {
   action?: string
   plan?: ExecutionPlan
   history?: Array<{ role: string; content: string }>
+  opening?: boolean
 }): { system: string; user: string; languageNote: string } {
   const state = params.state ?? {}
   const profile = getMentorProfile(resolveMentorName(state))
@@ -321,15 +316,18 @@ export function buildMentorPrompt(params: {
   // This is context to inform Willy, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
+  const opening = Boolean(params.opening)
   const localeEnvelope = state.explanatoryLanguage
     ? `[SESSION LOCALE: explanatoryLanguage=${state.explanatoryLanguage}; targetLanguage=es. The language of your explanations is the one you settled on for this student; Spanish examples use targetLanguage.]\n\n`
-    : `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. interfaceLanguage is only the starting default for the first greeting, never a limit: the language the student uses or asks for always wins, and any language you can write is allowed. Spanish examples use targetLanguage.]\n\n`
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
-  return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack) }
+    : opening
+      ? `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)} (starting default for the opening greeting only, never a limit); targetLanguage=es. Spanish examples use targetLanguage.]\n\n`
+      : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
+  return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening }) }
 }
 
 function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
-  return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined, history: [] }
+  return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined, history: [], opening: !String(message ?? '').trim() }
 }
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
@@ -339,7 +337,7 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall
   const history = Array.isArray(rawHistory)
     ? rawHistory.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim().length > 0)
     : []
-  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history }
+  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history, opening: !rawMessage }
 }
 
 export interface ModelParams {
@@ -361,7 +359,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   const normalized: NormalizedMentorCall = typeof arg1 === 'string' ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3) : normalizeRuntimeCall(arg1)
   const { system, user, languageNote } = buildMentorPrompt({
     message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
-    plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext, history: normalized.history,
+    plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext, history: normalized.history, opening: normalized.opening,
   })
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
@@ -382,7 +380,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
  const n=normalizeRuntimeCall(params)
- const {system,user,languageNote}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history})
+ const {system,user,languageNote}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history,opening:n.opening})
  const signals:ArtifactSignal[]=[]
  const deliveries:TextDelivery[]=[]
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
@@ -423,7 +421,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        }
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
-   if(!calls.size){if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let closureSeen=false
    let declared:string|undefined
@@ -452,6 +450,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        if(lang){declared=lang;publishLanguage(lang)}else fail('invalid_language_code')
      }else{fail('unknown_tool')}
    }
+   // Bounded observability (no user text): how the language state moved this turn.
+   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length}))
    // The Tutor declared a delivery but wrote (almost) nothing: let the same
    // Tutor write the material now, in this same turn. No second author.
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
