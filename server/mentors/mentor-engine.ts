@@ -241,11 +241,12 @@ function buildContext(state: LegacyMentorState, opening: boolean): string {
   const parts: string[] = []
   const level = resolveLevel(state)
   const topic = resolveTopic(state)
-  const lang = state.explanatoryLanguage ?? (opening ? resolveInterfaceLanguage(state) : undefined)
+  void opening
+  const lang = state.explanatoryLanguage
   if (level && level !== 'A0') parts.push(`Level: ${level}`)
   if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
   if (topic) parts.push(`Current topic: ${topic}`)
-  if (lang) parts.push(state.explanatoryLanguage ? `Explanatory language: ${lang}` : `Student interface language: ${lang}`)
+  if (lang) parts.push(`Explanatory language: ${lang}`)
   return parts.length > 0 ? '\n\n[Session state: ' + parts.join(' | ') + ']' : ''
 }
 
@@ -260,7 +261,7 @@ const DIRECTIVE_INSTRUCTIONS: Record<string, string> = {
   PDF_COURSE_DIRECTIVE: 'You are generating formal course material. Content should be structured, downloadable-quality, and self-contained.',
   CORRECTION_ONLY_DIRECTIVE: 'The student asked for a correction. Correct exactly what they wrote. Do not teach a full lesson.',
   TRANSLATION_ONLY_DIRECTIVE: 'The student asked for a translation. Provide ONLY the translation.',
-  FIRST_TURN_DIRECTIVE: 'On a simple first greeting in Free mode, greet briefly and invite one immediate concrete microaction: ask the student to write or say a single sentence about today in Spanish, which you can then respond to naturally. Do not offer a list of alternative menus or defer to a mode choice. The Spanish-learning opportunity is optional if the student then changes subject. No lesson or unsolicited artifacts for the greeting: use artifacts: [].',
+  FIRST_TURN_DIRECTIVE: 'On a simple first greeting in Free mode, greet briefly and invite one immediate concrete microaction: invite the student to write a single sentence about today, which you can then respond to naturally. The language format of this greeting is given in the language note. Do not offer a list of alternative menus or defer to a mode choice. The Spanish-learning opportunity is optional if the student then changes subject. No lesson or unsolicited artifacts for the greeting: use artifacts: [].',
   CURRICULUM_PRESENTER_DIRECTIVE: 'Present a full, structured curriculum for the requested topic.',
   EXERCISE_FEEDBACK_DIRECTIVE: 'The student just responded to an active exercise. Evaluate that specific response only.',
   SCHEMA_DIRECTIVE: 'You are generating a LINGORA study schema. Use only plain text and standard markdown.',
@@ -321,13 +322,11 @@ export function buildMentorPrompt(params: {
   const opening = Boolean(params.opening)
   const localeEnvelope = state.explanatoryLanguage
     ? `[SESSION LOCALE: explanatoryLanguage=${state.explanatoryLanguage}; targetLanguage=es. The language of your explanations is the one you settled on for this student; Spanish examples use targetLanguage.]\n\n`
-    : opening && state.uiLanguageChoice === 'other'
-      ? '[SESSION LOCALE: the student picked OTHER because their language is not in the picker. Open in English with a short greeting and invite them to write one sentence in any language they like, or anything at all; from there use the language they write in. targetLanguage=es.]\n\n'
     : opening
-      ? `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)} (starting default for the opening greeting only, never a limit); targetLanguage=es. Spanish examples use targetLanguage.]\n\n`
+      ? '[SESSION LOCALE: targetLanguage=es. This is the opening greeting; its language format is given in the language note.]\n\n'
       : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
   const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
-  return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening }) }
+  return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
 }
 
 function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
@@ -370,7 +369,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const completion = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'system', content: languageNote }, { role: 'user', content: user }],
+      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }, { role: 'system', content: languageNote }],
     })
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
@@ -393,8 +392,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
  const budget=resolveOutputBudget(n.plan,pack)
- const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'system',content:languageNote},{role:'user',content:user}]
- const tools=[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
+ const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user},{role:'system',content:languageNote}]
+ // The opening greeting settles no language: that tool exists only once the student has written.
+ const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
