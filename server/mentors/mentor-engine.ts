@@ -95,7 +95,7 @@ import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, formatLanguageTurnNote, type ContextPack } from '@/lib/context-pack'
 import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage } from '@/lib/explanatory-language'
-import { UPDATE_STUDENT_MEMORY_TOOL, parseMemoryOps, formatMemoryBlock, selectHistoryWindow, type TutorMemoryOp } from '@/lib/tutor-memory'
+import { UPDATE_STUDENT_MEMORY_TOOL, parseMemoryOps, formatMemoryBlock, selectHistoryWindow, planHistoryBudget, formatContextNote, type TutorMemoryOp } from '@/lib/tutor-memory'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
 import {
@@ -142,8 +142,6 @@ type LegacyMentorState = Partial<SessionState> & {
   awaitingQuizAnswer?: boolean
   samples?: unknown[]
   explanatoryLanguage?: string
-  // 7.3.3f: notes the Tutor itself recorded (validated shape; shown back each turn).
-  tutorMemory?: unknown
   // UI fact: the student picked OTROS (their language is not in the picker).
   uiLanguageChoice?: string
 }
@@ -343,11 +341,27 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall
   const valid = Array.isArray(rawHistory)
     ? rawHistory.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim().length > 0)
     : []
-  // 7.3.3f: the Tutor sees the whole thread that fits a token budget (not a message count).
-  const envBudget = Number(process.env.LINGORA_HISTORY_TOKEN_BUDGET)
-  const { kept: history, dropped } = selectHistoryWindow(valid, Number.isFinite(envBudget) && envBudget > 0 ? envBudget : undefined)
-  if (dropped > 0) console.info('[tutor-history]', JSON.stringify({ received: valid.length, kept: history.length, dropped }))
-  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history, opening: !rawMessage }
+  // 7.4: the thread is carried whole here; fitHistory() trims it against the INTEGRAL budget
+  // (system + tools + memory + current turn + reply) once the prompt and tools are known.
+  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history: valid, opening: !rawMessage }
+}
+
+/** 7.4: the history gets exactly what the rest of the request leaves in the context window. Nothing is
+ *  cut silently: the numbers are logged and the Tutor is told through a context note. */
+function fitHistory(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  built: { system: string; user: string; languageNote: string },
+  tools: unknown,
+): { history: Array<{ role: 'user' | 'assistant'; content: string }>; note: string } {
+  const ctx = Number(process.env.LINGORA_CONTEXT_TOKENS)
+  const cap = Number(process.env.LINGORA_HISTORY_TOKEN_BUDGET)
+  const plan = planHistoryBudget({ system: built.system, tools, user: built.user, languageNote: built.languageNote }, {
+    contextTokens: Number.isFinite(ctx) && ctx > 0 ? ctx : undefined,
+    cap: Number.isFinite(cap) && cap > 0 ? cap : undefined,
+  })
+  const w = selectHistoryWindow(history, plan.historyBudget)
+  if (w.dropped > 0 || w.shortened > 0) console.info('[tutor-history]', JSON.stringify({ received: history.length, kept: w.kept.length, dropped: w.dropped, shortened: w.shortened, historyBudget: plan.historyBudget, fixedTokens: plan.fixedTokens }))
+  return { history: w.kept, note: formatContextNote(w) }
 }
 
 export interface ModelParams {
@@ -373,16 +387,19 @@ export async function getMentorResponse(message: string, state?: LegacyMentorSta
 export async function getMentorResponse(params: MentorRuntimeParams): Promise<string>
 export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2?: LegacyMentorState, arg3?: string): Promise<string> {
   const normalized: NormalizedMentorCall = typeof arg1 === 'string' ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3) : normalizeRuntimeCall(arg1)
-  const { system, user, languageNote } = buildMentorPrompt({
+  const built = buildMentorPrompt({
     message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
     plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext, history: normalized.history, opening: normalized.opening,
   })
+  const fit = fitHistory(normalized.history, built, [])
+  const system = built.system + fit.note
+  const { user, languageNote } = built
   try {
     const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const completion = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }, { role: 'system', content: languageNote }],
+      messages: [{ role: 'system', content: system }, ...fit.history, { role: 'user', content: user }, { role: 'system', content: languageNote }],
     })
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
@@ -396,7 +413,8 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
  const n=normalizeRuntimeCall(params)
- const {system,user,languageNote}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history,opening:n.opening})
+ const built=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history,opening:n.opening})
+ const {user,languageNote}=built
  const signals:ArtifactSignal[]=[]
  const deliveries:TextDelivery[]=[]
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
@@ -405,9 +423,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
  const budget=resolveOutputBudget(n.plan,pack)
- const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user},{role:'system',content:languageNote}]
  // The opening greeting settles no language: that tool exists only once the student has written.
  const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL,UPDATE_STUDENT_MEMORY_TOOL]
+ const fit=fitHistory(n.history,built,tools)
+ const baseMessages:any[]=[{role:'system',content:built.system+fit.note},...fit.history,{role:'user',content:user},{role:'system',content:languageNote}]
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
