@@ -62,3 +62,17 @@ console.log('PASS 7.3.2b — persona language contract agrees with explanatoryLa
 assert.ok(mentor.includes('Language recorded: ${declared}'),'continuation tool result must restate the declared language')
 assert.ok(!/Language recorded\. Now write/.test(mentor),'generic language-free tool result must be gone')
 console.log('PASS 7.3.2d — continuation carries the declared language')
+
+// 7.3.3: the Tutor opens the session itself (streamed), and OTROS exists in the language panel.
+const hook=fs.readFileSync(root+'app/beta/use-beta-page.ts','utf8')
+const view=fs.readFileSync(root+'app/beta/beta-page-view.tsx','utf8')
+const sel=hook.slice(hook.indexOf('const selectMode'),hook.indexOf('const resetChat'))
+assert.match(sel,/callAPI\(\{ message: '' \}\)/,'the opening is a streamed Tutor turn, not a static message')
+assert.match(sel,/lastCallFailedRef\.current/,'static welcome is only a failure fallback')
+assert.ok(sel.indexOf("callAPI({ message: '' })")<sel.indexOf('GREETINGS['),'static greeting must come after the streamed opening attempt')
+assert.match(view,/OTROS/,'language panel offers OTROS')
+assert.match(view,/pickOther\(\)/)
+assert.match(hook,/uiLanguageChoice: otherRef\.current \? 'other' : undefined/)
+assert.match(mentor,/opening && state\.uiLanguageChoice === 'other'/,'OTROS shapes only the opening locale')
+assert.match(mentor,/the student picked OTHER because their language is not in the picker/)
+console.log('PASS 7.3.3 — streamed Tutor opening + OTROS')
