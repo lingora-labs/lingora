@@ -9,7 +9,6 @@
 // Manifesto 7.0 arts 47-52; ARCH-9.11 section 8.
 import type { ExecutionPlan, SessionState } from '../../lib/contracts'
 import { buildTutorFirstPlan } from './tutor-first-plan'
-import { reconcileDocumentContract } from './document-contract'
 
 export type RuntimeOperation = 'export_chat_pdf'|'download_pdf'|'hear_audio'|'create_visual_review'|undefined
 export interface RuntimePlanInput {
@@ -76,37 +75,8 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   // hidden mode switch. Direct transformations are local constraints
   // applied by the tutor planner under central execution authority.
   const plan=buildTutorFirstPlan(message,state,interfaceLanguage)
-  const contract=reconcileDocumentContract(message,state)
-  if(contract.kind==='clear') {
-    plan.clearDocumentContract=true
-    plan.documentContractControlOnly=contract.reason.includes('withdrawal') ||
-      contract.reason.includes('Expired')
-    plan.reason+=' Contract cleared: '+contract.reason
-  } else if(contract.next) {
-    plan.documentContractUpdate=contract.next
-    plan.documentContractReady=contract.kind==='ready'
-    plan.documentContractControlOnly=contract.kind==='open'||contract.kind==='continue'
-    if(contract.kind==='ready'){
-      // Source of truth is the student's accumulated contract, not a fresh
-      // keyword classification of a short continuation such as "A1, sobre ...".
-      // The existing ContextPack is the interface to authoring depth;
-      // no new model, no old generateCoursePdf brain, no lowered PDF threshold.
-      const first=plan.executionOrder[0]
-      const params=first.params??{}
-      const pack=params.contextPack as Record<string,unknown>|undefined
-      first.params={
-        ...params,
-        contextPack:pack?{...pack,
-          artifactGoal:'emit_pdf',artifactAction:'author',
-          artifactDepth:'comprehensive',activeFlowType:'course',
-          domain:contract.next.topic,
-        }:pack,
-        outputBudget:8192,
-      }
-      if(plan.mentor)plan.mentor.directive='PDF_COURSE_DIRECTIVE'
-      plan.priority=80
-    }
-    plan.reason+=' Contract state: '+contract.kind
-  }
+  // A stale document request from an earlier build never gates anything now:
+  // the Tutor decides, so any pending contract is simply cleared.
+  if(state.pendingDocumentRequest)plan.clearDocumentContract=true
   return assertExecutionPlan(plan)
 }

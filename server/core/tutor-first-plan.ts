@@ -30,7 +30,7 @@ export function buildTutorFirstPlan(
   // must guide one actionable micro-step instead of drifting into small talk.
   const freeOpeningGreeting = state.activeMode === 'free'
     && (state.tokens ?? 0) <= 2
-    && /^(?:hola|buenas|buenos días|buenas tardes|buenas noches|hi|hello|hey|salut|ciao)[!¡.\s]*$/iu.test(message.trim())
+    && message.trim().split(/\s+/).filter(Boolean).length <= 2
   const contextPack = buildContextPack({
     interfaceLanguage,
     languageProficiency: state.confirmedLevel ?? state.userLevel,

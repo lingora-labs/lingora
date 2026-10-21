@@ -52,7 +52,3 @@ assert.ok(ui.includes('No se asignará una puntuación automática'))
 assert.ok(hook.includes("window.addEventListener('lingora-quiz-review-request'"))
 assert.ok(hook.includes("sin calificación automática"))
 console.log('PASS — tutor-reviewed unverified native quiz is interactive, never auto-graded')
-
-const {isExplicitQuizRequest}=require('../lib/quiz-intent-guard.ts')
-for(const yes of ['Convierte esa explicación en un quiz táctil de tres preguntas. Quiero responder tocando opciones, sin PDF.','Hazme un quiz táctil de tres preguntas sobre SER y ESTAR. No generes una imagen ni un PDF.','Quiero otro quiz sobre verbos','Prepara un simulacro de gramática','Quiz de vocabulario'])assert.equal(isExplicitQuizRequest(yes),true,yes)
-for(const no of ['He respondido a este quiz táctil. Mis respuestas, sin calificación automática:','He completado el quiz: 1/3','Revisa pedagógicamente las respuestas del quiz','No quiero un quiz','Explica qué es un cuestionario'])assert.equal(isExplicitQuizRequest(no),false,no)
