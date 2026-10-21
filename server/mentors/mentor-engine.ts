@@ -395,12 +395,21 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user},{role:'system',content:languageNote}]
  // The opening greeting settles no language: that tool exists only once the student has written.
  const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
+ // DIAGNOSTIC 7.3.3c (temporary, never part of the candidate): controlled comparison switch _lx.
+ const lx=String((n.state as {_lx?:unknown})._lx??'').split(',')
+ const toolset=lx.includes('notool')&&n.state.explanatoryLanguage?tools.filter(t=>t!==SET_EXPLANATORY_LANGUAGE_TOOL):tools
+ const noteMsg={role:'system',content:languageNote}
+ const userMsg={role:'user',content:user}
+ const msgs:any[]=lx.includes('min')?[{role:'system',content:'You are a Spanish tutor for LINGORA. '+languageNote},...n.history,userMsg]
+   :lx.includes('insys')?[{role:'system',content:system+'\n\n'+languageNote},...n.history,userMsg]
+   :lx.includes('before')?[{role:'system',content:system},...n.history,noteMsg,userMsg]
+   :baseMessages
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(model,budget,0.7,0.88),
-     stream:true,tools,tool_choice:wantsVisualReview?'none':'auto',
-     messages:baseMessages,
+     stream:true,tools:toolset,tool_choice:wantsVisualReview?'none':'auto',
+     messages:msgs,
    })
  }catch(e){
    const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
@@ -425,7 +434,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        }
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
-   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
+   if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,lx:lx.join('+')}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let closureSeen=false
    let declared:string|undefined
@@ -455,7 +464,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }else{fail('unknown_tool')}
    }
    // Bounded observability (no user text): how the language state moved this turn.
-   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length}))
+   console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[...calls.values()].map(c=>c.name),declaredOut:declared??null,spokenChars:spoken.length,lx:lx.join('+')}))
    // The Tutor declared a delivery but wrote (almost) nothing: let the same
    // Tutor write the material now, in this same turn. No second author.
    // A language declaration alone only needs a continuation when the Tutor wrote no text.
@@ -466,8 +475,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      try{
        const more:AsyncIterable<any>=await openai.chat.completions.create({
          ...buildModelParams(model,budget,0.7,0.88),
-         stream:true,tools,tool_choice:'none',
-         messages:[...baseMessages,asst,...results],
+         stream:true,tools:toolset,tool_choice:'none',
+         messages:[...msgs,asst,...results],
        })
        if(spoken.trim())yield '\n\n'
        for await(const chunk of more){
