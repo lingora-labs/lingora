@@ -73,21 +73,28 @@ export function buildContextPack(input: {
   };
 }
 
-/** 7.3.2c: the language fact is delivered adjacent to the student's turn (a
- *  trailing system note), not buried mid-prompt: where the model's attention is
- *  strongest. It is the ONLY runtime statement about the explanatory language. */
-export function formatLanguageTurnNote(pack: ContextPack): string {
-  return pack.explanatoryLanguage
-    ? `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}". Write your explanations, corrections and the reasons for each correction in this language, even though the student's message below may be Spanish practice. Spanish stays only for the examples, sentences and exercises you teach. Change language only if the student asks or clearly moves to another one; then call set_explanatory_language (small call; keep writing your reply as usual).`
-    : '[LANGUAGE FOR THIS TURN] No explanatory language has been declared yet. interfaceLanguage is only the starting default offered by the UI, not a limit: you may use ANY language you can write well, whether or not it appears in the UI picker. Use the language the student actually writes in or asks for. Once you settle on the language of your explanations, call set_explanatory_language once (small call; keep writing your reply as usual).'
+/** 7.3.2c/d: the language fact is delivered adjacent to the student's turn (a
+ *  trailing system note). It is the ONLY runtime statement about the
+ *  explanatory language. The UI default (interfaceLanguage) is visible to the
+ *  Tutor only while the student has not written anything yet (`opening`): it
+ *  orients the first greeting and has no authority afterwards. */
+export function formatLanguageTurnNote(pack: ContextPack, opts: { opening?: boolean } = {}): string {
+  if (pack.explanatoryLanguage) {
+    return `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}". Write your explanations, corrections and the reasons for each correction in this language, even though the student's message below may be Spanish practice. Spanish stays only for the examples, sentences and exercises you teach. Change language only if the student asks or clearly moves to another one; then call set_explanatory_language (small call; keep writing your reply as usual).`
+  }
+  if (opts.opening) {
+    return `[LANGUAGE FOR THIS TURN] The student has not written yet. For this opening greeting only, the UI offered "${pack.interfaceLanguage}" as a starting default. It is not a limit: once the student writes, use the language they write in or ask for, any language you can write well.`
+  }
+  return '[LANGUAGE FOR THIS TURN] No explanatory language has been declared yet. Answer in the language the student writes in or asks for: any language you can write well, whether or not it appears in any UI picker. Your explanations, corrections and the reasons for each correction go in that language; Spanish stays for the examples and exercises you teach. When you settle on that language, call set_explanatory_language once so it is remembered (small call; keep writing your reply as usual).'
 }
 
-export function formatContextPack(pack: ContextPack): string {
+export function formatContextPack(pack: ContextPack, opts: { opening?: boolean } = {}): string {
   const lines = [
     '[ContextPack — information for this turn; not a decision procedure]',
-    // Once the Tutor has declared its explanatory language, the UI default is
-    // superseded and is not shown: one language statement, no competing value.
-    ...(pack.explanatoryLanguage ? [] : [`interfaceLanguage: ${pack.interfaceLanguage}`]),
+    // The UI default is shown only for the opening greeting; once the student
+    // writes (or the Tutor declares a language) it is withdrawn: one language
+    // statement, no competing value.
+    ...(!pack.explanatoryLanguage && opts.opening ? [`interfaceLanguage (starting default for the opening greeting only): ${pack.interfaceLanguage}`] : []),
     `targetLanguage: ${pack.targetLanguage}`,
     `languageProficiency: ${pack.languageProficiency}`,
     `domain: ${pack.domain ?? 'null'}`,
