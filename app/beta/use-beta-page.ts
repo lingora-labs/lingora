@@ -6,7 +6,6 @@ import {
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
-import { isConversationPdfExportRequest, isPdfProhibitedByUser } from '../../lib/pdf-intent-authorization'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
 export function useBetaPage() {
@@ -149,9 +148,7 @@ export function useBetaPage() {
       ? 'cancelled' : status
   }, [])
   const callAPI = useCallback(async (payload: Record<string, unknown>) => {
-    const noPdfForTurn = isPdfProhibitedByUser(typeof payload.message === 'string' ? payload.message : '')
-    const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] =>
-      noPdfForTurn ? items.filter(a=>!['export_chat_pdf','download_pdf','download_course_pdf'].includes(a.action??a.type??'')) : items
+    const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
     setLoading(true)
     try {
       // BASE-MODEL-PARITY — recent real turns (not a code-derived summary),
@@ -219,7 +216,7 @@ export function useBetaPage() {
                     samples: [...(previous.samples ?? []), ...((parsed.state.samples ?? []).filter((x: string) => !(previous.samples ?? []).includes(x)))],
                     sessionId: previous.sessionId }
                   : previous
-                const defaultActions = noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
+                const defaultActions = [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' as const }]
                 const safeActions = Array.isArray(parsed.suggestedActions) ? filterPdfActions(parsed.suggestedActions) : []
                 const finalActions = safeActions.length > 0 ? safeActions : defaultActions
                 const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
@@ -277,7 +274,7 @@ export function useBetaPage() {
         score: data.pronunciationScore,
         suggestedActions: Array.isArray(data.suggestedActions) && filterPdfActions(data.suggestedActions).length > 0
         ? filterPdfActions(data.suggestedActions)
-        : (noPdfForTurn ? [] : [{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
+        : ([{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e)
       const langNow = langRef.current ?? 'en'
@@ -428,18 +425,6 @@ export function useBetaPage() {
     }
     const payload: Record<string, unknown> = {}
     if (hasText) payload.message = msg
-    // SEEK 2.7 T4: the student's typed export request is the SAME runtime
-    // operation as the already certified touch control, not a prompt to
-    // invent a new PDF about the lesson.
-    if (hasText && isConversationPdfExportRequest(msg)) {
-      const transcript = msgs.map(m => ({
-        sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
-        text: (m.text || '').trim(),
-      })).filter(l => l.text.length > 0)
-        .map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
-      payload.exportTranscript = transcript
-      payload.uiAction = 'export_chat_pdf'
-    }
     if (hasAudio) {
       const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno']
       const inPronMode = sessionRef.current.tutorPhase === 'pronunciation' || sessionRef.current.lastAction === 'pronunciation'
