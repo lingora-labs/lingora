@@ -1,93 +1,13 @@
 // =============================================================================
 // server/mentors/mentor-engine.ts
-// SEEK 5.0 P4 budget + E-06 structured artifact channel (post-content)
-// SEEK 5.0 P8b — multi-signal decision: tokens 400→700 + explicit multi-call reminder
-// SEEK 5.0 P8c — root cause fix: decision call only saw taught.slice(0, 8000).
-// Forensic WILLY FREE run produced 16,941 chars; the second taught domain
-// (Acupuntura) landed past the 8000-char cut and was invisible to the model
-// deciding signal_artifact calls — so only the first domain could ever be
-// signalled. Raised to 40000 (comfortably above observed compound-act length,
-// well within model context).
-//
-// SEEK 5.0 P10 — ARTIFACT EMISSION RELIABILITY.
-// Root cause: the decision call relied on the model spontaneously emitting
-// MULTIPLE tool_calls (signal_artifact) within a single completion. Measured
-// via an isolated harness (20 controlled runs against one fixed captured
-// taught text, decision temperature 0): 16/20 (80%) produced 2 signals, 4/20
-// produced only 1 — and in every failure, the FIRST domain (Español) was kept
-// and the SECOND (Acupuntura) was silently dropped. finish_reason was
-// "tool_calls" (never "length") in 100% of sampled runs — ruling out token
-// truncation. This is inherent unreliability in multi-tool-call emission,
-// not a token budget or context-window problem.
-// Fix: replaced multi-tool-calling with a single structured JSON list
-// ("list every subject that warrants materialization"), which CODE then
-// iterates deterministically to build one ArtifactSignal per listed entry.
-// The model still decides WHAT/WHETHER to materialize — unchanged authority
-// over pedagogical/materialization judgment. The CODE now executes that
-// decision deterministically instead of depending on the API returning N
-// tool_calls in one turn. Validated in the same harness: 40/40 (100%) across
-// two independent captured taught texts, versus the tool-calling baseline's
-// measured 80%. Teaching/streaming untouched; only the decision mechanism
-// after teaching changed.
-//
-// SEEK 5.0 P19-F — SPONTANEOUS ARTIFACT ON TRIVIAL TURNS.
-// Root cause confirmed in production (reproduced ~1 in 3-4 tries, so
-// non-deterministic — an LLM decision at temperature > 0, not a fixed
-// routing bug): a bare first-turn greeting + opening question ("¡Hola!
-// ... escribe 2 frases sobre ti") sometimes triggered emit_pdf and
-// materialized the greeting itself as a downloadable PDF titled "Saludo
-// inicial...". Two contributing factors, both fixed together:
-// 1) FIRST_TURN_DIRECTIVE / DIAGNOSTIC_FIRST_TURN_DIRECTIVE and
-//    ARTIFACT_CHANNEL_INSTRUCTION (lib/artifact-signal.ts) never told the
-//    model that a greeting/opening-question/diagnostic-prompt turn does
-//    NOT constitute "pedagogical completion" worth materializing — both
-//    now say so explicitly.
-// 2) The `taught.trim().length < 200` guard below decided whether
-//    decideArtifactSignals ran at all. A real first-turn greeting response
-//    naturally lands at 150-270 characters — straddling that threshold, so
-//    the guard was close to a coin flip rather than a reliable filter.
-//    Raised to 350 (see inline comment) as a deterministic backstop
-//    alongside the instruction-level fix, not a replacement for it.
-//
-// SEEK 5.0 BASE-MODEL-PARITY — CONVERSATION HISTORY RESTORED.
-// Root gap confirmed by direct code inspection (not theory): every OpenAI
-// call below sent exactly [{system}, {user: current turn}] — two messages,
-// always. No prior turn ever reached the model as real dialogue; only a
-// handful of derived SessionState scalars (lastConcept, lastUserGoal,
-// confirmedLevel) survived across turns, extracted by regex
-// (context-pack.ts's extractDomain). This is a materially different, far
-// poorer signal than an actual multi-turn conversation: the Zakia
-// benchmark's class of intelligence (profile, hesitation, and goal
-// surfacing gradually across 8 real turns) is exactly what this bottleneck
-// prevents — the model answering turn 6 could never see what was actually
-// said in turn 3, only whatever a regex happened to extract. Fix: recent
-// real turns now flow through end to end — ChatRequest.conversationHistory
-// (contracts.ts) -> NormalizedMentorCall.history -> spliced into the actual
-// `messages` array sent to OpenAI, between system and the current turn, in
-// both getMentorResponse and getMentorResponseStream. Additive: any caller
-// that doesn't supply history (legacy normalizeLegacyCall, existing
-// harnesses) gets an empty array and behaves exactly as before.
-//
-// SEEK 5.0 BASE-MODEL-PARITY — GENERAL-QUESTION OVERSTRUCTURING.
-// Root cause confirmed via same-model harness (general_control_comparison):
-// the SAME model, asked "Explícame brevemente por qué el cielo es azul"
-// with only a minimal purpose statement, answered in 252 chars with no
-// table. Through the normal runtime (RICH_CONTENT_DIRECTIVE — the DEFAULT
-// mentor directive for 'interact' mode, i.e. most ordinary conversation;
-// see orchestrator.ts line ~635), the same question produced 770 chars
-// with a markdown table, an added "matiz importante" aside, and a closing
-// menu of follow-up offers. The directive's own wording — "Use tables,
-// structured explanations... when they serve the student" — was being
-// read as a standing default for ANY substantive answer, not a condition
-// tied to whether THIS content actually benefits from that structure.
-// Fix: reworded RICH_CONTENT_DIRECTIVE to make depth explicitly
-// proportional to the question, reserving tables/structure for content
-// that genuinely needs it (comparisons, vocab sets, grammar contrasts,
-// explicit step-by-step requests) and stating plainly that a simple
-// factual aside gets a direct, ordinary-conversation-length answer unless
-// the student's own wording asks for depth. This is a single directive's
-// text, not a new mechanism — routing, artifact authority and memory are
-// untouched.
+// One Tutor Maestro. 7.3: tool_choice is 'auto'; a typed tool call by the Tutor
+// (deliver_from_text / complete_tutor_turn) is the authorization for any file
+// or native component. The runtime validates technically and never reads the
+// student's words. Long documents are written as ordinary streamed text, never
+// serialized into tool JSON (truncation risk).
+// History of earlier hardening (P4 budget, P8-P10 structured channel, P19-F
+// trivial-turn exclusion, BASE-MODEL-PARITY conversation history, general
+// question over-structuring directive): see git history.
 // =============================================================================
 
 import OpenAI from 'openai'
@@ -95,16 +15,15 @@ import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
-import { isExplicitPdfRequest } from '@/lib/pdf-intent-authorization'
-import { isExplicitQuizRequest } from '@/lib/quiz-intent-guard'
-import { isExplicitImageRequest } from '@/server/core/artifact-side-effect'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
-import { deliveryContextForTurn } from './delivery-context'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
+  DELIVER_FROM_TEXT_TOOL,
   parseClosedTutorTurn,
+  parseTextDelivery,
   type ArtifactSignal,
+  type TextDelivery,
 } from '@/lib/artifact-signal'
 import type {
   SessionState,
@@ -114,7 +33,6 @@ import type {
 } from '@/lib/contracts'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-const MENTOR_MAX_OUTPUT_TOKENS = 4096
 const COMPOUND_MAX_OUTPUT_TOKENS = 8192
 
 const FALLBACKS: Record<string, string> = {
@@ -160,13 +78,11 @@ type NormalizedMentorCall = {
   plan?: ExecutionPlan
   action?: string
   priorContext?: string
-  // BASE-MODEL-PARITY — see ChatRequest.conversationHistory (contracts.ts)
-  // for the root-gap rationale. Empty/undefined for any caller that hasn't
-  // opted in (legacy path, harnesses) — behavior there is unchanged.
+  // BASE-MODEL-PARITY — recent real turns flow to the model as real dialogue.
   history: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; deliveryFailure?: string }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; deliveryFailure?: string }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -207,8 +123,8 @@ function resolveOutputBudget(plan?: ExecutionPlan, pack?: ContextPack): number {
   )
   const raw = step?.params?.outputBudget
   if (typeof raw === 'number' && raw > 0) return raw
-  if (pack?.compoundPedagogicalAct || pack?.artifactDepth === 'comprehensive') return COMPOUND_MAX_OUTPUT_TOKENS
-  return MENTOR_MAX_OUTPUT_TOKENS
+  void pack
+  return COMPOUND_MAX_OUTPUT_TOKENS
 }
 function readPlanContextPack(plan?: ExecutionPlan): ContextPack | undefined {
   const step = plan?.executionOrder?.find(
@@ -278,15 +194,7 @@ function buildExecutionDirective(params: {
     else parts.push('Mentor directive: ' + params.plan.mentor.directive)
   }
   if (params.action && params.action !== 'conversation') parts.push('Current execution action: ' + params.action)
-  if(params.plan?.documentContractUpdate){
-    const c=params.plan.documentContractUpdate
-    // Facts from a student-authorized request; the Tutor Maestro decides
-    // how to ask, teach and materialize. No separate cognitive executor.
-    parts.push('Document request context: type=course PDF; level='+
-      (c.level??'not yet specified')+'; topic='+(c.topic??'not yet specified')+
-      '; ready='+Boolean(params.plan.documentContractReady)+'.')
-  }
-    if (params.priorContext?.trim()) parts.push('Prior context for this response:\n' + params.priorContext)
+  if (params.priorContext?.trim()) parts.push('Prior context for this response:\n' + params.priorContext)
   return parts.length > 0 ? '\n\n' + parts.join('\n\n') : ''
 }
 
@@ -309,19 +217,14 @@ export function buildMentorPrompt(params: {
     priorContext: params.priorContext,
     state,
   })
-  const baseModeInstructions = getModeInstruction(resolveProtocolMode(mode), topic)
-  const modeInstructions = (params.plan?.priority ?? 0) >= 70
-    ? baseModeInstructions + '\n\n[OVERRIDE ACTIVE] An explicit artifact was requested. Deliver it now.'
-    : baseModeInstructions
+  const modeInstructions = getModeInstruction(resolveProtocolMode(mode), topic)
   const pack = resolveTurnContextPack(params.message, state, params.plan)
-  // A runtime milestone, not an independent pedagogical brain. The tutor
-  // writes the actual review content through the same typed turn closure.
-  // Data from completed UI quiz: actual selected, expected, and graded answers.
-  // This is context to inform Willy, never an independent answer generator.
+  // Data from the completed UI quiz: actual selected, expected, and graded answers.
+  // Context to inform the Tutor, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
-  // This session metadata comes from the actual UI selection, not a regex classifier.
+  // Session metadata comes from the actual UI selection, not a regex classifier.
   const localeEnvelope = `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. The tutor's initial greeting and explanations use interfaceLanguage; Spanish examples use targetLanguage. A later explicit change of language overrides this default.]\n\n`
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state), deliveryContextForTurn(params.message, state.activeMode, params.plan)].filter(Boolean).join('')
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
   return { system, user: String(params.message || '') }
 }
 
@@ -375,37 +278,34 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
   }
 }
 
-/** 7.2: one Tutor, optional typed tools, no destruction of streamed text. */
+/** 7.3: one Tutor, typed tools. A tool call by the Tutor is the authorization;
+ *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
  const n=normalizeRuntimeCall(params)
  const {system,user}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext})
  const signals:ArtifactSignal[]=[]
+ const deliveries:TextDelivery[]=[]
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
- // An explicit student authorization is a binding delivery contract, not a
- // classifier deciding what the Tutor may teach. Free conversation stays auto.
- const wantsPdf = isExplicitPdfRequest(n.message,n.state.activeMode)
- // Full documents are authored as ordinary text, then deterministically
- // materialized from those exact words. Large JSON tool arguments truncate.
- // A clicked Article 27 review is a document-formatting effect, not a
- // need to pack a long teaching explanation into fragile JSON arguments.
+ // Only a clicked Article 27 review (a direct uiAction) is a pure formatting effect.
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
- const wantsQuiz = isExplicitQuizRequest(n.message)
- const mustDeliver = !wantsPdf && !wantsVisualReview && !wantsQuiz && isExplicitImageRequest(n.message)
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
+ const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
+ const budget=resolveOutputBudget(n.plan,pack)
+ const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user}]
+ const tools=[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]
  let response:AsyncIterable<any>|undefined
  try{
    response=await openai.chat.completions.create({
-     ...buildModelParams(process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini',resolveOutputBudget(n.plan,pack),0.7,0.88),
-     stream:true,tools:[COMPLETE_TUTOR_TURN_TOOL],
-     tool_choice: wantsPdf || wantsVisualReview || wantsQuiz ? 'none' : mustDeliver ? {type:'function' as const,function:{name:'complete_tutor_turn'}} : 'auto',
-     messages:[{role:'system',content:system},...n.history,{role:'user',content:user}],
+     ...buildModelParams(model,budget,0.7,0.88),
+     stream:true,tools,tool_choice:wantsVisualReview?'none':'auto',
+     messages:baseMessages,
    })
  }catch(e){
    const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
    console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError'}))
  }
  const wrapped=(async function*(){
-   const calls=new Map<number,{name:string;args:string}>()
+   const calls=new Map<number,{id:string;name:string;args:string}>()
    let spoken=''
    const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    if(!response){fail('provider_unavailable');yield fallback;return}
@@ -414,7 +314,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        const d=chunk.choices?.[0]?.delta
        if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
        for(const t of d?.tool_calls??[]){
-         const c=calls.get(t.index)??{name:'',args:''}
+         const c=calls.get(t.index)??{id:'',name:'',args:''}
+         if(t.id)c.id=t.id
          c.name+=t.function?.name??''
          c.args+=t.function?.arguments??''
          calls.set(t.index,c)
@@ -422,30 +323,58 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
    if(!calls.size){if(!spoken.trim()){fail('empty_response');yield fallback}return}
-   if(calls.size!==1){fail('multiple_tool_calls');if(!spoken.trim())yield fallback;return}
-   const call=[...calls.values()][0]
-   if(call.name!=='complete_tutor_turn'){fail('unknown_tool');if(!spoken.trim())yield fallback;return}
-   let raw:unknown
-   try{raw=JSON.parse(call.args)}catch{fail('invalid_tool_json');if(!spoken.trim())yield fallback;return}
-   // Preserve valid independent deliverables even if another entry in the
-   // same closure was malformed. Never bypass any artifact validator.
-   let closed=parseClosedTutorTurn(raw)
-   if(!closed && raw && typeof raw==='object'){
-     const item=raw as Record<string,unknown>
-     const reply=typeof item.reply==='string'?item.reply:''
-     const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
-     if(reply.trim()){
-       const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
-       if(valid.length) closed={reply,artifacts:valid}
-     }
+   let closed:ReturnType<typeof parseClosedTutorTurn>=null
+   let closureSeen=false
+   for(const call of calls.values()){
+     let raw:unknown
+     try{raw=JSON.parse(call.args||'{}')}catch{fail('invalid_tool_json');continue}
+     if(call.name==='deliver_from_text'){
+       const dl=parseTextDelivery(raw)
+       if(dl&&deliveries.length<2)deliveries.push(dl);else fail('invalid_delivery_call')
+     }else if(call.name==='complete_tutor_turn'){
+       if(closureSeen){fail('multiple_closures');continue}
+       closureSeen=true
+       closed=parseClosedTutorTurn(raw)
+       if(!closed&&raw&&typeof raw==='object'){
+         const item=raw as Record<string,unknown>
+         const reply=typeof item.reply==='string'?item.reply:''
+         const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
+         if(reply.trim()){
+           const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
+           if(valid.length) closed={reply,artifacts:valid}
+         }
+       }
+       if(!closed)fail('invalid_tool_contract')
+     }else{fail('unknown_tool')}
    }
-   if(!closed){fail('invalid_tool_contract');if(!spoken.trim())yield fallback;return}
-   if(spoken.trim()&&spoken.trim()!==closed.reply.trim()){fail('tool_reply_mismatch');return}
-   if(!spoken.trim()){spoken=closed.reply;yield closed.reply}
-   const pending=Boolean(n.plan?.documentContractUpdate&&!n.plan.documentContractReady)
-   const pdfOk=!pending&&(isExplicitPdfRequest(n.message,n.state.activeMode)||Boolean(n.plan?.documentContractReady))
-   signals.push(...closed.artifacts.filter(a=>a.type!=='emit_pdf'||pdfOk))
+   // The Tutor declared a delivery but wrote (almost) nothing: let the same
+   // Tutor write the material now, in this same turn. No second author.
+   if(deliveries.length&&!closed&&spoken.trim().length<400){
+     const asst:any={role:'assistant',content:spoken||null,tool_calls:[...calls.values()].filter(c=>c.id).map(c=>({id:c.id,type:'function',function:{name:c.name,arguments:c.args||'{}'}}))}
+     const results=[...calls.values()].filter(c=>c.id).map(c=>({role:'tool',tool_call_id:c.id,content:'Delivery registered. Now write the complete material as your reply text, starting with its title. The platform will render exactly your text.'}))
+     try{
+       const more:AsyncIterable<any>=await openai.chat.completions.create({
+         ...buildModelParams(model,budget,0.7,0.88),
+         stream:true,tools,tool_choice:'none',
+         messages:[...baseMessages,asst,...results],
+       })
+       if(spoken.trim())yield '\n\n'
+       for await(const chunk of more){
+         const d=chunk.choices?.[0]?.delta
+         if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
+       }
+     }catch{fail('continuation_interrupted')}
+     if(!spoken.trim()){fail('empty_response');yield fallback}
+     return
+   }
+   if(closed){
+     const reply=(closed as {reply:string}).reply
+     if(!deliveries.length&&spoken.trim()&&spoken.trim()!==reply.trim()){fail('tool_reply_mismatch');return}
+     if(!spoken.trim()){spoken=reply;yield reply}
+     signals.push(...(closed as {artifacts:ArtifactSignal[]}).artifacts)
+   }else if(!spoken.trim()){fail('empty_response');yield fallback}
  })() as MentorStream
  wrapped.artifactSignals=signals
+ wrapped.textDeliveries=deliveries
  return wrapped
 }
