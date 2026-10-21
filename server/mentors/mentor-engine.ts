@@ -93,12 +93,16 @@
 // starting default. The Tutor may call set_explanatory_language (optional,
 // small, never required per turn); the session remembers it and the
 // ContextPack returns it as a fact. No script detector, no word lists.
+// 7.3.2c — once declared, explanatoryLanguage is the ONLY language value shown
+// (interfaceLanguage is withdrawn from the locale envelope, the session
+// context and the ContextPack), and the language note is sent as a system
+// message adjacent to the student's turn.
 // =============================================================================
 
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
-import { buildContextPack, formatContextPack, type ContextPack } from '@/lib/context-pack'
+import { buildContextPack, formatContextPack, formatLanguageTurnNote, type ContextPack } from '@/lib/context-pack'
 import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage } from '@/lib/explanatory-language'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { commercialContextForTurn } from '@/server/core/commercial-context'
@@ -241,11 +245,11 @@ function buildContext(state: LegacyMentorState): string {
   const parts: string[] = []
   const level = resolveLevel(state)
   const topic = resolveTopic(state)
-  const lang = resolveInterfaceLanguage(state)
+  const lang = state.explanatoryLanguage ?? resolveInterfaceLanguage(state)
   if (level && level !== 'A0') parts.push(`Level: ${level}`)
   if ((state.tokens ?? 0) > 0) parts.push(`Exchanges: ${state.tokens}`)
   if (topic) parts.push(`Current topic: ${topic}`)
-  if (lang) parts.push(`Student interface language: ${lang}`)
+  if (lang) parts.push(state.explanatoryLanguage ? `Explanatory language: ${lang}` : `Student interface language: ${lang}`)
   return parts.length > 0 ? '\n\n[Session state: ' + parts.join(' | ') + ']' : ''
 }
 
@@ -296,7 +300,7 @@ export function buildMentorPrompt(params: {
   action?: string
   plan?: ExecutionPlan
   history?: Array<{ role: string; content: string }>
-}): { system: string; user: string } {
+}): { system: string; user: string; languageNote: string } {
   const state = params.state ?? {}
   const profile = getMentorProfile(resolveMentorName(state))
   const mode = resolveTutorMode(state)
@@ -317,9 +321,11 @@ export function buildMentorPrompt(params: {
   // This is context to inform Willy, never an independent answer generator.
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
-  const localeEnvelope = `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. interfaceLanguage is only the starting default for the first greeting, never a limit: the language the student uses or asks for always wins, and any language you can write is allowed. Spanish examples use targetLanguage.]\n\n`
+  const localeEnvelope = state.explanatoryLanguage
+    ? `[SESSION LOCALE: explanatoryLanguage=${state.explanatoryLanguage}; targetLanguage=es. The language of your explanations is the one you settled on for this student; Spanish examples use targetLanguage.]\n\n`
+    : `[SESSION LOCALE: interfaceLanguage=${resolveInterfaceLanguage(state)}; targetLanguage=es. interfaceLanguage is only the starting default for the first greeting, never a limit: the language the student uses or asks for always wins, and any language you can write is allowed. Spanish examples use targetLanguage.]\n\n`
   const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
-  return { system, user: String(params.message || '') }
+  return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack) }
 }
 
 function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
@@ -353,7 +359,7 @@ export async function getMentorResponse(message: string, state?: LegacyMentorSta
 export async function getMentorResponse(params: MentorRuntimeParams): Promise<string>
 export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2?: LegacyMentorState, arg3?: string): Promise<string> {
   const normalized: NormalizedMentorCall = typeof arg1 === 'string' ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3) : normalizeRuntimeCall(arg1)
-  const { system, user } = buildMentorPrompt({
+  const { system, user, languageNote } = buildMentorPrompt({
     message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
     plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext, history: normalized.history,
   })
@@ -362,7 +368,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
     const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
     const completion = await openai.chat.completions.create({
       ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'user', content: user }],
+      messages: [{ role: 'system', content: system }, ...normalized.history, { role: 'system', content: languageNote }, { role: 'user', content: user }],
     })
     return (completion.choices?.[0]?.message?.content ?? '').trim()
   } catch (error: unknown) {
@@ -376,7 +382,7 @@ export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
  const n=normalizeRuntimeCall(params)
- const {system,user}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history})
+ const {system,user,languageNote}=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history})
  const signals:ArtifactSignal[]=[]
  const deliveries:TextDelivery[]=[]
  const pack=resolveTurnContextPack(n.message,n.state,n.plan)
@@ -385,7 +391,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
  const budget=resolveOutputBudget(n.plan,pack)
- const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'user',content:user}]
+ const baseMessages:any[]=[{role:'system',content:system},...n.history,{role:'system',content:languageNote},{role:'user',content:user}]
  const tools=[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL]
  let response:AsyncIterable<any>|undefined
  try{
