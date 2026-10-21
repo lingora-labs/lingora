@@ -2,10 +2,11 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
   BACKEND_LANG, MENTOR_META, COPY, TSYS, GREETINGS,
-  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction,
+  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact,
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { selectHistoryWindow } from '@/lib/tutor-memory'
+import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
@@ -401,16 +402,16 @@ export function useBetaPage() {
       if (!Array.isArray(value) || value.length < 2 || value.length > 8) return
       const responses = value.map((r: unknown) => {
         if (!r || typeof r !== 'object') return null
-        const item = r as {question?:unknown;options?:unknown;chosen?:unknown}
+        const item = r as {question?:unknown;options?:unknown;chosen?:unknown;verified?:unknown}
         if (typeof item.question !== 'string' || item.question.length > 1800 ||
             !Array.isArray(item.options) || item.options.length < 2 || item.options.length > 4 ||
             item.options.some(o=>typeof o !== 'string') ||
             typeof item.chosen !== 'string' || !item.options.includes(item.chosen)) return null
-        return {question:item.question,chosen:item.chosen,options:item.options as string[]}
+        return {question:item.question,chosen:item.chosen,options:item.options as string[],verified:item.verified==='correct'||item.verified==='incorrect'?item.verified:undefined}
       })
       if (responses.some(r=>r===null)) return
       const message = 'He respondido a este quiz táctil. Mis respuestas, sin calificación automática:\n' +
-        responses.map((r,i)=>String(i+1)+'. '+r!.question+'\nOpciones: '+r!.options.join(' | ')+'\nElegí: '+r!.chosen).join('\n') +
+        responses.map((r,i)=>String(i+1)+'. '+r!.question+'\nOpciones: '+r!.options.join(' | ')+'\nElegí: '+r!.chosen+(r!.verified?'\nComprobación automática con clave independiente: '+(r!.verified==='correct'?'acierto':'error'):'')).join('\n') +
         '\nRevisa pedagógicamente cada elección e indica las soluciones justificadas; no inventes una puntuación verificada ni generes PDF.'
       const next = {...sessionRef.current,tutorPhase:'feedback' as const}
       sessionRef.current=next
@@ -421,6 +422,40 @@ export function useBetaPage() {
     window.addEventListener('lingora-quiz-review-request',handler)
     return () => window.removeEventListener('lingora-quiz-review-request',handler)
   }, [loading,callAPI,addMsg])
+  // 7.4 — the student's quiz answers are persisted with the message that carries the quiz, so a
+  // reload restores what was answered and whether the Tutor already reviewed it.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const d = (event as CustomEvent).detail as { key?: unknown; answers?: unknown; sent?: unknown } | undefined
+      if (!d || typeof d.key !== 'string' || !Array.isArray(d.answers)) return
+      const answers = d.answers.map(v => (typeof v === 'number' ? v : null))
+      const sent = d.sent === true
+      const apply = (a: Artifact): Artifact => {
+        if (a.type !== 'quiz') return a
+        const c = (a.content ?? a) as { questions?: Array<{ question?: unknown; options?: unknown }> }
+        const qs = Array.isArray(c.questions) ? c.questions.map(q => ({ question: String(q.question ?? ''), options: Array.isArray(q.options) ? q.options.map(o => (typeof o === 'object' && o && 'text' in o ? String((o as { text: unknown }).text) : String(o))) : [] })) : []
+        return qs.length && quizFingerprint(qs) === d.key ? { ...a, progress: { answers, sent } } : a
+      }
+      const next = msgsRef.current.map(m => (m.artifacts || m.artifact)
+        ? { ...m, artifact: m.artifact ? apply(m.artifact) : m.artifact, artifacts: m.artifacts ? m.artifacts.map(apply) : m.artifacts }
+        : m)
+      msgsRef.current = next
+      setMsgs(next)
+    }
+    window.addEventListener('lingora-quiz-progress', handler)
+    return () => window.removeEventListener('lingora-quiz-progress', handler)
+  }, [])
+  // "Seguir aprendiendo": the Tutor continues the lesson from the student's results; no artifact is requested.
+  useEffect(() => {
+    const handler = () => {
+      if (loading) return
+      const message = 'Quiero seguir aprendiendo a partir de este quiz. Continúa tú la lección con el siguiente paso adaptado a mis aciertos y errores; no generes documentos ni otro quiz salvo que yo lo pida.'
+      addMsg({ sender: 'user', text: message })
+      void callAPI({ message })
+    }
+    window.addEventListener('lingora-quiz-continue', handler)
+    return () => window.removeEventListener('lingora-quiz-continue', handler)
+  }, [loading, callAPI, addMsg])
   const sendComposer = useCallback(async () => {
     const msg = input.trim()
     const hasText = msg.length > 0
