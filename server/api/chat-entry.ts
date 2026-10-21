@@ -24,7 +24,6 @@ import {
 import { executePlan }    from '../core/execution-engine';
 import { executePlanStream } from '../core/execution-engine-stream';
 import { orchestrateTutorFirst } from '../core/tutor-first-orchestrator';
-import { isConversationPdfExportRequest } from '../../lib/pdf-intent-authorization';
 
 // 7.1 — all conversational tutor turns share one tool-capable streaming path.
 // Explicit runtime-only UI operations remain blocking and use executePlan.
@@ -287,18 +286,6 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const normalizedMessage = audioTranscript || rawMessageForNormalization;
 
-    // A typed UI command OR an explicit natural-language student export
-    // instruction must converge on one existing pdf_chat execution path.
-    // Never route this through the tutor document composer.
-    if (!body.uiAction && isConversationPdfExportRequest(normalizedMessage)) {
-      body.uiAction = 'export_chat_pdf'
-      if (!body.exportTranscript?.trim() && body.conversationHistory?.length) {
-        body.exportTranscript = body.conversationHistory
-          .filter((turn) => typeof turn.content === 'string' && turn.content.trim())
-          .map((turn) => `[${turn.role === 'user' ? 'Student' : 'Tutor'}]: ${turn.content.trim()}`)
-          .join('\n\n')
-      }
-    }
     if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio', 'create_visual_review'] as string[]).includes(body.uiAction)) {
       return errorResponse(400, 'Unsupported UI operation', state);
     }
