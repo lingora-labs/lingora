@@ -312,6 +312,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const noteMsg={role:'system',content:languageNote}
  const userMsg={role:'user',content:user}
  const msgs:any[]=lx.includes('min')?[{role:'system',content:'You are a Spanish tutor for LINGORA. '+languageNote},...n.history,userMsg]
+   :lx.includes('top')?[{role:'system',content:languageNote+'\n\n'+system},...n.history,userMsg]
+   :lx.includes('toptail')?[{role:'system',content:languageNote+'\n\n'+system},...n.history,userMsg,noteMsg]
+   :lx.includes('topsys')?[{role:'system',content:languageNote},{role:'system',content:system},...n.history,userMsg]
    :lx.includes('insys')?[{role:'system',content:system+'\n\n'+languageNote},...n.history,userMsg]
    :lx.includes('before')?[{role:'system',content:system},...n.history,noteMsg,userMsg]
    :baseMessages
