@@ -24,6 +24,7 @@ import {
 import { executePlan }    from '../core/execution-engine';
 import { executePlanStream } from '../core/execution-engine-stream';
 import { orchestrateTutorFirst } from '../core/tutor-first-orchestrator';
+import { sanitizeMemory, sanitizeMemorySeq } from '../../lib/tutor-memory';
 
 // 7.1 — all conversational tutor turns share one tool-capable streaming path.
 // Explicit runtime-only UI operations remain blocking and use executePlan.
@@ -106,6 +107,9 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       ...DEFAULT_SESSION_STATE,
       ...incomingState,
       masteryByModule: safeMasteryByModule,
+      // 7.4: the Tutor's memory is typed at the boundary like any other state field.
+      ...(incomingState.tutorMemory !== undefined ? { tutorMemory: sanitizeMemory(incomingState.tutorMemory) } : {}),
+      ...(incomingState.tutorMemorySeq !== undefined ? { tutorMemorySeq: sanitizeMemorySeq(incomingState.tutorMemorySeq) } : {}),
     };
 
     callerState = baseState;
@@ -364,8 +368,12 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       conversationHistory: body.conversationHistory,
     };
 
-    if (STREAMING_ENABLED && !plan.blocking) {
-      return buildSSEResponse(executePlanStream(plan, chatRequest, state));
+    // 7.4: ONE Tutor engine, two transports. Tutor turns always run through the tool-capable engine
+    // (memory, language, artifacts); `stream:false` only changes how the finished turn is delivered.
+    if (!plan.blocking) {
+      const turnStream = executePlanStream(plan, chatRequest, state);
+      if (STREAMING_ENABLED && body.stream !== false) return buildSSEResponse(turnStream);
+      return await buildJsonFromStream(turnStream);
     }
 
     const result       = await executePlan(plan, chatRequest, state);
@@ -421,6 +429,33 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     console.error('[route] unhandled error:', msg, err);
     return errorResponse(500, msg, callerState);
   }
+}
+
+/** Same engine, JSON transport: drain the turn and return it as one ChatResponse-shaped document. */
+async function buildJsonFromStream(stream: ReadableStream<Uint8Array>): Promise<NextResponse> {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = '', text = '';
+  let done: Record<string, unknown> | null = null;
+  for (;;) {
+    const { done: end, value } = await reader.read();
+    if (end) break;
+    buf += dec.decode(value, { stream: true });
+    const events = buf.split('\n\n');
+    buf = events.pop() ?? '';
+    for (const ev of events) {
+      const line = ev.split('\n').find(l => l.startsWith('data: '));
+      if (!line) continue;
+      try {
+        const p = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        if (typeof p.delta === 'string') text += p.delta;
+        if (p.done) done = p;
+      } catch { /* ignore malformed event */ }
+    }
+  }
+  const { done: _d, ...rest } = done ?? {};
+  void _d;
+  return NextResponse.json({ message: text, ...rest }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
 }
 
 function buildSSEResponse(stream: ReadableStream<Uint8Array>): Response {
