@@ -13,7 +13,11 @@
 // DocumentBlock is ever treated as markup — the block TYPE selects which
 // safe template to use; the block's own strings are always data, never
 // code. There is no path from LLM output to <script>, event handlers, or
-// unescaped tags. This mirrors the same closed-grammar guarantee the PDF
+// unescaped tags. 7.4 INTERACTIVITY: the only <script> in the page is the fixed
+// constant LN_SCRIPT below (no model text is ever interpolated into it); the
+// CSP meta pins script execution to that script's SHA-256, so anything else
+// that might ever reach the markup cannot run. Model text only ever reaches
+// the DOM as escaped HTML data, and the script reads/writes it as text only. This mirrors the same closed-grammar guarantee the PDF
 // renderer already relies on (VALID_BLOCK_TYPES in composeArtifactDocument.ts).
 //
 // P19-G3 — PURPOSE-AWARE VISUAL AUTHORSHIP (increment 1: scientific chapter
@@ -38,6 +42,7 @@
 // Learning, executive and comparative are visually unchanged by this
 // commit — their existing treatments (P19-B/C) are untouched.
 // =============================================================================
+import { createHash } from 'node:crypto';
 import type { DocumentContent, DocumentBlock } from '../pdf/generateCoursePdf';
 import { BRAND, INTENT_KICKER, type DocumentIntent } from '../pdf/brand';
 
@@ -60,7 +65,7 @@ function inline(v: unknown): string {
   return esc(v)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
-    .replace(/[\u0590-\u08ff]+(?:\s+[\u0590-\u08ff]+)*/gu,
+    .replace(/[֐-ࣿ]+(?:\s+[֐-ࣿ]+)*/gu,
       run => '<bdi dir="rtl">' + run + '</bdi>');
 }
 
@@ -79,7 +84,7 @@ function capitalizeMentor(name: string | undefined): string {
 
 function renderBlock(
   block: DocumentBlock,
-  hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean; isAbstract?: boolean; isAppendix?: boolean; chapterNumber?: number },
+  hints: { isKpiStrip?: boolean; isComparisonMatrix?: boolean; isAbstract?: boolean; isAppendix?: boolean; chapterNumber?: number; exerciseIndex?: number },
 ): string {
   switch (block.type) {
     case 'timeline':
@@ -104,10 +109,19 @@ function renderBlock(
         parts.push(renderBlock({ type: 'numbered', items: block.steps.map((st) => `${st['name'] ?? ''}: ${st['description'] ?? ''}`) }, {}));
       }
       if (Array.isArray(block.terms) && block.terms.length) {
-        parts.push(renderBlock({ type: 'key_value', items: block.terms.map((tr) => `${tr['term'] ?? tr['label'] ?? ''}: ${tr['definition'] ?? tr['description'] ?? ''}`) }, {}));
+        if (block.type === 'glossary') {
+          // Tap-to-reveal: term visible, definition behind a native <details> (works without JS too).
+          parts.push(`<div class="ln-gloss">${block.terms.map((tr) => `<details class="ln-term"><summary>${inline(tr['term'] ?? tr['label'] ?? '')}</summary><div class="ln-term-def">${inline(tr['definition'] ?? tr['description'] ?? '')}</div></details>`).join('')}</div>`);
+        } else {
+          parts.push(renderBlock({ type: 'key_value', items: block.terms.map((tr) => `${tr['term'] ?? tr['label'] ?? ''}: ${tr['definition'] ?? tr['description'] ?? ''}`) }, {}));
+        }
       }
       if (Array.isArray(block.answers) && block.answers.length) {
         parts.push(renderBlock({ type: 'numbered', items: block.answers }, {}));
+      }
+      if (block.type === 'answer_key') {
+        // The key stays hidden until the learner asks for it — after trying the exercises.
+        return `<details class="ln-reveal"><summary>Mostrar clave de respuestas</summary><div class="ln-reveal-body">${parts.join('\n')}</div></details>`;
       }
       return parts.join('\n');
     }
@@ -184,9 +198,16 @@ function renderBlock(
       return `${label}<div class="ln-table-scroll"><table class="ln-table">${thead}${tbody}</table></div>`;
     }
 
-    case 'callout':
     case 'exercise': {
-      const label = block.label ?? (block.type === 'exercise' ? 'Ejercicio' : 'Nota');
+      const label = block.label ?? 'Ejercicio';
+      const n = hints.exerciseIndex ?? 0;
+      return `<div class="ln-callout ln-callout-info ln-ex" data-ex="e${n}"><div class="ln-callout-label">${esc(label)}</div><div class="ln-callout-body">${inline(block.content)}</div>`
+        + `<div class="ln-ex-tools"><textarea class="ln-ex-ans" rows="2" placeholder="Escribe aquí tu respuesta (se guarda solo en este dispositivo)" aria-label="Tu respuesta al ejercicio ${n + 1}"></textarea>`
+        + `<button type="button" class="ln-ex-done" aria-pressed="false">✓ Hecho</button></div></div>`;
+    }
+
+    case 'callout': {
+      const label = block.label ?? 'Nota';
       const style = block.style === 'warning' ? 'warn' : block.style === 'tip' ? 'tip' : 'info';
       return `<div class="ln-callout ln-callout-${style}"><div class="ln-callout-label">${esc(label)}</div><div class="ln-callout-body">${inline(block.content)}</div></div>`;
     }
@@ -205,6 +226,45 @@ function renderBlock(
   }
 }
 
+// The ONLY script in the page. A constant: no model text, title or user data is ever interpolated
+// into it, and the CSP pins execution to its SHA-256. It only toggles <details>, stores the
+// learner's own progress/answers in localStorage (guarded; the page works without storage) and
+// moves classes. It never uses innerHTML / eval / network.
+const LN_SCRIPT = `(function(){
+var d=document,root=d.documentElement;root.classList.add('js');
+var KEY='lingora-html:'+(d.body.getAttribute('data-doc')||'doc');
+var st={ex:{},ans:{},closed:{},zoom:1,dark:0};
+try{var raw=localStorage.getItem(KEY);if(raw){var p=JSON.parse(raw);if(p&&typeof p==='object'){for(var k in st){if(p[k]!==undefined)st[k]=p[k]}}}}catch(e){}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){}}
+function $(i){return d.getElementById(i)}
+var secs=[].slice.call(d.querySelectorAll('details.ln-sec'));
+var exs=[].slice.call(d.querySelectorAll('.ln-ex'));
+function prog(){var n=0;exs.forEach(function(e){if(e.classList.contains('is-done'))n++});
+$('ln-count').textContent=exs.length?n+' / '+exs.length+' ejercicios':'';
+$('ln-bar').style.width=(exs.length?Math.round(n*100/exs.length):0)+'%'}
+exs.forEach(function(e){var k=e.getAttribute('data-ex'),b=e.querySelector('.ln-ex-done'),t=e.querySelector('.ln-ex-ans');
+if(st.ex[k]){e.classList.add('is-done');b.setAttribute('aria-pressed','true')}
+if(st.ans[k])t.value=st.ans[k];
+b.addEventListener('click',function(){var on=!e.classList.contains('is-done');e.classList.toggle('is-done',on);b.setAttribute('aria-pressed',on?'true':'false');if(on)st.ex[k]=1;else delete st.ex[k];save();prog()});
+t.addEventListener('input',function(){if(t.value)st.ans[k]=t.value;else delete st.ans[k];save()})});
+secs.forEach(function(s){if(st.closed[s.id])s.open=false;s.addEventListener('toggle',function(){if(s.open)delete st.closed[s.id];else st.closed[s.id]=1;save()})});
+function setAll(o){secs.forEach(function(s){s.open=o})}
+$('ln-expand').addEventListener('click',function(){setAll(true)});
+$('ln-collapse').addEventListener('click',function(){setAll(false)});
+function zoom(z){st.zoom=Math.max(0.8,Math.min(1.6,z));root.style.setProperty('--ln-zoom',String(st.zoom));save()}
+$('ln-smaller').addEventListener('click',function(){zoom(st.zoom-0.1)});
+$('ln-bigger').addEventListener('click',function(){zoom(st.zoom+0.1)});
+function theme(on){st.dark=on?1:0;if(on)root.setAttribute('data-theme','dark');else root.removeAttribute('data-theme');$('ln-theme').setAttribute('aria-pressed',on?'true':'false');$('ln-theme').textContent=on?'Modo claro':'Modo oscuro';save()}
+$('ln-theme').addEventListener('click',function(){theme(!st.dark)});
+$('ln-print').addEventListener('click',function(){setAll(true);window.print()});
+$('ln-reset').addEventListener('click',function(){st.ex={};st.ans={};exs.forEach(function(e){e.classList.remove('is-done');e.querySelector('.ln-ex-done').setAttribute('aria-pressed','false');e.querySelector('.ln-ex-ans').value=''});save();prog()});
+window.addEventListener('beforeprint',function(){setAll(true)});
+var links=[].slice.call(d.querySelectorAll('.ln-toc a'));
+links.forEach(function(a){a.addEventListener('click',function(){var t=d.getElementById(a.getAttribute('href').slice(1));if(t)t.open=true})});
+if('IntersectionObserver' in window&&secs.length){var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){links.forEach(function(a){a.classList.toggle('is-active',a.getAttribute('href')==='#'+en.target.id)})}})},{rootMargin:'-20% 0px -70% 0px'});secs.forEach(function(s){io.observe(s)})}
+if(st.zoom!==1)zoom(st.zoom);if(st.dark)theme(true);prog();
+})();`;
+
 export function renderArtifactHtml(content: DocumentContent): string {
   const intent: DocumentIntent = content.documentIntent ?? 'learning';
   const blocks = content.blocks ?? [];
@@ -222,18 +282,47 @@ export function renderArtifactHtml(content: DocumentContent): string {
   const badgeText = ARTIFACT_TYPE_BADGE[content.documentType] ?? content.documentType;
   const kicker = INTENT_KICKER[intent];
 
-  const bodyHtml = blocks.map((b, i) => {
+  // 7.4 — collapsible sections: every level-1 heading (and the source appendix) opens a native
+  // <details> section; blocks before the first heading stay open at the top. Same blocks, same
+  // renderBlock(): only the grouping is new.
+  const toc: Array<{ id: string; title: string }> = [];
+  let exerciseCounter = 0;
+  let secCounter = 0;
+  const chunks: string[] = [];
+  let open = false;
+  const closeSection = () => { if (open) { chunks.push('</div></details>'); open = false; } };
+  blocks.forEach((b, i) => {
     if (b.type === 'heading' && b.label === 'source-appendix') inAppendix = true;
     const isChapterHeading = !inAppendix && intent === 'scientific' && b.type === 'heading' && (b.level ?? 1) === 1;
     if (isChapterHeading) chapterCounter += 1;
-    return renderBlock(b, {
+    const html = renderBlock(b, {
       isKpiStrip: i === firstKvIndex,
       isComparisonMatrix: i === firstTableIndex,
       isAbstract: i === firstParagraphIndex,
       isAppendix: inAppendix,
       chapterNumber: isChapterHeading ? chapterCounter : undefined,
+      exerciseIndex: b.type === 'exercise' ? exerciseCounter++ : undefined,
     });
-  }).join('\n');
+    const startsSection = b.type === 'heading' && ((b.level ?? 1) === 1 || b.label === 'source-appendix');
+    if (startsSection) {
+      closeSection();
+      secCounter += 1;
+      const id = `s${secCounter}`;
+      toc.push({ id, title: String(b.content ?? '').replace(/\*\*|(?<!_)_(?!_)/g, '').trim() || `Sección ${secCounter}` });
+      chunks.push(`<details class="ln-sec" id="${id}" open><summary class="ln-sec-sum">${html}</summary><div class="ln-sec-body">`);
+      open = true;
+    } else {
+      chunks.push(html);
+    }
+  });
+  closeSection();
+  const bodyHtml = chunks.join('\n');
+  const exerciseTotal = exerciseCounter;
+  const docId = createHash('sha256').update(`${content.title}|${content.generatedAt}|${blocks.length}|${exerciseTotal}`).digest('hex').slice(0, 16);
+  const scriptHash = createHash('sha256').update(LN_SCRIPT).digest('base64');
+  const tocHtml = toc.length >= 2
+    ? `<details class="ln-toc" open><summary>Contenido (${toc.length} secciones)</summary><ol>${toc.map((t) => `<li><a href="#${t.id}">${esc(t.title)}</a></li>`).join('')}</ol></details>`
+    : '';
 
   const metaLine = [
     content.level ? `Nivel de español: ${esc(content.level)}` : null,
@@ -251,6 +340,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'sha256-${scriptHash}'">
 <title>${esc(content.title)} — ${esc(BRAND.name)}</title>
 <style>
   :root {
@@ -273,7 +363,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-title { font-size: 24px; font-weight: 800; margin-top: 10px; line-height: 1.25; }
   .ln-subtitle { font-size: 14px; color: #b7bdd0; margin-top: 6px; }
   .ln-meta { font-size: 12px; color: var(--ln-teal); margin-top: 14px; }
-  .ln-container { max-width: 720px; margin: 0 auto; padding: 28px 20px 60px; }
+  .ln-container { zoom: var(--ln-zoom, 1); max-width: 720px; margin: 0 auto; padding: 28px 20px 60px; }
   .ln-h1 { font-size: 20px; font-weight: 800; color: var(--ln-accent); margin: 28px 0 10px; padding-bottom: 8px; border-bottom: 2px solid var(--ln-teal); }
   .ln-h2 { font-size: 17px; font-weight: 800; color: #1a1d29; margin: 22px 0 8px; }
   .ln-h3 { font-size: 14px; font-weight: 700; color: var(--ln-muted); margin: 18px 0 6px; }
@@ -320,6 +410,47 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-summary { background: var(--ln-light); border-radius: 10px; padding: 12px 16px; font-size: 14px; margin: 14px 0; }
   .ln-next { border-top: 2px solid var(--ln-accent); margin-top: 28px; padding-top: 16px; font-size: 14px; color: var(--ln-muted); }
   .ln-footer { text-align: center; font-size: 11.5px; color: #9aa3b8; padding: 20px; }
+  /* 7.4 interactivity */
+  html { scroll-behavior: smooth; }
+  .ln-ctl { display: none; position: sticky; top: 0; z-index: 5; gap: 6px; flex-wrap: wrap; align-items: center; background: var(--ln-dark); padding: 8px 14px; border-top: 1px solid rgba(255,255,255,.12); }
+  .js .ln-ctl { display: flex; }
+  .ln-ctl button { font: inherit; font-size: 13px; min-height: 40px; min-width: 40px; padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.25); background: transparent; color: #fff; cursor: pointer; touch-action: manipulation; }
+  .ln-ctl button:hover, .ln-ctl button:focus-visible { background: rgba(255,255,255,.14); outline: none; }
+  .ln-count { margin-left: auto; font-size: 12px; color: var(--ln-teal); }
+  .ln-barwrap { display: none; height: 4px; background: rgba(255,255,255,.15); }
+  .js .ln-barwrap { display: block; }
+  #ln-bar { height: 100%; width: 0; background: var(--ln-teal); transition: width .25s; }
+  .ln-toc { background: #fff; border: 1px solid #e4e6ed; border-radius: 10px; padding: 10px 16px; margin: 0 0 18px; }
+  .ln-toc summary { cursor: pointer; font-weight: 800; font-size: 14px; color: var(--ln-accent); min-height: 32px; }
+  .ln-toc ol { margin: 8px 0 4px; padding-left: 20px; font-size: 14.5px; }
+  .ln-toc li { margin: 2px 0; }
+  .ln-toc a { color: #1a1d29; text-decoration: none; display: inline-block; padding: 5px 0; }
+  .ln-toc a:hover { text-decoration: underline; }
+  .ln-toc a.is-active { color: var(--ln-accent); font-weight: 800; }
+  .ln-sec { margin: 0 0 6px; }
+  .ln-sec > summary { cursor: pointer; list-style: none; position: relative; padding-right: 30px; }
+  .ln-sec > summary::-webkit-details-marker { display: none; }
+  .ln-sec > summary::after { content: '\\25BE'; position: absolute; right: 4px; top: 50%; transform: translateY(-50%); color: var(--ln-muted); transition: transform .15s; }
+  .ln-sec:not([open]) > summary::after { transform: translateY(-50%) rotate(-90deg); }
+  .ln-sec > summary > * { margin-top: 12px; margin-bottom: 8px; }
+  .ln-sec { scroll-margin-top: 64px; }
+  .ln-reveal, .ln-term { border: 1px solid #e4e6ed; border-radius: 10px; background: #fff; margin: 10px 0; padding: 0 14px; }
+  .ln-reveal > summary, .ln-term > summary { cursor: pointer; font-weight: 700; font-size: 14.5px; color: var(--ln-accent); min-height: 44px; display: flex; align-items: center; }
+  .ln-reveal-body, .ln-term-def { padding: 2px 0 12px; font-size: 14.5px; }
+  .ln-ex-tools { display: none; gap: 8px; margin-top: 10px; align-items: flex-end; }
+  .js .ln-ex-tools { display: flex; }
+  .ln-ex-ans { flex: 1; font: inherit; font-size: 14.5px; padding: 8px 10px; border: 1px solid #c9ceda; border-radius: 8px; resize: vertical; min-height: 44px; background: #fff; color: #1a1d29; }
+  .ln-ex-done { font: inherit; font-size: 14px; font-weight: 700; min-height: 44px; padding: 8px 14px; border-radius: 8px; border: 2px solid var(--ln-accent); background: transparent; color: var(--ln-accent); cursor: pointer; touch-action: manipulation; white-space: nowrap; }
+  .ln-ex.is-done { box-shadow: inset 4px 0 0 var(--ln-teal); }
+  .ln-ex.is-done .ln-ex-done { background: var(--ln-accent); color: #fff; }
+  html[data-theme="dark"] body { background: #12141c; color: #e6e8ef; }
+  html[data-theme="dark"] .ln-p, html[data-theme="dark"] .ln-list, html[data-theme="dark"] .ln-kv-val, html[data-theme="dark"] .ln-callout-body, html[data-theme="dark"] .ln-abstract-body, html[data-theme="dark"] .ln-source-p { color: #d5d9e6; }
+  html[data-theme="dark"] .ln-h2, html[data-theme="dark"] .ln-chapter-title, html[data-theme="dark"] .ln-source-head, html[data-theme="dark"] .ln-toc a { color: #f2f4fa; }
+  html[data-theme="dark"] .ln-toc, html[data-theme="dark"] .ln-reveal, html[data-theme="dark"] .ln-term, html[data-theme="dark"] .ln-ex-ans { background: #1c1f2b; border-color: #333949; color: #e6e8ef; }
+  html[data-theme="dark"] .ln-callout-info, html[data-theme="dark"] .ln-summary, html[data-theme="dark"] .ln-abstract { background: #1c1f2b; }
+  html[data-theme="dark"] .ln-kv-row:nth-child(odd), html[data-theme="dark"] .ln-table tr:nth-child(even) td { background: #181b26; }
+  html[data-theme="dark"] .ln-table td { border-color: #2a2f3d; }
+  @media print { .ln-ctl, .ln-barwrap, .ln-ex-tools { display: none !important; } body { background: #fff; } .ln-sec > summary::after { display: none; } }
   @media (max-width: 480px) {
     .ln-title { font-size: 20px; }
     .ln-container { padding: 20px 14px 48px; }
@@ -327,7 +458,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   }
 </style>
 </head>
-<body>
+<body data-doc="${docId}">
   <div class="ln-header">
     <div class="ln-brand">${esc(BRAND.name)}</div>
     <div class="ln-tagline">${esc(BRAND.tagline)}</div>
@@ -337,11 +468,24 @@ export function renderArtifactHtml(content: DocumentContent): string {
     ${content.subtitle ? `<div class="ln-subtitle">${esc(content.subtitle)}</div>` : ''}
     ${metaLine ? `<div class="ln-meta">${metaLine}</div>` : ''}
   </div>
+  <div class="ln-ctl" role="toolbar" aria-label="Controles del documento">
+    <button type="button" id="ln-expand">Expandir todo</button>
+    <button type="button" id="ln-collapse">Contraer todo</button>
+    <button type="button" id="ln-smaller" aria-label="Texto más pequeño">A−</button>
+    <button type="button" id="ln-bigger" aria-label="Texto más grande">A+</button>
+    <button type="button" id="ln-theme" aria-pressed="false">Modo oscuro</button>
+    <button type="button" id="ln-print">Imprimir</button>
+    <button type="button" id="ln-reset">Reiniciar progreso</button>
+    <span class="ln-count" id="ln-count" aria-live="polite"></span>
+  </div>
+  <div class="ln-barwrap"><div id="ln-bar"></div></div>
   <div class="ln-container">
+    ${tocHtml}
     ${bodyHtml}
     ${content.nextStep ? `<div class="ln-next">${inline(content.nextStep)}</div>` : ''}
   </div>
   <div class="ln-footer">${esc(BRAND.footerLine)} · ${esc(content.generatedAt)}</div>
+  <script>${LN_SCRIPT}</script>
 </body>
 </html>`;
 }
