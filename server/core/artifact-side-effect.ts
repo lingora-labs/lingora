@@ -1,47 +1,12 @@
-// SEEK 5.0 P8 — execute each structured signal after content. No user-text keyword logic.
-// SEEK 5.0 P9 — route through the existing rich renderCoursePdf pipeline via a
-// structuring composer. Falls back to the prior flat-text path only if
-// composition fails — never worse than the pre-P9 baseline.
-// P9-diag: surfaces WHY the fallback was used, as a non-breaking additive
-// field on the artifact object, so DAE can diagnose from run_diagnostic
-// output without server log access. Not rendered by the product UI.
-//
-// SEEK 5.0 P9b — SUBJECT CONTENT ISOLATION.
-// excerptForSubject()'s blind text.slice(start, start+6000) window is now
-// used ONLY as the fallback path's input (when composition fails). The rich
-// path passes the FULL taught text plus the other subjects in this turn to
-// the composer, which performs semantic isolation itself — see
-// composeArtifactDocument.ts. No domain names hardcoded here; subjects come
-// entirely from the caller-supplied signals.
-//
-// SEEK 5.0 P9c-diag — propagate the renderer's own self-validation
-// (pdf-generator.ts: PDFDocument.load round-trip) onto the artifact object,
-// additive only, so DAE can see from run_diagnostic whether generation
-// produced structurally valid bytes without needing server logs.
-//
-// SEEK 5.0 P9c chain-of-custody — also propagate pdfSha256, the server-side
-// hash of the exact bytes generated, so any later copy of the PDF (however
-// obtained) can be verified byte-for-byte against the source.
-//
-// SEEK 5.0 P14-C — FAILURE TRUTH.
-// Root gap: on generatePDF failure this function logged server-side and
-// silently `continue`d — no false success ever reached the UI, but the
-// failure was also invisible to it. A user who asked for a document and
-// got nothing had no way to know materialization was attempted and failed
-// versus never attempted at all.
-// Fix: buildFulfillmentEntry() is the ONLY place that decides artifact vs.
-// failure, extracted as a pure function so it's unit-testable without any
-// API call (see tests/p14-fulfillment.ts). fulfillArtifactSignals now
-// returns BOTH arrays — successes and failures — instead of dropping
-// failures. This is the layer that actually knows the executor's result;
-// per the required contract, failure truth must originate here, not be
-// guessed by the tutor. Only `{ subject }` is exposed — no stack traces,
-// tool names, or provider details reach the caller/UI. Cardinality is
-// preserved per-item: one signal in, one artifact OR one failure out —
-// never both, never neither, never a partial success masked as a full one.
-import type { ArtifactPayload, SessionState, ExecutionPlan } from '../../lib/contracts'
+// SEEK 5.0 P8 — execute each structured signal after content.
+// 7.3: NO user-text logic here. A typed signal declared by the Tutor is the
+// authorization; this layer validates technically (declared trigger, per-turn
+// caps, real content, real bytes) and reports failures truthfully.
+// History condensed (P9 composer routing, P9b subject isolation, P9c render
+// self-validation + sha256 chain of custody, P14-C failure truth, P15 audio,
+// P19-D dual delivery): see git history.
+import type { ArtifactPayload, SessionState } from '../../lib/contracts'
 import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
-import { isExplicitPdfRequest } from '../../lib/pdf-intent-authorization'
 
 function excerptForSubject(content: string, subject: string): string {
   const text = content.trim()
@@ -51,46 +16,6 @@ function excerptForSubject(content: string, subject: string): string {
   if (idx < 0) return text.slice(0, 6000)
   const start = Math.max(0, idx - 400)
   return text.slice(start, start + 6000)
-}
-
-// P19-F2 — ARTIFACT EXECUTION AUTHORITY GATE.
-// Root gap confirmed by reproduction (Zakia Replay, production): turn 1
-// ("Hi, I work in a hotel kitchen...") and turn 2 ("Can you explain some
-// basic kitchen vocabulary?") — neither containing any request for a
-// document — both produced a materialized PDF artifact. Trace: the model
-// decides signal_artifact via ARTIFACT_CHANNEL_INSTRUCTION's "after the
-// pedagogical act is complete, you may call signal_artifact if
-// materialization is warranted" — that instruction conflates PEDAGOGICAL
-// COMPLETION (a real, substantive answer was given) with USER AUTHORITY
-// TO MATERIALIZE (the user actually wants a document). A turn can be
-// pedagogically complete and simultaneously have zero user intent for a
-// downloadable artifact — that was exactly turns 1-2.
-// Fix: a deterministic authorization gate, not another prompt asking the
-// model to behave — this message either contains a real request for a
-// document (explicit noun: pdf/tabla/esquema/dossier/guía/etc., paired
-// with a creation verb, or a materialize-this-conversation phrase, or an
-// author-a-document phrase) or it doesn't. Model cognitive initiative is
-// untouched — it can still say "I could prepare a printable sheet for
-// you" in the response text; that is prose, not a side effect. Only the
-// SIDE EFFECT (actual PDF generation) requires this authority. Silently
-// dropped (not reported as a failure) when unauthorized — this is a
-// choice not to attempt, not an attempt that failed.
-
-// DAE 7.1 — IMAGE COST AUTHORITY: a Tutor declaration is not sufficient
-// authorization to spend image-generation credits. The current user message
-// must also explicitly request a newly generated/drawn image. This is an
-// instrumental side-effect permission, NOT a cognitive intent router.
-export function isExplicitImageRequest(message: string): boolean {
-  const text = message.trim()
-  if (!text) return false
-  if (/(?:\b(?:sin|no|without|don't|do not)\s+(?:generar|crear|hacer|dibujar|generate|create|draw|make)?\s*(?:una?\s+|an?\s+|any\s+)?(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|image(?:s)?|pictures?|photos?|illustrations?)\b)/iu.test(text)) return false
-  const imageNoun = /(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|infograf[ií]as?|images?|pictures?|photos?|illustrations?|drawings?|infographics?|صورة|صور|رسمة)/iu
-  const command = /(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|dibuja(?:r)?|ilustra(?:r)?|diseña(?:r)?|renderiza(?:r)?|produce|quiero|necesito|generate|create|draw|illustrate|design|render|make|produce|i want|i need|ارسم|أنشئ|اصنع|أريد)/iu
-  if (!imageNoun.test(text) || !command.test(text)) return false
-  // An explicit image noun must occur close to the creation request; a
-  // distant mention in an unrelated lesson is not authority to spend credits.
-  const close = /(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|dibuja(?:r)?|ilustra(?:r)?|diseña(?:r)?|renderiza(?:r)?|produce|quiero|necesito|generate|create|draw|illustrate|design|render|make|produce|i want|i need|ارسم|أنشئ|اصنع|أريد)[^\n.!?]{0,95}(?:imagen(?:es)?|fotos?|fotograf[ií]as?|ilustraci[oó]n(?:es)?|dibujo(?:s)?|infograf[ií]as?|images?|pictures?|photos?|illustrations?|drawings?|infographics?|صورة|صور|رسمة)/iu
-  return close.test(text)
 }
 
 export interface ArtifactFailure {
@@ -134,8 +59,7 @@ export function buildFulfillmentEntry(
       pdfByteLength: result.pdfByteLength,
       pdfSha256: result.pdfSha256,
       // P19-D — additive: undefined when composition fell back to the
-      // flat-text path (no DocumentContent to render as HTML), so that
-      // path keeps its pre-existing single-download behavior unchanged.
+      // flat-text path (no DocumentContent to render as HTML).
       ...(webUrl ? { webUrl } : {}),
     } as ArtifactPayload,
   }
@@ -145,23 +69,17 @@ export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
-  userMessage: string = '',
-  plan?: Pick<ExecutionPlan,'documentContractReady'|'documentContractUpdate'>,
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
-  // 7.1: the tutor, not a regex over the user's words, decides the intent.
-  // Runtime enforces the explicit-request declaration and per-turn side-effect
-  // budget. PDF materialization is never automatic after a normal lesson.
-  const requested=isExplicitPdfRequest(userMessage,state.activeMode)
-  const awaiting=Boolean(plan?.documentContractUpdate&&!plan?.documentContractReady)
-  const pdfAuthorized=!awaiting&&(requested||Boolean(plan?.documentContractReady))
-  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request' && pdfAuthorized).slice(0, 3);
+  // 7.3: the Tutor's typed signal IS the authorization. The runtime validates
+  // technically (trigger declared, per-turn caps, real content) and never
+  // reinterprets the student's words.
+  const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
   const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
-  // Costed operation: BOTH Tutor closure and CURRENT user message must consent.
+  // Costed operation: Tutor declaration with trigger, hard cap of one per turn.
   const imageSignals = deduped.filter((s) =>
-    s.type === 'emit_image' && s.trigger === 'explicit_user_request' &&
-    isExplicitImageRequest(userMessage)).slice(0, 1);
+    s.type === 'emit_image' && s.trigger === 'explicit_user_request').slice(0, 1);
   if (pdfs.length === 0 && audioSignals.length === 0 && native.length === 0 && imageSignals.length === 0) return { artifacts: [], failures: [] };
 
   const mentorName = (state as unknown as { mentorProfile?: string }).mentorProfile ?? 'Sarah'
@@ -245,9 +163,7 @@ export async function fulfillArtifactSignals(
 
     // P19-D — DUAL DELIVERY. Only possible when composition succeeded
     // (composed.content is the same DocumentContent already sent to the
-    // PDF renderer above) — the flat-text fallback path has no structured
-    // plan to render as HTML, so webUrl stays undefined there, same as
-    // before this change.
+    // PDF renderer above).
     let webUrl: string | undefined
     if (composed.ok && result.success && result.url) {
       try {
@@ -268,8 +184,7 @@ export async function fulfillArtifactSignals(
     else failures.push(entry.failure)
   }
 
-  // DAE-approved emit_image: executor only, no alternative cognition/router.
-  // Cardinality: one authorized user request -> one actual image or one failure.
+  // emit_image: executor only. One Tutor declaration -> one image or one failure.
   if (imageSignals.length) {
     const { generateImage } = await import('../tools/image-generator')
     for (const signal of imageSignals) {
@@ -292,16 +207,8 @@ export async function fulfillArtifactSignals(
     }
   }
 
-  // P15 — AUDIO OUTPUT RECONNECTION.
-  // Root gap: emit_audio was a valid signal type in the schema (the model
-  // could technically call it) but fulfillArtifactSignals only ever
-  // filtered for emit_pdf — an emit_audio signal was silently accepted and
-  // then never executed. Fix mirrors the emit_pdf pattern exactly: the
-  // model (Sarah, via signal_artifact) decides WHETHER audio is warranted;
-  // this function executes that decision using the same generateSpeech()
-  // already relied upon by execution-engine.ts's non-streaming tool_audio
-  // path. No new capability, no second tutor — Tutor Core still decides,
-  // this only carries the decision through in the streaming path too.
+  // P15 — audio output: the Tutor decides WHETHER audio is warranted; this
+  // executes that decision with the same generateSpeech() used elsewhere.
   if (audioSignals.length > 0) {
     const { generateSpeech } = await import('../tools/audio-toolkit')
     const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' }
