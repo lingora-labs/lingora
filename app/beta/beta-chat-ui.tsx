@@ -38,7 +38,7 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
             </div>
           )}
           {resolveMsgArtifacts(msg).map((art, i) => (
-            <div className="artifact-in" key={`artifact-${msg.id}-${i}`}><ArtifactRender a={art} /></div>
+            <div className="artifact-in" key={`artifact-${msg.id}-${i}`}><ArtifactRender a={art} instanceId={`${msg.id}#${i}`} /></div>
           ))}
           {resolveMsgArtifactFailures(msg).map((f, i) => (
             <div key={`artifact-failure-${msg.id}-${i}`}
