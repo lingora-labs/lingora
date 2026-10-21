@@ -129,9 +129,13 @@ export function executePlanStream(
         // P16 — VOICE CONVERSATION: if this turn started as spoken input,
         // the SAME text response Tutor Core just produced is also spoken by
         // default — a transport/turn-taking decision, not a pedagogical
-        // one. Exactly fullText is spoken — no second model, no shorter/parallel
-        // answer, no new tutor. If an emit_audio signal already produced an audio
-        // artifact this turn, do not speak a second time.
+        // one. Sarah does not have to call signal_artifact just to talk
+        // back; that mechanism stays reserved for deliberate audio
+        // artifacts (pronunciation models, saved listening material) via
+        // fulfillArtifactSignals above. Exactly fullText is spoken — no
+        // second model, no shorter/parallel answer, no new tutor. If an
+        // emit_audio signal already produced an audio artifact this turn,
+        // do not speak a second time.
         if (request.audioDataUrl && fullText.trim().length > 0
             && !artifacts.some((a) => (a as { type?: string }).type === 'audio')) {
           try {
@@ -155,6 +159,7 @@ export function executePlanStream(
         const artifact = artifacts[0]
         const progress=creditLearningProgress(state,request)
         const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
+        if (stream.explanatoryLanguage) patch.explanatoryLanguage = stream.explanatoryLanguage
         Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
@@ -165,9 +170,13 @@ export function executePlanStream(
             patch.tutorPhase = 'lesson'
           }
         }
-        // P17 Defect 4 — TOPIC CONTINUITY: mentor-first plans are blocking:false
-        // and always run through THIS file, so lastConcept must be written here
-        // for short follow-ups to keep the active subject.
+        // P17 Defect 4 — TOPIC CONTINUITY. Root cause: lastConcept was only
+        // ever written in execution-engine.ts (the blocking path). Mentor-
+        // first plans — the path for nearly all free-text teaching turns —
+        // are blocking:false and always run through THIS file instead,
+        // which never wrote lastConcept at all, so a later short follow-up
+        // ("quiero tabla") fell through to a generic default instead of the
+        // active subject. Mirrors execution-engine.ts's exact logic.
         const resolvedTopic = plan.resolvedTopic?.trim()
         if (resolvedTopic && resolvedTopic !== 'Spanish grammar') {
           patch.lastConcept = resolvedTopic
@@ -185,13 +194,28 @@ export function executePlanStream(
             })),
           ].slice(-20)
         }
-        // Shared clear mechanism (state-manager): a stale pending document
-        // request is cleared on this streaming path as well.
+        // DAE fix (AE-EXECUTE round, defect H) — Work's real-UI QA proved
+        // this file never applied plan.clearDocumentContract at all: the
+        // blocking execution-engine.ts's compileResult() had it, this
+        // streaming path did not, so a redirect-with-instruction turn could
+        // answer correctly (E/AE-05 passes) while the stale document
+        // contract stayed alive for the next turn whenever that turn
+        // streamed (H fails). Fix is the SAME shared mechanism
+        // execution-engine.ts now calls — clearDocumentContractIfRequested()
+        // in state-manager.ts — not a second, independently-maintained copy
+        // of the same `if` check (AE: "preferiblemente con un mecanismo de
+        // actualización compartido en vez de duplicar reglas").
         Object.assign(patch, documentContractStatePatch(plan, artifacts))
         const updatedState = mergeStatePatch(state, patch)
-        // mergeStatePatch() translated the null-as-clear sentinel into
-        // `undefined` for the server's own state; toWireState() re-applies the
-        // explicit null from the ORIGINAL patch so it survives JSON transport.
+        // DAE fix (AE-EXECUTE round, defect C, completing the fix) —
+        // mergeStatePatch() already translated this turn's null-as-clear
+        // sentinel into `undefined` on updatedState (correct for the
+        // server's OWN in-memory SessionState). Sending updatedState
+        // directly over SSE would let JSON.stringify drop that now-bare
+        // undefined key again — the exact same loss, one level deeper.
+        // toWireState() re-applies the explicit null, from the ORIGINAL
+        // patch, onto a wire-only copy so it survives transport; the
+        // server's own updatedState object above is untouched.
         const wireState = toWireState(updatedState, patch)
         emit({
           done: true,
@@ -200,8 +224,15 @@ export function executePlanStream(
           ...(artifacts.length ? { artifacts } : {}),
           ...(artifactFailures.length ? { artifactFailures } : {}),
           ...(signals.length ? { artifactSignals: signals } : {}),
-          // P18 — same contextual builder as the blocking path: 2-4 relevant
-          // actions per mentor specialty, for every transport.
+          // P18 (continuation) — ROOT GAP: this used to be
+          // `artifact ? [export_chat_pdf] : undefined` — no artifact meant
+          // NO suggested actions at all from the backend, and the frontend's
+          // own fallback then silently defaulted to a single "Export PDF"
+          // button on almost every ordinary conversational turn (this is the
+          // dominant path for conversation after the P18 first-turn fix).
+          // Now shares the same contextual builder as the blocking path —
+          // same trigger conditions, same 2-4 relevant actions per mentor
+          // specialty, for every transport.
           suggestedActions: (progress.hitFive ? [{type:'create_visual_review',action:'create_visual_review',label:'Crear mi esquema visual'} as SuggestedAction] : []).concat(artifactFailures.length ? [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] : []).concat(buildContextualActions({
             pedagogicalAction: plan.pedagogicalAction,
             artifactType: artifact?.type,
@@ -213,12 +244,21 @@ export function executePlanStream(
         controller.close()
       } catch (err) {
         console.error('[stream] fatal:', err instanceof Error ? err.message : err)
-        // Failure path uses the same shared document-contract helper and the
-        // same wire/internal state split as the success path above.
+        // DAE fix (AE-EXECUTE round, defect H, exhaustiveness) — this
+        // fallback path (mentor LLM call failed, e.g. network error) built
+        // its OWN separate state patch literal, bypassing the shared
+        // clearDocumentContractIfRequested() mechanism entirely. A redirect
+        // that fails over to this branch would resurrect the stale
+        // document contract exactly like the original defect H, just via a
+        // second, uncovered code path instead of the main one. Same shared
+        // helper, same call shape, even on the error path.
         const progressFallback=creditLearningProgress(state,request)
         const fallbackPatch: Record<string, unknown> = {tokens:progressFallback.tokens,progressCredits:progressFallback.progressCredits,engagement:progressFallback.engagement}
         Object.assign(fallbackPatch, documentContractStatePatch(plan))
         const fallbackState = mergeStatePatch(state, fallbackPatch)
+        // Same wire/internal split as the success path above — see the
+        // comment there for why toWireState() must run on top of
+        // mergeStatePatch() rather than being skipped on this branch.
         emit({ delta: '\n\nNo se pudo completar la entrega solicitada. Puedes reintentar sin perder la conversación.' })
         emit({ done: true, state: toWireState(fallbackState, fallbackPatch),
           artifactFailures: [{ subject: 'Entrega no completada en este turno' }],
