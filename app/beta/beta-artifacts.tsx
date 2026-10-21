@@ -54,7 +54,7 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
   )
 }
 
-export function ArtifactRender({ a }: { a: Artifact }) {
+export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: string }) {
   if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
@@ -78,7 +78,7 @@ export function ArtifactRender({ a }: { a: Artifact }) {
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
           <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{title}</span>
         </div>
-        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} /></div>
+        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} instanceId={instanceId} /></div>
       </div>
     )
   }
