@@ -22,16 +22,25 @@ for(const opening of [false,true]){
 }
 const note=formatLanguageTurnNote(dp)
 assert.match(note,/explanatoryLanguage = "ar"/)
-assert.match(note,/even though the student's message below may be Spanish practice/)
+assert.match(note,/even though the student's message above may be Spanish practice/)
 
-// 7.3.2d: before any declaration, the UI default is visible ONLY for the opening greeting.
-const fresh=buildContextPack({interfaceLanguage:'es',message:'مرحبا'})
-assert.match(formatContextPack(fresh,{opening:true}),/interfaceLanguage \(starting default for the opening greeting only\): es/)
-assert.match(formatLanguageTurnNote(fresh,{opening:true}),/opening greeting only/)
+// 7.3.3b: opening greeting = one voice, defined only in the language note. Spanish protagonist,
+// the selected language in italics below; Spanish alone for Spanish; English alone for OTHER.
+const fresh=buildContextPack({interfaceLanguage:'no',message:'x'})
+const bi=formatLanguageTurnNote(fresh,{opening:true})
+assert.match(bi,/first the greeting in Spanish/)
+assert.match(bi,/same greeting in "no"/)
+assert.match(bi,/single asterisks for italics/)
+assert.match(formatLanguageTurnNote(buildContextPack({interfaceLanguage:'es',message:'x'}),{opening:true}),/ONLY in Spanish/)
+const other=formatLanguageTurnNote(fresh,{opening:true,other:true})
+assert.match(other,/ONLY in English/)
+assert.match(other,/any language they like/)
+assert.ok(!/"no"/.test(other),'OTHER must not mention a panel language')
+assert.ok(!/interfaceLanguage/.test(formatContextPack(fresh,{opening:true})),'the pack carries no second language statement')
 const afterWrite=formatContextPack(fresh,{opening:false})
 assert.ok(!/interfaceLanguage/.test(afterWrite),'once the student writes, the UI default has no voice')
 const freshNote=formatLanguageTurnNote(fresh,{opening:false})
-assert.ok(!/interfaceLanguage|"es"/.test(freshNote),'undeclared note must not mention the UI default')
+assert.ok(!/interfaceLanguage|"no"/.test(freshNote),'undeclared note must not mention the UI default')
 assert.match(freshNote,/any language you can write well/)
 assert.match(freshNote,/call set_explanatory_language once/)
 
@@ -73,6 +82,8 @@ assert.ok(sel.indexOf("callAPI({ message: '' })")<sel.indexOf('GREETINGS['),'sta
 assert.match(view,/OTROS/,'language panel offers OTROS')
 assert.match(view,/pickOther\(\)/)
 assert.match(hook,/uiLanguageChoice: otherRef\.current \? 'other' : undefined/)
-assert.match(mentor,/opening && state\.uiLanguageChoice === 'other'/,'OTROS shapes only the opening locale')
-assert.match(mentor,/the student picked OTHER because their language is not in the picker/)
+assert.match(mentor,/other: state\.uiLanguageChoice === 'other'/,'OTROS shapes only the opening note')
+assert.ok(!/Student interface language/.test(mentor),'no second interface-language voice')
+assert.match(mentor,/n\.opening\?\[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL\]/,'the opening settles no language')
+assert.ok(!/about today in Spanish/.test(mentor),'first-turn directive must not fix the greeting language')
 console.log('PASS 7.3.3 — streamed Tutor opening + OTROS')
