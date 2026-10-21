@@ -160,6 +160,11 @@ export function executePlanStream(
         const progress=creditLearningProgress(state,request)
         const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
         if (stream.explanatoryLanguage) patch.explanatoryLanguage = stream.explanatoryLanguage
+        // 7.3.3f: notes the Tutor itself recorded; the platform stores them with provenance.
+        if (stream.memoryOps?.length) {
+          const { applyMemoryOps } = await import('../../lib/tutor-memory')
+          patch.tutorMemory = applyMemoryOps((state as unknown as { tutorMemory?: unknown }).tutorMemory, stream.memoryOps, progress.tokens, new Date().toISOString())
+        }
         Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
