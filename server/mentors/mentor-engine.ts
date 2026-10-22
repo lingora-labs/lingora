@@ -174,7 +174,7 @@ type NormalizedMentorCall = {
   opening: boolean
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; deliveryFailure?: string }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; deliveryFailure?: string; rejectedSignals?: number }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -446,6 +446,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    let served=''
    const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    const publishLanguage=(l:string)=>{wrapped.explanatoryLanguage=l}
+   const publishRejected=(n:number)=>{wrapped.rejectedSignals=(wrapped.rejectedSignals??0)+n}
    const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
    if(!response){fail('provider_unavailable');yield fallback;return}
    try{
@@ -483,8 +484,14 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
          const reply=typeof item.reply==='string'?item.reply:''
          const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
          if(reply.trim()){
+           // 7.4.1: an invalid artifact declaration can never destroy the Tutor's own reply.
+           // Valid pieces are delivered; invalid ones are dropped and reported, never retried
+           // through a second model call.
            const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
-           if(valid.length) closed={reply,artifacts:valid}
+           closed={reply,artifacts:valid}
+           const dropped=Math.max(0,pieces.length-valid.length)
+           if(dropped){publishRejected(dropped);fail('artifact_signal_rejected')}
+           else if(!Array.isArray(item.artifacts))fail('closure_artifacts_missing')
          }
        }
        if(!closed)fail('invalid_tool_contract')
