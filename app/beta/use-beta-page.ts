@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
   BACKEND_LANG, MENTOR_META, COPY, TSYS, GREETINGS,
-  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact, applyDeliveryRetry
+  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact, resolveMsgArtifacts, applyDeliveryRetry
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { selectHistoryWindow } from '@/lib/tutor-memory'
