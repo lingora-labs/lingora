@@ -51,6 +51,7 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
     return out
   })
   const [sent, setSent] = useState<boolean>(Boolean(initial?.sent))
+  const [sendRefused, setSendRefused] = useState<boolean>(false)
   // A quiz restored fully answered (reload) must not re-announce its completion to the Tutor.
   const reported = useRef(Boolean(initial?.answers && initial.answers.length >= quiz.length && quiz.length > 0 && initial.answers.slice(0, quiz.length).every(v => typeof v === 'number')))
   const validity = validateQuizAnswerKey(quiz)
@@ -137,16 +138,21 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
               type="button" data-testid="quiz-review-send"
               disabled={!allAnswered}
               onClick={() => {
-                setSent(true)
-                window.dispatchEvent(new CustomEvent('lingora-quiz-review-request', {
-                  detail:{responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number],...(verified[i]!==null?{verified:ans[i]===verified[i]?'correct':'incorrect'}:{})}))}
-                }))
+                // 7.4.6: claim "sent" only if the page accepted the request.
+                const request = new CustomEvent('lingora-quiz-review-request', {
+                  detail:{accepted:false,responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number],...(verified[i]!==null?{verified:ans[i]===verified[i]?'correct':'incorrect'}:{})}))}
+                })
+                window.dispatchEvent(request)
+                if (request.detail.accepted) { setSendRefused(false); setSent(true) } else setSendRefused(true)
               }}
               style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--teal)',color:'var(--teal)',background:'rgba(0,201,167,.1)',cursor:allAnswered?'pointer':'default',opacity:allAnswered?1:.5}}>
               Revisar mis respuestas con mi Tutor
             </button>
           ) : (
             <div style={{fontSize:12,color:'var(--teal)',fontWeight:700}} data-testid="quiz-sent">Enviado a tu Tutor ✓ — su revisión aparece en el chat.</div>
+          )}
+          {sendRefused && !sent && (
+            <div role="alert" data-testid="quiz-send-refused" style={{marginTop:8,fontSize:12,color:'var(--danger,#f87171)',fontWeight:700}}>No se ha enviado: espera a que termine la respuesta actual e inténtalo de nuevo.</div>
           )}
         </div>
       )}
