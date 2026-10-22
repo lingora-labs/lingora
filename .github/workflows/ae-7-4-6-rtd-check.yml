@@ -23,4 +23,8 @@ jobs:
       - name: Install dependencies without credentials
         run: npm install --no-audit --no-fund
       - name: Run all deterministic regressions and Next.js compile
+        # Only satisfies OpenAI SDK constructor while Next collects route data.
+        # No model calls or production credentials are involved in this test job.
+        env:
+          OPENAI_API_KEY: ci-build-only-no-live-requests
         run: npm run build
