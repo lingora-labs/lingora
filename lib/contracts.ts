@@ -560,9 +560,11 @@ export interface ChatRequest {
   message: string;
   exportTranscript?: string;
   // 7.1 — explicit UI operation, not language intent inferred from conversation.
-  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review';
+  uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review' | 'retry_delivery';
   // Material currently visible to the student, supplied by an explicit UI click.
   materialText?: string;
+  // 7.4.1: the typed declarations of the failed turn; a retry re-materialises them, it never re-asks the Tutor.
+  retrySignals?: unknown[];
   state: SessionState;
   files?: AttachedFile[];
   audioDataUrl?: string;
