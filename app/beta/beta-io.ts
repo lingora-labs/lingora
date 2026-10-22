@@ -1,4 +1,4 @@
-import { BACKEND_LANG, type Msg, type SS } from './beta-model'
+import { BACKEND_LANG, buildExportTurns, type Msg, type SS } from './beta-model'
 import { CLEARABLE_FIELDS } from '../../lib/contracts'
 
 // DAE fix (AE-EXECUTE round, defect C) — the client half of the SAME shared,
@@ -43,15 +43,10 @@ export type PdfExportResult =
 // second tutor decision. A failed PDF remains a failed PDF: do not silently
 // return TXT under a PDF button.
 export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExportResult> {
-  const lines = msgs
-    .filter(m => m.sender !== 'ln')
-    .map(m => ({
-      sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(),
-      text: (m.text || '').trim(),
-    }))
-    .filter(l => l.text.length > 0)
-  if (lines.length === 0) return { ok: false, message: 'Todavía no hay conversación para exportar.' }
-  const transcript = lines.map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
+  // 7.4.6: same builder as the chat chip. The header menu no longer has its own flat-transcript path.
+  const built = buildExportTurns(msgs)
+  if (!built.ok) return { ok: false, message: built.message }
+  const transcript = built.turns.filter(t => t.text.trim()).map(t => `[${t.sender}]: ${t.text.trim()}`).join('\n\n')
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -59,6 +54,7 @@ export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExport
         message: 'Exportar conversación',
         uiAction: 'export_chat_pdf',
         exportTranscript: transcript,
+        exportTurns: built.turns,
         state: {
           ...trimStateForPayload(ss as unknown as Record<string, unknown>),
           mentor: ss.mentor, lang: ss.lang, topic: ss.topic,
@@ -70,7 +66,8 @@ export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExport
     const data = await res.json()
     const artifact = data?.artifact
     if (!['pdf', 'pdf_chat'].includes(artifact?.type) || typeof artifact?.url !== 'string') {
-      return { ok: false, message: 'No se generó un PDF. La conversación continúa disponible en pantalla.' }
+      const reason = typeof data?.message === 'string' && data.message.trim() ? ' ' + data.message.trim() : ''
+      return { ok: false, message: 'No se generó un PDF.' + reason + ' La conversación continúa disponible en pantalla.' }
     }
     if (artifact.renderValidated === false) {
       return { ok: false, message: 'El PDF no pasó la validación estructural.' }
