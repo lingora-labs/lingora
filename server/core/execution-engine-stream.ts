@@ -125,6 +125,8 @@ export function executePlanStream(
           else artifactFailures.push({subject:'Esquema de refuerzo: falta contenido desarrollado'})
         }
         if (stream.deliveryFailure) console.warn('[tutor-delivery-failure]', stream.deliveryFailure)
+        // 7.4.1: a declaration the Tutor made but the contract rejected is reported, never silently lost.
+        if (stream.rejectedSignals) artifactFailures.push({ subject: 'Un material que el Tutor pidió no tenía una estructura válida y no se generó' })
 
         // P16 — VOICE CONVERSATION: if this turn started as spoken input,
         // the SAME text response Tutor Core just produced is also spoken by
@@ -156,6 +158,9 @@ export function executePlanStream(
           }
         }
 
+        // 7.4.1: a retry re-materialises what the Tutor ALREADY wrote (same signals, same text, same message);
+        // it is offered only for the PDF/HTML declarations a click can legitimately repeat.
+        const retrySignals = signals.filter(s => s.type === 'emit_pdf')
         const artifact = artifacts[0]
         const progress=creditLearningProgress(state,request)
         const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
@@ -242,7 +247,7 @@ export function executePlanStream(
           // Now shares the same contextual builder as the blocking path —
           // same trigger conditions, same 2-4 relevant actions per mentor
           // specialty, for every transport.
-          suggestedActions: (progress.hitFive ? [{type:'create_visual_review',action:'create_visual_review',label:'Crear mi esquema visual'} as SuggestedAction] : []).concat(artifactFailures.length ? [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] : []).concat(buildContextualActions({
+          suggestedActions: (progress.hitFive ? [{type:'create_visual_review',action:'create_visual_review',label:'Crear mi esquema visual'} as SuggestedAction] : []).concat(retrySignals.length && artifactFailures.length ? [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{signals:retrySignals}} as SuggestedAction] : []).concat(buildContextualActions({
             pedagogicalAction: plan.pedagogicalAction,
             artifactType: artifact?.type,
             mentorProfile: (state as unknown as { mentorProfile?: string }).mentorProfile,
