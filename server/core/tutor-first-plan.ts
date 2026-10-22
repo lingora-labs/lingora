@@ -17,14 +17,12 @@ import type {
 } from '../../lib/contracts';
 
 import { buildContextPack } from '../../lib/context-pack';
-import { directFormatFor } from '../../lib/direct-intent-contract';
 
 export function buildTutorFirstPlan(
   message: string,
   state: SessionState,
   interfaceLanguage: string,
 ): ExecutionPlan {
-  const directFormat = directFormatFor(message)
   // Onboarding's synthesized greeting is not the student's first REAL turn.
   // A short hello in Free mode is still the pedagogical opening: the tutor
   // must guide one actionable micro-step instead of drifting into small talk.
@@ -44,15 +42,13 @@ export function buildTutorFirstPlan(
 
   return {
     executor: 'mentor',
-    priority: directFormat ? 100 : 10,
+    priority: 10,
     blocking: false,
-    pedagogicalAction: directFormat === 'translation' ? 'translation_only' : directFormat === 'correction' ? 'correction_only' : 'conversation',
+    pedagogicalAction: 'conversation',
     artifacts: [],
     mentor: {
       profile: state.mentorProfile ?? 'Alex',
-      directive: directFormat === 'translation' ? 'TRANSLATION_ONLY_DIRECTIVE'
-        : directFormat === 'correction' ? 'CORRECTION_ONLY_DIRECTIVE'
-        : (!message.trim() || freeOpeningGreeting) ? 'FIRST_TURN_DIRECTIVE'
+      directive: (!message.trim() || freeOpeningGreeting) ? 'FIRST_TURN_DIRECTIVE'
         : state.activeMode === 'structured' && state.tutorPhase === 'feedback' ? 'EXERCISE_FEEDBACK_DIRECTIVE'
         : state.activeMode === 'structured' ? 'STRUCTURED_COURSE_DIRECTIVE'
         : state.activeMode === 'pdf_course' ? 'PDF_COURSE_DIRECTIVE'
@@ -65,9 +61,7 @@ export function buildTutorFirstPlan(
     },
     commercial: undefined,
     skipPhaseAdvance: true,
-    reason: directFormat
-      ? `7.1 explicit student transformation: ${directFormat}; tutor writes the content, deterministic runtime enforces response-only output without artifacts.`
-      : freeOpeningGreeting
+    reason: freeOpeningGreeting
         ? '7.1 first learner hello in Free mode — tutor owns first-turn microaction after synthesized onboarding greeting.'
         : '7.1 tutor-first — cognitive authority is the mentor. Runtime instruments only tool requests the mentor emits or an explicit UI action supplies. No intent classification. No orchestrator decision.',
     resolvedTopic: state.lastConcept?.trim() || state.currentLessonTopic?.trim() || undefined,
