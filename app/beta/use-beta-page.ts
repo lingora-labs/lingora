@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, type ChangeEvent } from 'react'
 import {
   BACKEND_LANG, MENTOR_META, COPY, TSYS, GREETINGS,
-  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact,
+  type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact, applyDeliveryRetry
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { selectHistoryWindow } from '@/lib/tutor-memory'
@@ -10,6 +10,7 @@ import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
 import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
 
+const actionOf = (x: SuggestedAction): string => (x as unknown as { action?: string }).action ?? x.type ?? ''
 export function useBetaPage() {
   const [phase, setPhase] = useState<Phase>('onboarding')
   const [hydrated, setHydrated] = useState(false)
@@ -64,7 +65,8 @@ export function useBetaPage() {
   useEffect(() => { mentorRef.current = mentor }, [mentor])
   useEffect(() => { langRef.current = lang }, [lang])
   useEffect(() => { topicRef.current = topic }, [topic])
-  useEffect(() => { msgsRef.current = msgs }, [msgs])
+  // msgsRef is the single canonical store: every writer updates it first and then mirrors it into state.
+  // (A passive effect copying state -> ref could overwrite a newer ref with a stale render.)
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
   useEffect(() => {
     // Restore full artifact URLs from IndexedDB before enabling autosave.
@@ -131,7 +133,12 @@ export function useBetaPage() {
     }
   }, [hydrated, phase, lang, mentor, topic, activeMode, session, msgs, loading])
   const addMsg = useCallback((m: Omit<Msg,'id'>) => {
-    setMsgs(prev => [...prev, { ...m, id: Date.now()+'-'+Math.random().toString(36).slice(2) }])
+    // 7.4.1: the ref is the canonical snapshot (callAPI and the quiz-progress handler rebuild state from it).
+    // Updating only React state left a window in which a concurrent rebuild silently dropped the new message
+    // (seen in E2E as a missing student bubble and Tutor reply after "enviar a revisión").
+    const next = [...msgsRef.current, { ...m, id: Date.now()+'-'+Math.random().toString(36).slice(2) }]
+    msgsRef.current = next
+    setMsgs(next)
   }, [])
   const registerExport = useCallback(async (archiveUrl: string, expectedSessionId: string):
     Promise<'saved' | 'reduced' | 'failed' | 'cancelled'> => {
@@ -155,7 +162,7 @@ export function useBetaPage() {
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
   }, [])
-  const callAPI = useCallback(async (payload: Record<string, unknown>) => {
+  const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean }) => {
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
     lastCallFailedRef.current = false
     setLoading(true)
@@ -167,7 +174,11 @@ export function useBetaPage() {
       // additional dialogue content.
       // 7.3.3f: the whole thread that fits a token budget (never a fixed message count); the
       // Tutor's typed memory (state.tutorMemory) covers whatever the budget can no longer hold.
-      const conversationHistory = selectHistoryWindow(msgsRef.current
+      // 7.4.1: re-asking after a turn that never produced material must not show the student's words to the
+      // Tutor twice: the history stops before the last student message, which `message` repeats.
+      const lastUser = msgsRef.current.map(m => m.sender).lastIndexOf('user')
+      const historySource = opts?.rewindToLastUser && lastUser >= 0 ? msgsRef.current.slice(0, lastUser) : msgsRef.current
+      const conversationHistory = selectHistoryWindow(historySource
         .filter(m => m.sender !== 'ln' && (m.text || '').trim().length > 0)
         .map(m => ({ role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }))).kept
       const res = await fetch('/api/chat', {
@@ -269,6 +280,21 @@ export function useBetaPage() {
         throw new Error('HTTP_ERROR_' + res.status)
       }
       const data = await res.json()
+      // 7.4.1: a delivery retry updates the message that failed, in place. No new bubble, no new Tutor turn.
+      if (opts?.retryTargetId && data.retryOf) {
+        const patched: Msg[] = applyDeliveryRetry(msgsRef.current, opts.retryTargetId, data)
+        const result = await saveBetaSession({
+          phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
+          lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
+          activeMode: activeModeRef.current, session: sessionRef.current, msgs: patched,
+        })
+        msgsRef.current = patched
+        setMsgs(patched)
+        if (result === 'failed') setPersistWarning('No se pudieron conservar estos archivos. Descárgalos antes de recargar.')
+        else if (result === 'reduced') setPersistWarning('Algunos archivos no se conservaron. Descárgalos antes de recargar.')
+        else setPersistWarning(null)
+        return
+      }
       if (data.state) {
         setSession(s => {
           const n = { ...s, ...data.state, samples: [...(s.samples ?? []), ...((data.state?.samples ?? []).filter((x: string) => !(s.samples ?? []).includes(x)))], sessionId: s.sessionId }
@@ -322,6 +348,20 @@ export function useBetaPage() {
       const msg = actionKey === 'retry_delivery' && typeof (a as SuggestedAction).payload?.message === 'string'
         ? String((a as SuggestedAction).payload!.message).slice(0,4000)
         : actionMessages[actionKey] ?? a.label
+      if (actionKey === 'retry_delivery') {
+        // The Tutor's material is already on screen: repeat only its delivery, in the same message.
+        const retryPayload = (a as SuggestedAction).payload ?? {}
+        const target = [...msgsRef.current].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln'
+          && (m.suggestedActions ?? []).some(x => actionOf(x) === 'retry_delivery'))
+        if (Array.isArray(retryPayload.signals) && retryPayload.signals.length > 0 && target?.text?.trim()) {
+          callAPI({ message: 'Reintentar entrega', uiAction: 'retry_delivery', materialText: target.text,
+            retrySignals: retryPayload.signals }, { retryTargetId: target.id })
+        } else if (typeof retryPayload.message === 'string') {
+          // The turn failed before the Tutor wrote anything: ask again, without a second student bubble.
+          callAPI({ message: String(retryPayload.message).slice(0, 4000) }, { rewindToLastUser: true })
+        }
+        return
+      }
       if (!['export_chat_pdf', 'download_pdf', 'hear_audio'].includes(actionKey)) {
         addMsg({ sender: 'user', text: msg })
       }
@@ -494,7 +534,7 @@ export function useBetaPage() {
     }
     if (hasAudio && pendingAudioBlob) {
       if (!hasText) addMsg({ sender:'user', text:'Audio enviado', audioUrl: pendingAudioUrl ?? undefined })
-      else setMsgs(prev => prev.map(m => m.id === prev[prev.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m))
+      else { const cur = msgsRef.current; msgsRef.current = cur.map(m => m.id === cur[cur.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m); setMsgs(msgsRef.current) }
       const audioDataUrl = await new Promise<string>(res => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(pendingAudioBlob) })
       payload.audioDataUrl = audioDataUrl
       payload.audioMimeType = pendingAudioBlob.type || 'audio/webm'
@@ -503,7 +543,7 @@ export function useBetaPage() {
       const imageFile = pendingFiles.find(f => f.type.startsWith('image/'))
       const imageUrl = imageFile ? `data:${imageFile.type};base64,${imageFile.base64}` : undefined
       if (!hasText && !hasAudio) addMsg({ sender:'user', text: pendingFiles.map(f=>f.name).join(', '), imageUrl })
-      else if (imageUrl) setMsgs(prev => prev.map((m, i) => i === prev.length-1 ? { ...m, imageUrl } : m))
+      else if (imageUrl) { const cur = msgsRef.current; msgsRef.current = cur.map((m, i) => i === cur.length-1 ? { ...m, imageUrl } : m); setMsgs(msgsRef.current) }
       payload.files = pendingFiles
     }
     setPendingAudioBlob(null); setPendingAudioUrl(null); setPendingFiles([])
