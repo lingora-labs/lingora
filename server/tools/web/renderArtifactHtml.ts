@@ -59,14 +59,61 @@ function esc(v: unknown): string {
 // markers the mentor already uses in chat text. Operates only on already-
 // escaped text, and only recognizes these two fixed patterns; nothing
 // else in the string can become a tag.
+const RTL_CH = '֐-ࣿ'
+const RTL_FIRST = new RegExp('[' + RTL_CH + ']')
+const LATIN_FIRST = /[A-Za-zÀ-ɏ]/
+// Markers survive esc() and are turned into <bdi> only after the markdown
+// emphasis pass, so a run can never straddle a <strong>/<em> boundary.
+const M_RTL_O = '', M_RTL_C = '', M_LTR_O = '', M_LTR_C = ''
+const RTL_RUN = new RegExp('[' + RTL_CH + '](?:[^' + RTL_CH + '\\n<>*_—–|.!?…]*?[' + RTL_CH + '])*[.!?…:;]*', 'gu')
+const LTR_RUN = new RegExp('[A-Za-zÀ-ɏ¿¡](?:[^' + RTL_CH + '\\n*_—–|]*[A-Za-zÀ-ɏ0-9])?[.!?…]*', 'gu')
+
+
+// Same rule feeds the element's dir and inline()'s isolation of foreign runs.
+function baseDirOf(raw: string): 'rtl' | 'ltr' {
+  // Direction of the first strong letter decides, so a list of "Spanish —
+  // Arabic gloss" lines is uniformly LTR and an Arabic sentence is RTL. One
+  // exception: a short label of the other direction ("أ)", "ب)", "A)") must
+  // not flip the line; when the leading run has at most two letters and the
+  // opposite direction follows, the line takes the direction that follows.
+  const dirs: Array<'rtl' | 'ltr'> = [];
+  for (const ch of raw) {
+    if (RTL_FIRST.test(ch)) dirs.push('rtl');
+    else if (LATIN_FIRST.test(ch)) dirs.push('ltr');
+  }
+  if (!dirs.length) return 'ltr';
+  const first = dirs[0];
+  let run = 0;
+  while (run < dirs.length && dirs[run] === first) run++;
+  return run <= 2 && run < dirs.length ? dirs[run] : first;
+}
+function dirOf(v: unknown): string { return ` dir="${baseDirOf(String(v ?? ''))}"`; }
+
 function inline(v: unknown): string {
-  // Only isolate bidi text runs. Do not change their semantic content or
-  // subject them to a separate tutor/document generation branch.
-  return esc(v)
+  const raw = String(v ?? '')
+  // 7.4.2 — bidirectional composition. The paragraph's base direction is that
+  // of its first strong letter (explicit dir on the element). Inside it,
+  // runs of the OTHER direction are isolated whole, so "الفرق بين SER وESTAR"
+  // and "La reunión es en el restaurante." keep their reading order and their
+  // punctuation on the correct side. Content is never changed.
+  const rtlBase = baseDirOf(raw) === 'rtl'
+  const marked = !RTL_FIRST.test(raw) ? raw
+    : rtlBase ? raw.replace(LTR_RUN, run => (/[A-Za-zÀ-ɏ]/.test(run) ? M_LTR_O + run + M_LTR_C : run))
+    : raw.replace(RTL_RUN, run => M_RTL_O + run + M_RTL_C)
+  const labelled = rtlBase ? marked.replace(/^(\s*)(\d{1,3}[.)])(?=\s)/, `$1${M_LTR_O}$2${M_LTR_C}`) : marked;
+  return esc(labelled)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
-    .replace(/[֐-ࣿ]+(?:\s+[֐-ࣿ]+)*/gu,
-      run => '<bdi dir="rtl">' + run + '</bdi>');
+    .split(M_RTL_O).join('<bdi dir="rtl">').split(M_RTL_C).join('</bdi>')
+    .split(M_LTR_O).join('<bdi dir="ltr">').split(M_LTR_C).join('</bdi>');
+}
+
+// Multi-line text: every line is its own bidi paragraph (a Spanish line
+// followed by an Arabic line must not share one base direction).
+function inlineLines(v: unknown): string {
+  const lines = String(v ?? '').split('\n').filter((l) => l.trim().length);
+  if (lines.length <= 1) return inline(v);
+  return lines.map((l) => `<span class="ln-line"${dirOf(l)}>${inline(l)}</span>`).join('');
 }
 
 const ARTIFACT_TYPE_BADGE: Record<string, string> = {
@@ -96,8 +143,8 @@ function renderBlock(
     case 'case': {
       const parts: string[] = [];
       if (block.content) {
-        parts.push(`<h3 class="ln-h3">${esc(block.label ?? block.type.replace('_', ' '))}</h3>`);
-        parts.push(`<p class="ln-p">${inline(block.content)}</p>`);
+        parts.push(`<h3 class="ln-h3"${dirOf(block.label ?? '')}>${esc(block.label ?? block.type.replace('_', ' '))}</h3>`);
+        parts.push(`<p class="ln-p"${dirOf(block.content)}>${inlineLines(block.content)}</p>`);
       }
       if (Array.isArray(block.items) && block.items.length) {
         parts.push(renderBlock({ type: 'bullets', items: block.items }, {}));
@@ -129,11 +176,11 @@ function renderBlock(
     case 'heading': {
       const lvl = block.level ?? 1;
       if (block.label === 'source-appendix') {
-        return `<div class="ln-source-start"><h2 class="ln-source-head">${inline(block.content)}</h2></div>`;
+        return `<div class="ln-source-start"><h2 class="ln-source-head"${dirOf(block.content)}>${inline(block.content)}</h2></div>`;
       }
       if (hints.isAppendix) {
         const heading = lvl === 1 ? 'h3' : 'h4';
-        return `<${heading} class="ln-source-subhead">${inline(block.content)}</${heading}>`;
+        return `<${heading} class="ln-source-subhead"${dirOf(block.content)}>${inline(block.content)}</${heading}>`;
       }
       // P19-G3 — scientific chapter rhythm: a level-1 heading gets a
       // numbered "Capítulo N" opener instead of the compact accent-
@@ -141,11 +188,11 @@ function renderBlock(
       // chapterNumber (i.e. documentIntent === 'scientific' AND lvl === 1);
       // every other intent/level keeps the existing P19-B/C markup exactly.
       if (lvl === 1 && hints.chapterNumber) {
-        return `<div class="ln-chapter"><div class="ln-chapter-num">Capítulo ${hints.chapterNumber}</div><h2 class="ln-chapter-title">${inline(block.content)}</h2></div>`;
+        return `<div class="ln-chapter"><div class="ln-chapter-num">Capítulo ${hints.chapterNumber}</div><h2 class="ln-chapter-title"${dirOf(block.content)}>${inline(block.content)}</h2></div>`;
       }
       const tag = lvl === 1 ? 'h2' : lvl === 2 ? 'h3' : 'h4';
       const cls = lvl === 1 ? 'ln-h1' : lvl === 2 ? 'ln-h2' : 'ln-h3';
-      return `<${tag} class="${cls}">${inline(block.content)}</${tag}>`;
+      return `<${tag} class="${cls}"${dirOf(block.content)}>${inline(block.content)}</${tag}>`;
     }
 
     case 'paragraph':
@@ -154,18 +201,18 @@ function renderBlock(
       // panel instead of plain body text — the reader can tell "this is
       // the abstract" without reading a label.
       if (hints.isAbstract) {
-        return `<div class="ln-abstract"><div class="ln-abstract-label">Resumen</div><p class="ln-abstract-body">${inline(block.content)}</p></div>`;
+        return `<div class="ln-abstract"><div class="ln-abstract-label">Resumen</div><p class="ln-abstract-body"${dirOf(block.content)}>${inlineLines(block.content)}</p></div>`;
       }
-      return `<p class="${hints.isAppendix ? 'ln-source-p' : 'ln-p'}" dir="auto">${inline(block.content)}</p>`;
+      return `<p class="${hints.isAppendix ? 'ln-source-p' : 'ln-p'}"${dirOf(block.content)}>${inlineLines(block.content)}</p>`;
 
     case 'bullets': {
       const items = block.items ?? (block.content ? [block.content] : []);
-      return `<ul class="ln-list">${items.map((it) => `<li>${inline(it)}</li>`).join('')}</ul>`;
+      return `<ul class="ln-list">${items.map((it) => `<li${dirOf(it)}>${inlineLines(it)}</li>`).join('')}</ul>`;
     }
 
     case 'numbered': {
       const items = block.items ?? (block.content ? [block.content] : []);
-      return `<ol class="ln-list">${items.map((it) => `<li>${inline(it)}</li>`).join('')}</ol>`;
+      return `<ol class="ln-list">${items.map((it) => `<li${dirOf(it)}>${inlineLines(it)}</li>`).join('')}</ol>`;
     }
 
     case 'key_value': {
@@ -181,7 +228,7 @@ function renderBlock(
       const rows = items.map((raw) => {
         const [k, ...rest] = raw.split(':');
         const v = rest.join(':').trim();
-        return `<div class="ln-kv-row"><div class="ln-kv-key">${esc(k ?? '')}</div><div class="ln-kv-val">${inline(v)}</div></div>`;
+        return `<div class="ln-kv-row"><div class="ln-kv-key"${dirOf(k)}>${esc(k ?? '')}</div><div class="ln-kv-val"${dirOf(v)}>${inline(v)}</div></div>`;
       }).join('');
       return `<div class="ln-kv">${rows}</div>`;
     }
@@ -190,8 +237,8 @@ function renderBlock(
       const headers = block.headers ?? [];
       const rows = block.rows ?? [];
       const label = hints.isComparisonMatrix ? `<div class="ln-matrix-label">MATRIZ COMPARATIVA</div>` : '';
-      const thead = headers.length ? `<thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` : '';
-      const tbody = `<tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+      const thead = headers.length ? `<thead><tr>${headers.map((h) => `<th${dirOf(h)}>${esc(h)}</th>`).join('')}</tr></thead>` : '';
+      const tbody = `<tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td${dirOf(cell)}>${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`;
       // Horizontal scroll wrapper — the clean, standard solution for a
       // table that can't fit a narrow viewport without losing columns or
       // truncating cell content.
@@ -201,7 +248,7 @@ function renderBlock(
     case 'exercise': {
       const label = block.label ?? 'Ejercicio';
       const n = hints.exerciseIndex ?? 0;
-      return `<div class="ln-callout ln-callout-info ln-ex" data-ex="e${n}"><div class="ln-callout-label">${esc(label)}</div><div class="ln-callout-body">${inline(block.content)}</div>`
+      return `<div class="ln-callout ln-callout-info ln-ex" data-ex="e${n}"><div class="ln-callout-label">${esc(label)}</div><div class="ln-callout-body"${dirOf(block.content)}>${inlineLines(block.content)}</div>`
         + `<div class="ln-ex-tools"><textarea class="ln-ex-ans" rows="2" placeholder="Escribe aquí tu respuesta (se guarda solo en este dispositivo)" aria-label="Tu respuesta al ejercicio ${n + 1}"></textarea>`
         + `<button type="button" class="ln-ex-done" aria-pressed="false">✓ Hecho</button></div></div>`;
     }
@@ -209,17 +256,17 @@ function renderBlock(
     case 'callout': {
       const label = block.label ?? 'Nota';
       const style = block.style === 'warning' ? 'warn' : block.style === 'tip' ? 'tip' : 'info';
-      return `<div class="ln-callout ln-callout-${style}"><div class="ln-callout-label">${esc(label)}</div><div class="ln-callout-body">${inline(block.content)}</div></div>`;
+      return `<div class="ln-callout ln-callout-${style}"><div class="ln-callout-label"${dirOf(block.content)}>${esc(label)}</div><div class="ln-callout-body"${dirOf(block.content)}>${inlineLines(block.content)}</div></div>`;
     }
 
     case 'quote':
-      return `<blockquote class="ln-quote">${inline(block.content)}</blockquote>`;
+      return `<blockquote class="ln-quote"${dirOf(block.content)}>${inlineLines(block.content)}</blockquote>`;
 
     case 'divider':
       return `<hr class="ln-divider" />`;
 
     case 'summary':
-      return `<div class="ln-summary">${inline(block.content)}</div>`;
+      return `<div class="ln-summary"${dirOf(block.content)}>${inlineLines(block.content)}</div>`;
 
     default:
       return '';
@@ -321,7 +368,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   const docId = createHash('sha256').update(`${content.title}|${content.generatedAt}|${blocks.length}|${exerciseTotal}`).digest('hex').slice(0, 16);
   const scriptHash = createHash('sha256').update(LN_SCRIPT).digest('base64');
   const tocHtml = toc.length >= 2
-    ? `<details class="ln-toc" open><summary>Contenido (${toc.length} secciones)</summary><ol>${toc.map((t) => `<li><a href="#${t.id}">${esc(t.title)}</a></li>`).join('')}</ol></details>`
+    ? `<details class="ln-toc" open><summary>Contenido (${toc.length} secciones)</summary><ol class="ln-list">${toc.map((t) => `<li${dirOf(t.title)}><a href="#${t.id}">${esc(t.title)}</a></li>`).join('')}</ol></details>`
     : '';
 
   const metaLine = [
@@ -368,9 +415,15 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-h2 { font-size: 17px; font-weight: 800; color: #1a1d29; margin: 22px 0 8px; }
   .ln-h3 { font-size: 14px; font-weight: 700; color: var(--ln-muted); margin: 18px 0 6px; }
   .ln-p { font-size: 15px; margin: 0 0 12px; color: #2a2e3d; white-space: pre-line; }
-  .ln-list { margin: 0 0 14px; padding-left: 22px; font-size: 15px; color: #2a2e3d; }
-  .ln-list li { margin-bottom: 6px; }
-  .ln-abstract { background: var(--ln-light); border-left: 4px solid var(--ln-accent); border-radius: 4px; padding: 14px 18px; margin: 4px 0 24px; }
+  .ln-list { margin: 0 0 14px; padding: 0; list-style: none; counter-reset: ln; font-size: 15px; color: #2a2e3d; }
+  .ln-list > li { margin-bottom: 6px; position: relative; padding-inline-start: 2.1em; counter-increment: ln; }
+  .ln-list > li::before { position: absolute; top: 0; direction: ltr; unicode-bidi: isolate; color: var(--ln-muted); font-variant-numeric: tabular-nums; }
+  .ln-list > li[dir="rtl"]::before { right: 0; }
+  .ln-list > li:not([dir="rtl"])::before { left: 0; }
+  ol.ln-list > li::before { content: counter(ln) '.'; }
+  ul.ln-list > li::before { content: '\\2022'; }
+  .ln-line { display: block; }
+  .ln-abstract { background: var(--ln-light); border-inline-start: 4px solid var(--ln-accent); border-radius: 4px; padding: 14px 18px; margin: 4px 0 24px; }
   .ln-abstract-label { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ln-accent); margin-bottom: 6px; }
   .ln-abstract-body { font-size: 15px; font-style: italic; color: #2a2e3d; margin: 0; }
   .ln-chapter { margin: 36px 0 14px; padding-top: 10px; border-top: 1px solid #e4e6ed; }
@@ -394,7 +447,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-matrix-label { display: inline-block; background: var(--ln-accent); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 6px 10px; border-radius: 6px 6px 0 0; }
   .ln-table-scroll { overflow-x: auto; margin: 0 0 16px; -webkit-overflow-scrolling: touch; }
   .ln-table { border-collapse: collapse; width: 100%; min-width: 420px; font-size: 13.5px; }
-  .ln-table th { background: var(--ln-dark); color: #fff; text-align: left; padding: 8px 10px; font-weight: 700; }
+  .ln-table th { background: var(--ln-dark); color: #fff; text-align: start; padding: 8px 10px; font-weight: 700; }
   .ln-table td { padding: 8px 10px; border-bottom: 1px solid #eceef2; vertical-align: top; }
   .ln-table tr:nth-child(even) td { background: #f7f8fa; }
   .ln-callout { border-radius: 10px; padding: 14px 16px; margin: 14px 0; }
@@ -405,7 +458,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-callout-label { font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; color: var(--ln-accent); }
   .ln-callout-tip .ln-callout-label { color: var(--ln-teal); }
   .ln-callout-body { font-size: 14.5px; }
-  .ln-quote { border-left: 3px solid var(--ln-teal); margin: 14px 0; padding: 4px 0 4px 14px; color: var(--ln-muted); font-size: 14.5px; }
+  .ln-quote { border-inline-start: 3px solid var(--ln-teal); margin: 14px 0; padding: 4px 14px; color: var(--ln-muted); font-size: 14.5px; }
   .ln-divider { border: none; border-top: 1px solid #e4e6ed; margin: 20px 0; }
   .ln-summary { background: var(--ln-light); border-radius: 10px; padding: 12px 16px; font-size: 14px; margin: 14px 0; }
   .ln-next { border-top: 2px solid var(--ln-accent); margin-top: 28px; padding-top: 16px; font-size: 14px; color: var(--ln-muted); }
@@ -416,21 +469,21 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .js .ln-ctl { display: flex; }
   .ln-ctl button { font: inherit; font-size: 13px; min-height: 40px; min-width: 40px; padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.25); background: transparent; color: #fff; cursor: pointer; touch-action: manipulation; }
   .ln-ctl button:hover, .ln-ctl button:focus-visible { background: rgba(255,255,255,.14); outline: none; }
-  .ln-count { margin-left: auto; font-size: 12px; color: var(--ln-teal); }
+  .ln-count { margin-inline-start: auto; font-size: 12px; color: var(--ln-teal); }
   .ln-barwrap { display: none; height: 4px; background: rgba(255,255,255,.15); }
   .js .ln-barwrap { display: block; }
   #ln-bar { height: 100%; width: 0; background: var(--ln-teal); transition: width .25s; }
   .ln-toc { background: #fff; border: 1px solid #e4e6ed; border-radius: 10px; padding: 10px 16px; margin: 0 0 18px; }
   .ln-toc summary { cursor: pointer; font-weight: 800; font-size: 14px; color: var(--ln-accent); min-height: 32px; }
-  .ln-toc ol { margin: 8px 0 4px; padding-left: 20px; font-size: 14.5px; }
+  .ln-toc ol { margin: 8px 0 4px; padding: 0; font-size: 14.5px; }
   .ln-toc li { margin: 2px 0; }
   .ln-toc a { color: #1a1d29; text-decoration: none; display: inline-block; padding: 5px 0; }
   .ln-toc a:hover { text-decoration: underline; }
   .ln-toc a.is-active { color: var(--ln-accent); font-weight: 800; }
   .ln-sec { margin: 0 0 6px; }
-  .ln-sec > summary { cursor: pointer; list-style: none; position: relative; padding-right: 30px; }
+  .ln-sec > summary { cursor: pointer; list-style: none; position: relative; padding-inline-end: 30px; }
   .ln-sec > summary::-webkit-details-marker { display: none; }
-  .ln-sec > summary::after { content: '\\25BE'; position: absolute; right: 4px; top: 50%; transform: translateY(-50%); color: var(--ln-muted); transition: transform .15s; }
+  .ln-sec > summary::after { content: '\\25BE'; position: absolute; inset-inline-end: 4px; top: 50%; transform: translateY(-50%); color: var(--ln-muted); transition: transform .15s; }
   .ln-sec:not([open]) > summary::after { transform: translateY(-50%) rotate(-90deg); }
   .ln-sec > summary > * { margin-top: 12px; margin-bottom: 8px; }
   .ln-sec { scroll-margin-top: 64px; }
@@ -463,9 +516,9 @@ export function renderArtifactHtml(content: DocumentContent): string {
     <div class="ln-brand">${esc(BRAND.name)}</div>
     <div class="ln-tagline">${esc(BRAND.tagline)}</div>
     <div class="ln-kicker">${esc(kicker)}</div>
-    <div class="ln-badge">${esc(badgeText.toUpperCase())}</div>
-    <div class="ln-title">${esc(content.title)}</div>
-    ${content.subtitle ? `<div class="ln-subtitle">${esc(content.subtitle)}</div>` : ''}
+    ${badgeText.toUpperCase() === kicker.toUpperCase() ? '' : `<div class="ln-badge">${esc(badgeText.toUpperCase())}</div>`}
+    <div class="ln-title"${dirOf(content.title)}>${esc(content.title.replace(/^\s*LINGORA\s*[—–-]\s*/i, ''))}</div>
+    ${content.subtitle ? `<div class="ln-subtitle"${dirOf(content.subtitle)}>${esc(content.subtitle)}</div>` : ''}
     ${metaLine ? `<div class="ln-meta">${metaLine}</div>` : ''}
   </div>
   <div class="ln-ctl" role="toolbar" aria-label="Controles del documento">
@@ -482,7 +535,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   <div class="ln-container">
     ${tocHtml}
     ${bodyHtml}
-    ${content.nextStep ? `<div class="ln-next">${inline(content.nextStep)}</div>` : ''}
+    ${content.nextStep ? `<div class="ln-next"${dirOf(content.nextStep)}>${inline(content.nextStep)}</div>` : ''}
   </div>
   <div class="ln-footer">${esc(BRAND.footerLine)} · ${esc(content.generatedAt)}</div>
   <script>${LN_SCRIPT}</script>
