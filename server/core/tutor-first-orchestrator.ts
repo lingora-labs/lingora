@@ -1,12 +1,16 @@
-// LINGORA 7.1 — central execution authority for Tutor First.
+// LINGORA 7.1 — INSTRUMENTAL execution plan for Tutor First.
 //
-// The orchestrator decides WHO executes, in which ORDER and WHY.
-// It never writes student-facing content or chooses a pedagogical answer:
-// the Tutor Maestro is the only cognitive author.
+// Constitution 7.1 (arts. 47-52, reformed): the Tutor Maestro (Alex, Sarah or
+// Nick) is the sole cognitive authority; it interprets the student's intent from
+// the first turn. This module has NO conversational sovereignty: it never reads
+// the meaning of a message, never chooses a pedagogical answer and never
+// reclassifies intent. It only (a) authorizes explicit UI operations and
+// diagnostics, (b) hands every conversational turn to the Tutor, and (c) checks
+// the plan's structural invariants (order, atomicity, executor).
 //
 // Determinism: same message + normalized state + explicit UI action =>
 // same plan. No clock, RNG, mutable process state, or LLM in plan selection.
-// Manifesto 7.0 arts 47-52; ARCH-9.11 section 8.
+// Manifesto 7.0 as reformed by 7.1 (conciliated, approved 16 Oct 2026): arts. 47-52.
 import type { ExecutionPlan, SessionState } from '../../lib/contracts'
 import { buildTutorFirstPlan } from './tutor-first-plan'
 
@@ -58,7 +62,7 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   }
   if(uiAction==='download_pdf'||uiAction==='hear_audio'){
     // Direct tactile operations retain their existing tested tool
-    // implementation in the adapter; the central plan authorizes WHO.
+    // implementation in the adapter; the plan only authorizes the instrument.
     return assertExecutionPlan({
       executor:uiAction==='download_pdf'?'tool_pdf':'tool_audio',
       priority:100,blocking:true,skipPhaseAdvance:true,
@@ -72,8 +76,7 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   }
   // All normal conversations are SINGLE-TUTOR — no distributed
   // intent router, commercial brain, model-derived arbitration or
-  // hidden mode switch. Direct transformations are local constraints
-  // applied by the tutor planner under central execution authority.
+  // hidden mode switch. The Tutor reads the intent; nothing here does.
   const plan=buildTutorFirstPlan(message,state,interfaceLanguage)
   // A stale document request from an earlier build never gates anything now:
   // the Tutor decides, so any pending contract is simply cleared.
