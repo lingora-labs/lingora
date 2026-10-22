@@ -7,6 +7,7 @@ export const dynamic = 'force-dynamic'
 export const fetchCache = 'force-no-store'
 
 const S0: any = { activeMode: 'interact', tutorPhase: 'guide', tokens: 0, interfaceLanguage: 'es', masteryByModule: {}, depthMode: 'standard', explanatoryLanguage: 'ar', mentorProfile: 'sarah' }
+const ASK = 'Soy Zakia, hablo árabe y quiero aprender español para el examen DELE A2. Explícame en árabe la diferencia entre SER y ESTAR con ejemplos, tablas, ejercicios y respuestas, y dame ese mismo material en PDF y en HTML interactivo.'
 
 // same projection as server/tools/pdf/documentFidelity.ts#fidelityTokens
 const tok = (v: string): string[] => v.replace(/[*_\x60]/g, '').toLocaleLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu) ?? []
@@ -65,8 +66,7 @@ export async function GET(req: NextRequest) {
   const step = u.searchParams.get('step') || 'ask'
   try {
     if (step === 'ask') {
-      const msg = 'Soy Zakia, hablo árabe y quiero aprender español para el examen DELE A2. Explícame en árabe la diferencia entre SER y ESTAR con ejemplos, tablas, ejercicios y respuestas, y dame ese mismo material en PDF y en HTML interactivo.'
-      const r = await post(base, share, { message: msg, state: S0, conversationHistory: [], stream: false })
+      const r = await post(base, share, { message: ASK, state: S0, conversationHistory: [], stream: false })
       const j = r.json || {}
       const text = String(j.message ?? '')
       const arts = Array.isArray(j.artifacts) ? j.artifacts : []
@@ -79,18 +79,19 @@ export async function GET(req: NextRequest) {
       })
     }
     if (step === 'retry') {
-      // retry path: no model call; re-materialise the Tutor text passed through the `t` query.
-      const text = u.searchParams.get('t') || ''
-      const sig = { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'الفرق بين SER و ESTAR', format: 'pdf_html' }
+      // 1 real Tutor turn to obtain the genuine visible Tutor text, then the user-side retry twice (no model call on retry).
+      const ask = await post(base, share, { message: ASK, state: S0, conversationHistory: [], stream: false })
+      const text = String(ask.json?.message ?? '')
+      const sig = (ask.json?.artifactSignals ?? [])[0] ?? { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'الفرق بين SER و ESTAR', format: 'pdf_html' }
       const body = { message: 'Reintentar entrega', state: S0, conversationHistory: [], uiAction: 'retry_delivery', retrySignals: [sig], materialText: text }
       const a = await post(base, share, body); const b = await post(base, share, body)
       const ia = await inspect(a.json?.artifacts || [], text, base, share), ib = await inspect(b.json?.artifacts || [], text, base, share)
-      const same = JSON.stringify(ia.map(x => [x.type, x.pdfBytes != null, x.htmlFidelity?.lost])) === JSON.stringify(ib.map(x => [x.type, x.pdfBytes != null, x.htmlFidelity?.lost]))
+      const shape = (x: any[]) => JSON.stringify(x.map(y => [y.type, y.pdfMagic, y.pdfPages, y.htmlTables, y.htmlFidelity?.lost]))
       return NextResponse.json({
-        gate: 'BIL-retry', textLen: text.length,
-        first: { status: a.status, ct: a.ct, retryOf: a.json?.retryOf, message: a.json?.message, failures: a.json?.artifactFailures ?? null, arts: ia, ms: a.ms },
-        second: { status: b.status, message: b.json?.message, arts: ib }, idempotentShape: same,
-        pass: a.status === 200 && a.json?.retryOf === true && ia.length === 1 && ia[0].htmlFidelity?.lost === 0 && same,
+        gate: 'BIL-retry', textLen: text.length, askMs: ask.ms,
+        first: { status: a.status, retryOf: a.json?.retryOf, message: a.json?.message, failures: a.json?.artifactFailures ?? null, arts: ia, ms: a.ms },
+        second: { status: b.status, message: b.json?.message, arts: ib, ms: b.ms }, idempotentShape: shape(ia) === shape(ib),
+        pass: a.status === 200 && a.json?.retryOf === true && ia.length === 1 && ia[0].pdfMagic === '%PDF-' && ia[0].htmlFidelity?.lost === 0 && shape(ia) === shape(ib) && a.ms < 60000,
       })
     }
     return NextResponse.json({ error: 'bad step' }, { status: 400 })
