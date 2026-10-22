@@ -1,4 +1,5 @@
-import { BACKEND_LANG, buildExportTurns, type Msg, type SS } from './beta-model'
+import { BACKEND_LANG, type Msg, type SS } from './beta-model'
+import { buildExportTurns } from './export-turns'
 import { CLEARABLE_FIELDS } from '../../lib/contracts'
 
 // DAE fix (AE-EXECUTE round, defect C) — the client half of the SAME shared,
