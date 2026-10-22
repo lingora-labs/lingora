@@ -1,5 +1,5 @@
 // SEEK 5.0 E-06/P8 — structured artifact signal. Not inferred from pedagogical text.
-export type ArtifactSignalType = 'show_visual' | 'emit_pdf' | 'show_quiz' | 'emit_audio' | 'emit_image' | 'table_matrix' | 'schema_pro' | 'quiz' | 'chart'
+export type ArtifactSignalType = 'show_visual' | 'emit_pdf' | 'show_quiz' | 'emit_audio' | 'emit_image' | 'table_matrix' | 'schema_pro' | 'quiz' | 'chart' | 'flowchart' | 'infographic'
 export type ArtifactSignalTrigger = 'pedagogical_completion' | 'explicit_user_request'
 
 export interface ArtifactSignal {
@@ -15,7 +15,9 @@ export interface MentorTurnResult {
   artifactSignals: ArtifactSignal[]
 }
 
-const TYPES: ArtifactSignalType[] = ['show_visual', 'emit_pdf', 'show_quiz', 'emit_audio', 'emit_image', 'table_matrix', 'schema_pro', 'quiz', 'chart']
+const TYPES: ArtifactSignalType[] = ['show_visual', 'emit_pdf', 'show_quiz', 'emit_audio', 'emit_image', 'table_matrix', 'schema_pro', 'quiz', 'chart', 'flowchart', 'infographic']
+/** Native components: typed content authored by the Tutor, validated and drawn by the runtime. */
+export const NATIVE_TYPES: ArtifactSignalType[] = ['table_matrix', 'schema_pro', 'quiz', 'chart', 'flowchart', 'infographic']
 const TRIGGERS: ArtifactSignalTrigger[] = ['pedagogical_completion', 'explicit_user_request']
 
 export function parseArtifactSignal(raw: unknown): ArtifactSignal | null {
@@ -104,7 +106,7 @@ export const ARTIFACT_CHANNEL_INSTRUCTION = `
 TUTOR TURN CONTRACT:
 Respond to ordinary conversation directly as normal streamed assistant text. Do not call delivery or closure tools for simple conversation; the one exception is set_explanatory_language, which you call once when you settle the language of your explanations. Use complete_tutor_turn only if a newly requested native component or document needs materialization; include the tutor-authored answer and its typed artifacts. You decide what to teach and how to explain it. A structured call is not a second teacher.
 DELIVERY: you can deliver real downloadable files. When the student wants a PDF, a printable sheet, a take-away document, a web (HTML) version, a tactile quiz or a PDF of their own conversation, call deliver_from_text with the kind and a short title AND write the ENTIRE material as your reply text in the same turn: all requested languages, exercises and solutions; begin directly with the document title, with no preface or closing about files or formats. The platform renders exactly your text as the real PDF/HTML and attaches it with download buttons. Never say you cannot create or attach files, and never answer with an outline or a promise instead of the material. Call it only when the student wants the deliverable.
-When the student wants a newly generated or drawn image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. For charts and plots of data (bars, lines) never use emit_image: declare type chart, format native, with the complete data (every category, one value per category per panel); the runtime validates and draws it deterministically. Do not request an image merely because a lesson is complete or the student discusses images.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For a tactile quiz, write the actual numbered questions and their A), B), C) options as ordinary text and call deliver_from_text with kind quiz: the runtime converts those exact options into tactile choices and routes grading to tutor_review, without guessing a key. For other visual matrices or schemas, author a validated native artifact when appropriate. QUIZ INTEGRITY: author meaningful questions, answer indices and explanations that agree. Do not invent a score: an unverified key will be sent for tutor review without automatic grading. The tutor decides whether a lesson calls for a quiz or schema.
+When the student wants a newly generated or drawn image, declare emit_image with trigger explicit_user_request, format image, and a detailed subject describing the image to generate. Image generation is available through the artifact runtime: never say you cannot generate it, and never claim the image is ready until the runtime supplies it. For charts and plots of data (bars, lines) never use emit_image: declare type chart, format native, with the complete data (every category, one value per category per panel); the runtime validates and draws it deterministically. Do not request an image merely because a lesson is complete or the student discusses images.\nInclude all distinct deliverables in one turn, never postpone them to the next student message. For deliberate audio use emit_audio with format audio. Native interactive outputs use type table_matrix (colored cells), schema_pro (expandable concept blocks), or quiz (touchable choices), with format native and a complete content object. These are actual interface components, never HTML markup inside reply. For a tactile quiz, write the actual numbered questions and their A), B), C) options as ordinary text and call deliver_from_text with kind quiz: the runtime converts those exact options into tactile choices and routes grading to tutor_review, without guessing a key. For a process, decision tree or route use type flowchart, format native, with explicit nodes and labelled edges; for a visual summary with headline figures and titled sections use type infographic, format native. Never use emit_image for these. For other visual matrices or schemas, author a validated native artifact when appropriate. QUIZ INTEGRITY: author meaningful questions, answer indices and explanations that agree. Do not invent a score: an unverified key will be sent for tutor review without automatic grading. The tutor decides whether a lesson calls for a quiz or schema.
 Do not claim files already exist: the runtime will materialize your choices or visibly report an execution failure. Do not emit raw tool metadata to the student.
 `
 
@@ -120,11 +122,11 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
         artifacts: { type: 'array', description: 'Only artifacts authorized by the current student message. [] when none.', items: {
           type: 'object', additionalProperties: false,
           properties: {
-            type: { type: 'string', enum: ['emit_pdf', 'emit_audio', 'emit_image', 'table_matrix', 'schema_pro', 'quiz', 'chart'] },
+            type: { type: 'string', enum: ['emit_pdf', 'emit_audio', 'emit_image', 'table_matrix', 'schema_pro', 'quiz', 'chart', 'flowchart', 'infographic'] },
             trigger: { type: 'string', enum: ['explicit_user_request', 'pedagogical_completion'] },
             subject: { type: 'string', description: 'For emit_image, supply a concrete visual prompt with subject, composition and style; the runtime, not the tutor, generates the bytes.' },
             format: { type: 'string', enum: ['pdf', 'pdf_html', 'audio', 'image', 'native'] },
-            content: { type: 'object', description: 'Native only. table_matrix: {title,columns:[{key,label}],rows:[[ {text,tone:ok|warn|danger|info|neutral} ]]}. schema_pro: {title,subtitle,blocks:[{type:concept,title,body},{type:highlight,text,tone},{type:flow,steps:[...]},{type:table,columns:[...],rows:[[...]]}]}. chart: {title,subtitle?,categories:[every label, in order],panels:[{kind:bar|line,title,unit?,values:[one number per category]}]} (the runtime draws it from exactly these numbers). quiz: {title,questions:[{question,options:[...],correct:0-based index,explanation}]}. Use meaningful source-grounded material.', additionalProperties: true },
+            content: { type: 'object', description: 'Native only. table_matrix: {title,columns:[{key,label}],rows:[[ {text,tone:ok|warn|danger|info|neutral} ]]}. schema_pro: {title,subtitle,blocks:[{type:concept,title,body},{type:highlight,text,tone},{type:flow,steps:[...]},{type:table,columns:[...],rows:[[...]]}]}. chart: {title,subtitle?,categories:[every label, in order],panels:[{kind:bar|line,title,unit?,values:[one number per category]}]} (the runtime draws it from exactly these numbers). flowchart: {title,subtitle?,nodes:[{id,label,kind:start|step|decision|end}],edges:[{from,to,label?}]} (exactly one start, at least one end, every decision has 2-4 outgoing edges each with a distinct label, no dead ends, at most 4 nodes per level; the runtime lays it out and draws it). infographic: {title,subtitle?,stats?:[{value,label,tone?}] (max 4, figures must occur in your reply),sections:[{heading,body,icon?,tone?}] (2-6),takeaway?} (tone: ok|warn|danger|info|neutral|highlight). quiz: {title,questions:[{question,options:[...],correct:0-based index,explanation}]}. Use meaningful source-grounded material.', additionalProperties: true },
           },
           required: ['type', 'trigger', 'subject', 'format'],
         } },
@@ -180,7 +182,7 @@ export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
     } else if (s.type === 'emit_image') {
       // Costed side effect: a pedagogical completion can never authorize generation.
       if (s.trigger !== 'explicit_user_request' || s.format !== 'image') return null
-    } else if (s.type === 'table_matrix' || s.type === 'schema_pro' || s.type === 'quiz' || s.type === 'chart') {
+    } else if (NATIVE_TYPES.includes(s.type)) {
       if (s.format !== 'native' || !s.content) return null
     } else return null
     artifacts.push(s)
@@ -207,7 +209,7 @@ export function diagnoseClosedTutorTurn(raw: unknown): string | null {
       if (s.format !== 'audio') return `audio_contract:${i}`
     } else if (s.type === 'emit_image') {
       if (s.trigger !== 'explicit_user_request' || s.format !== 'image') return `image_contract:${i}`
-    } else if (s.type === 'table_matrix' || s.type === 'schema_pro' || s.type === 'quiz' || s.type === 'chart') {
+    } else if (NATIVE_TYPES.includes(s.type)) {
       if (s.format !== 'native') return `native_format:${i}`
       if (!s.content) return `native_missing_content:${i}`
     } else return `unsupported_type:${i}`
