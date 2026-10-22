@@ -5,6 +5,8 @@ import {
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact, resolveMsgArtifacts, applyDeliveryRetry
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
+import { buildExportTurns } from './export-turns'
+import { VISUAL_LIMITS } from '@/lib/native-visual-schema'
 import { selectHistoryWindow } from '@/lib/tutor-memory'
 import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
@@ -369,17 +371,10 @@ export function useBetaPage() {
         addMsg({ sender: 'user', text: msg })
       }
       if (actionKey === 'export_chat_pdf') {
-        const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
-        const turns = msgs.filter(m=>m.sender!=='ln').map(m=>({
-          sender:m.sender==='user'?'Student':m.sender.toUpperCase(), text:m.text,
-          complete:m.complete !== false,
-          artifacts:resolveMsgArtifacts(m).filter(a=>['chart','flowchart','infographic','table_matrix','quiz'].includes(a.type))
-            .map(a=>({type:a.type,content:a.content}))
-        }))
-        if (turns.some(t=>!t.complete)) {
-          setPersistWarning('Hay una respuesta todavía en curso. No se exportará un historial truncado.')
-          return
-        }
+        const built = buildExportTurns(msgs)
+        if (!built.ok) { setPersistWarning(built.message); return }
+        const turns = built.turns
+        const transcript = turns.filter(t => t.text.trim()).map(t => `[${t.sender}]: ${t.text.trim()}`).join('\n\n')
         callAPI({ message: msg, exportTranscript: transcript, exportTurns:turns, uiAction: 'export_chat_pdf' })
       } else if (actionKey === 'create_visual_review') {
         // Exact touch intent, not a PDF keyword and not a cognitive router.
@@ -450,9 +445,11 @@ export function useBetaPage() {
   // student chose; no model-authored 'correct' index enters quizEvidence.
   useEffect(() => {
     const handler = (event: Event) => {
+      // 7.4.6: the sender is told whether the request was ACCEPTED; a silent return used to leave
+      // the quiz saying "Enviado a tu Tutor" while nothing had been sent.
       if (loading) return
       const value = (event as CustomEvent).detail?.responses
-      if (!Array.isArray(value) || value.length < 2 || value.length > 8) return
+      if (!Array.isArray(value) || value.length < VISUAL_LIMITS.quiz.questionsMin || value.length > VISUAL_LIMITS.quiz.questionsMax) return
       const responses = value.map((r: unknown) => {
         if (!r || typeof r !== 'object') return null
         const item = r as {question?:unknown;options?:unknown;chosen?:unknown;verified?:unknown}
@@ -469,6 +466,7 @@ export function useBetaPage() {
       const next = {...sessionRef.current,tutorPhase:'feedback' as const}
       sessionRef.current=next
       setSession(next)
+      ;(event as CustomEvent).detail.accepted = true
       addMsg({sender:'user',text:message})
       void callAPI({message})
     }

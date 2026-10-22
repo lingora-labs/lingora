@@ -96,7 +96,7 @@ export function materializeNativeArtifact(signal: ArtifactSignal, sources: Chart
     return canonical ? ({type:'schema_pro',content:canonical} as unknown as ArtifactPayload) : null
   }
   if (signal.type === 'quiz') {
-    if (!Array.isArray(c.questions) || c.questions.length < 2 || c.questions.length > 20) return null
+    if (!Array.isArray(c.questions) || c.questions.length < VISUAL_LIMITS.quiz.questionsMin || c.questions.length > VISUAL_LIMITS.quiz.questionsMax) return null
     // QA13: a multi-gap compound item cannot be certified by one answer-key
     // index when none of the combined options is fully grammatical. Fail
     // closed before rendering or scoring; don't award false points.
@@ -206,7 +206,7 @@ export function tutorQuizFromText(text:string):ArtifactPayload|null {
   if(current)drafts.push(current)
   const complete=drafts.filter(q=>q.question.length>=6 && q.question.length<=1800 &&
     q.options.length>=2 && q.options.length<=4 && new Set(q.options.map(v=>v.toLocaleLowerCase())).size===q.options.length)
-  if(complete.length<2 || complete.length>20 || complete.length!==drafts.length)return null
+  if(complete.length<VISUAL_LIMITS.quiz.questionsMin || complete.length>VISUAL_LIMITS.quiz.questionsMax || complete.length!==drafts.length)return null
   const signal:ArtifactSignal={type:'quiz',trigger:'explicit_user_request',
     subject:'Quiz solicitado',format:'native',
     content:{title:'Quiz táctil — revisión con el Tutor',gradingMode:'tutor_review',

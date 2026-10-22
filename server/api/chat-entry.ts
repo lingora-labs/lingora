@@ -433,8 +433,9 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const exportFailed = plan.pedagogicalAction === 'export_chat_pdf' && !resultArtifact;
     const response: ChatResponse = {
+      // 7.4.6: an explicit refusal (named artifact, interrupted turn) must reach the student; the generic text is the fallback only.
       message: exportFailed
-        ? 'No se pudo generar el PDF de esta conversación. Inténtalo de nuevo.'
+        ? (result.message?.trim() || 'No se pudo generar el PDF de esta conversación. Inténtalo de nuevo.')
         : result.message,
       artifact:         resultArtifact,
       ...(exportFailed ? { artifactFailures: [{ subject: 'Exportación de conversación' }] } : blockingArtifactFailures ? { artifactFailures: blockingArtifactFailures } : {}),
