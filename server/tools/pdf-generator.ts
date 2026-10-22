@@ -12,6 +12,7 @@
 import { createHash } from 'crypto';
 import type { LessonContent } from './pdf/generateLessonPdf';
 import type { CourseContent }  from './pdf/generateCoursePdf';
+import type { ExportTurn } from './pdf/conversationExport';
 
 let uploadToS3: ((buf: Buffer, key: string, mime: string) => Promise<string | null>) | null = null;
 try {
@@ -27,6 +28,7 @@ export interface GeneratePDFParams {
   filename?: string;
   lessonContent?: LessonContent;
   courseContent?: CourseContent;
+  conversationTurns?: ExportTurn[];
 }
 
 export interface GeneratePDFResult {
@@ -68,6 +70,9 @@ export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePD
     } else if (params.courseContent) {
       const { renderArtifactHtml } = await import('./web/renderArtifactHtml');
       html = renderArtifactHtml(params.courseContent);
+    } else if (params.conversationTurns) {
+      const { renderConversationExportHtml } = await import('./pdf/conversationExport');
+      html = renderConversationExportHtml(params.title, params.conversationTurns);
     } else {
       html = transcriptPrintHtml(params.title, params.content);
     }
