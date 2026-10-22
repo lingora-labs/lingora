@@ -76,18 +76,22 @@ export async function GET(req: NextRequest) {
         gate: 'BIL-ask', status: r.status, ms: r.ms, textChars: text.length, textHead: text.slice(0, 160),
         artifacts: insp, artifactFailures: j.artifactFailures ?? null, artifactSignals: j.artifactSignals ?? null, suggestedActions: (j.suggestedActions ?? []).map((a: any) => a?.action || a?.type),
         pass: r.status === 200 && text.length > 800 && !!pdf && pdf.pdfMagic === '%PDF-' && (pdf.pdfPages ?? 0) >= 1 && pdf.hasWebUrl && pdf.htmlInteractive === true && pdf.htmlFidelity?.lost === 0 && !(j.artifactFailures?.length),
-        _textForRetry: text.length < 60000 ? text : null,
       })
     }
     if (step === 'retry') {
-      // retry path: no model call; re-materialise the Tutor text. Body text is passed by the caller through the `t` query (short) or fixture.
+      // retry path: no model call; re-materialise the Tutor text passed through the `t` query.
       const text = u.searchParams.get('t') || ''
       const sig = { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'الفرق بين SER و ESTAR', format: 'pdf_html' }
       const body = { message: 'Reintentar entrega', state: S0, conversationHistory: [], uiAction: 'retry_delivery', retrySignals: [sig], materialText: text }
       const a = await post(base, share, body); const b = await post(base, share, body)
       const ia = await inspect(a.json?.artifacts || [], text, base, share), ib = await inspect(b.json?.artifacts || [], text, base, share)
       const same = JSON.stringify(ia.map(x => [x.type, x.pdfBytes != null, x.htmlFidelity?.lost])) === JSON.stringify(ib.map(x => [x.type, x.pdfBytes != null, x.htmlFidelity?.lost]))
-      return NextResponse.json({ gate: 'BIL-retry', first: { status: a.status, ct: a.ct, retryOf: a.json?.retryOf, arts: ia, ms: a.ms }, second: { status: b.status, arts: ib }, idempotentShape: same, pass: a.status === 200 && a.json?.retryOf === true && ia.length === 1 && same })
+      return NextResponse.json({
+        gate: 'BIL-retry', textLen: text.length,
+        first: { status: a.status, ct: a.ct, retryOf: a.json?.retryOf, message: a.json?.message, failures: a.json?.artifactFailures ?? null, arts: ia, ms: a.ms },
+        second: { status: b.status, message: b.json?.message, arts: ib }, idempotentShape: same,
+        pass: a.status === 200 && a.json?.retryOf === true && ia.length === 1 && ia[0].htmlFidelity?.lost === 0 && same,
+      })
     }
     return NextResponse.json({ error: 'bad step' }, { status: 400 })
   } catch (e: any) { return NextResponse.json({ gate: 'BIL', error: String(e?.message ?? e) }, { status: 500 }) }
