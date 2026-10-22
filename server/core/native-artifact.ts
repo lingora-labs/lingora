@@ -183,7 +183,7 @@ export function tutorQuizFromText(text:string):ArtifactPayload|null {
   type Draft={question:string;options:string[]}
   const drafts:Draft[]=[]
   let current:Draft|null=null
-  const question=/^\s*(?:#{1,4}\s*)?(?:\*{0,2})?(?:(?:pregunta|question)\s*)?([1-8])\s*[).:\-–]?\s*(.*)$/iu
+  const question=/^\s*(?:#{1,4}\s*)?(?:\*{0,2})?(?:(?:pregunta|question)\s*)?([1-9]|1[0-9]|20)\s*[).:\-–]?\s*(.*)$/iu
   const option=/^\s*(?:[-*]\s*)?(?:\*{0,2})?([A-D])(?:\*{0,2})\s*[).:\-]\s*(.*)$/iu
   for(const raw of text.split(/\r?\n/)){
     const line=raw.trim().replace(/^\*{2}|\*{2}$/g,'').trim()
