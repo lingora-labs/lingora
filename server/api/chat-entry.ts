@@ -377,7 +377,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         state, suggestedActions: [], artifactFailures: [{ subject }],
       }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
     }
-    if (plan.pedagogicalAction === 'export_chat_pdf' && !body.exportTranscript?.trim()) {
+    if (plan.pedagogicalAction === 'export_chat_pdf' && !body.exportTranscript?.trim() && !body.exportTurns) {
       return NextResponse.json({
         message: 'No hay contenido de conversación para exportar.',
         state,
@@ -392,6 +392,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioDataUrl,
       audioMimeType,
       exportTranscript: body.exportTranscript,
+      exportTurns: body.exportTurns,
       uiAction: body.uiAction,
       conversationHistory: body.conversationHistory,
     };
