@@ -42,7 +42,7 @@ assert.match(html,/class="ln-reveal"/,'answer key hidden behind a control')
 assert.match(html,/class="ln-term"/,'glossary tap-reveal')
 for(const id of ['ln-expand','ln-collapse','ln-bigger','ln-smaller','ln-theme','ln-print','ln-reset','ln-count','ln-bar'])assert.ok(html.includes(`id="${id}"`)&&scripts[0][1].includes(id),'control '+id+' exists and is wired')
 // content stays substantive (table survives, not placebo)
-assert.match(html,/<table class="ln-table">/);assert.match(html,/<th>Verbo<\/th>/)
+assert.match(html,/<table class="ln-table">/);assert.match(html,/<th dir="ltr">Verbo<\/th>/)
 // same source as the PDF: renderer consumes DocumentContent, no second model
 const src=fs.readFileSync(root+'server/tools/web/renderArtifactHtml.ts','utf8')
 assert.match(src,/DocumentContent/);assert.ok(!/openai/i.test(src.replace(/\/\/.*$/gm,'')))

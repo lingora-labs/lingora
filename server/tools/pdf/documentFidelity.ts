@@ -135,7 +135,21 @@ export function sourceToDocumentBlocks(source: string): DocumentBlock[] {
       continue
     }
     const heading = line.match(/^(#{1,4})\s+(.+)$/)
-    const titledSection = line.match(/^\d{1,2}[.)]\s+(.{3,90})$/)
+    // 7.4.2: "N." alone, with its options indented below, is ONE numbered item.
+    if (/^\d+[.)]$/.test(line) && i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
+      flushParagraph()
+      if (listType && listType !== 'numbered') flushList()
+      listType = 'numbered'
+      const sub: string[] = []
+      let k = i + 1
+      for (; k < lines.length && /^\s+\S/.test(lines[k]); k++) sub.push(lines[k].trim())
+      items.push(sub.join('\n'))
+      i = k - 1
+      continue
+    }
+    // 7.4.2: the last item of a numbered list is an item, never a heading just
+    // because a blank line follows it (item 10 became a level-2 heading).
+    const titledSection = (listType === 'numbered' && items.length) ? null : line.match(/^\d{1,2}[.)]\s+(.{3,90})$/)
     const followedByBlank = i + 1 < lines.length && !lines[i + 1].trim()
     if (heading || (titledSection && followedByBlank)) {
       flushParagraph(); flushList()
