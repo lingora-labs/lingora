@@ -18,7 +18,7 @@ const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Arr
 const text = (v: unknown, max: number): v is string =>
   typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/<\s*\/?\s*[a-z][^>]*>/i.test(v)
 const MAX_PER_LEVEL = 4
-const nodeWrap = (k: FlowKind) => (k === 'decision' ? 14 : 17)
+const nodeWrap = (k: FlowKind) => (k === 'decision' ? 24 : 28)
 
 // Only equivalent Tutor-authored forms are normalized; never invent nodes or branches.
 function canonicalKind(value: unknown): FlowKind | null {
@@ -40,7 +40,7 @@ export function validateFlowchartContent(raw: unknown): FlowCheck {
       return { ok: false, reason: `flow_node_shape:${i}` }
     if (ids.has(id)) return { ok: false, reason: `flow_duplicate_id:${id}` }
     ids.add(id)
-    if (wrapLines(label, nodeWrap(kind)).length > 4) return { ok: false, reason: `flow_label_too_long:${id}` }
+    if (wrapLines(label, nodeWrap(kind)).length > 14) return { ok: false, reason: `flow_label_too_long:${id}` }
     nodes.push({ id, label: label.trim(), kind })
   }
   if (nodes.filter(n => n.kind === 'start').length !== 1) return { ok: false, reason: 'flow_start_count' }
@@ -118,24 +118,31 @@ export function layoutLevels(f: FlowContent): Map<string, number> {
   return lv
 }
 
-const W = 520, TOPY = 64, ROW = 96, NW = 112, NH = 52, DW = 128, DH = 70
+const TOPY = 64, NW = 232, NH = 54, DW = 232, DH = 76
 const KIND_TONE: Record<FlowKind, keyof typeof TONES> = { start: 'ok', step: 'info', decision: 'warn', end: 'highlight' }
 
 /** Deterministic SVG. Same input, same bytes; every node label and every edge label is drawn. */
 export function renderFlowchartSvg(f: FlowContent, opts: { fixed?: boolean } = {}): string {
   const lv = layoutLevels(f)
   const levels = Math.max(...lv.values()) + 1
-  const H = TOPY + levels * ROW + 20
+  const maxAcross = Math.max(1, ...Array.from({length:levels},(_,l)=>f.nodes.filter(n=>lv.get(n.id)===l).length))
+  const W = Math.max(600, maxAcross * 280 + 80)
   const pos = new Map<string, { x: number; y: number; w: number; h: number }>()
+  let cursor = TOPY
   for (let l = 0; l < levels; l++) {
     const row = f.nodes.filter(n => lv.get(n.id) === l)
+    const heights = row.map(n => Math.max(n.kind === 'decision' ? DH : NH,
+      wrapLines(n.label,nodeWrap(n.kind)).length * 17 + (n.kind === 'decision' ? 48 : 26)))
+    const maxHeight = Math.max(...heights, NH)
     row.forEach((n, i) => {
-      const w = n.kind === 'decision' ? DW : NW, h = n.kind === 'decision' ? DH : NH
-      pos.set(n.id, { x: (W / (row.length + 1)) * (i + 1), y: TOPY + l * ROW + DH / 2, w, h })
+      const w = n.kind === 'decision' ? DW : NW
+      pos.set(n.id,{x:(W / (row.length + 1)) * (i + 1), y:cursor + maxHeight / 2, w, h:heights[i]})
     })
+    cursor += maxHeight + 48
   }
+  const H = cursor + 20
   const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${opts.fixed ? `width="${W}" height="${H}"` : `preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;min-width:440px;height:auto"`} role="img" aria-label="${esc(f.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${opts.fixed ? `width="${W}" height="${H}"` : `preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;min-width:${W}px;height:auto"`} role="img" aria-label="${esc(f.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
     `<defs><marker id="lg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker></defs>`,
     `<rect width="${W}" height="${H}" rx="14" fill="#ffffff"/>`,
     `<text x="${W / 2}" y="30" text-anchor="middle" font-size="18" font-weight="700" fill="#111827" style="unicode-bidi:plaintext">${esc(f.title)}</text>`,
