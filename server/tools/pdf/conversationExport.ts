@@ -2,9 +2,9 @@
 // The learner's real messages plus validated real-time artifacts are the single
 // source of truth. No second tutor, no markdown shown as literal code, no
 // invented data and no silently clipped turns.
-import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
-import { renderFlowchartSvg, validateFlowchartContent } from '../../lib/flowchart-contract'
-import { renderInfographicSvg, validateInfographicContent } from '../../lib/infographic-contract'
+import { renderChartSvg, validateChartContent } from '../../../lib/chart-contract'
+import { renderFlowchartSvg, validateFlowchartContent } from '../../../lib/flowchart-contract'
+import { renderInfographicSvg, validateInfographicContent } from '../../../lib/infographic-contract'
 
 export interface ExportArtifact {
   type: string
