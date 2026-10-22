@@ -5,7 +5,7 @@ import {createRequire} from 'node:module'
 const require=createRequire(import.meta.url),ts=require('typescript')
 require.extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}}).outputText,f)
 const {renderConversationExportHtml:render,explainExportRefusal}=require('../server/tools/pdf/conversationExport.ts')
-const {buildExportTurns}=require('../app/beta/beta-model.ts')
+const {buildExportTurns}=require('../app/beta/export-turns.ts')
 const T='`'
 const html=t=>render('t',[{sender:'ALEX',text:t}])
 // F-A: nested fence — a 4-tick block that contains a 3-tick line used to export EMPTY (code lost)
