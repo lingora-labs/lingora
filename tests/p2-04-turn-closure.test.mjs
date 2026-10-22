@@ -1,19 +1,12 @@
 // Execute: node tests/p2-04-turn-closure.test.mjs
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
-import Module from 'node:module'
+import fs from 'node:fs'
+import {createRequire} from 'node:module'
 import ts from 'typescript'
-const filename = fileURLToPath(new URL('../lib/artifact-signal.ts', import.meta.url))
-const js = ts.transpileModule(readFileSync(filename, 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-}).outputText
-const m = new Module(filename)
-m.filename = filename
-m.paths = Module._nodeModulePaths(path.dirname(filename))
-m._compile(js, filename)
-const { parseClosedTutorTurn, streamedTutorReplyPrefix } = m.exports
+const require=createRequire(import.meta.url)
+require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}}).outputText,file)
+// Transpile the module graph, not just one isolated file: the closure contract now imports the shared canonical visual schema.
+const { parseClosedTutorTurn, streamedTutorReplyPrefix } = require('../lib/artifact-signal.ts')
 const pdf = { type: 'emit_pdf', trigger: 'explicit_user_request', subject: 'SER y ESTAR', format: 'pdf_html' }
 const greeting = { reply: 'Hola, ¿qué quieres aprender?', artifacts: [] }
 assert.deepEqual(parseClosedTutorTurn(greeting), greeting)
