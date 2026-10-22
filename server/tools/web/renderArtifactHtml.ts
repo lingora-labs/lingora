@@ -367,7 +367,7 @@ export function renderArtifactHtml(content: DocumentContent): string {
   .ln-h1 { font-size: 20px; font-weight: 800; color: var(--ln-accent); margin: 28px 0 10px; padding-bottom: 8px; border-bottom: 2px solid var(--ln-teal); }
   .ln-h2 { font-size: 17px; font-weight: 800; color: #1a1d29; margin: 22px 0 8px; }
   .ln-h3 { font-size: 14px; font-weight: 700; color: var(--ln-muted); margin: 18px 0 6px; }
-  .ln-p { font-size: 15px; margin: 0 0 12px; color: #2a2e3d; }
+  .ln-p { font-size: 15px; margin: 0 0 12px; color: #2a2e3d; white-space: pre-line; }
   .ln-list { margin: 0 0 14px; padding-left: 22px; font-size: 15px; color: #2a2e3d; }
   .ln-list li { margin-bottom: 6px; }
   .ln-abstract { background: var(--ln-light); border-left: 4px solid var(--ln-accent); border-radius: 4px; padding: 14px 18px; margin: 4px 0 24px; }
