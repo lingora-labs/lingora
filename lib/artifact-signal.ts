@@ -1,3 +1,4 @@
+import { NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA } from './native-visual-schema'
 // SEEK 5.0 E-06/P8 — structured artifact signal. Not inferred from pedagogical text.
 export type ArtifactSignalType = 'show_visual' | 'emit_pdf' | 'show_quiz' | 'emit_audio' | 'emit_image' | 'table_matrix' | 'schema_pro' | 'quiz' | 'chart' | 'flowchart' | 'infographic'
 export type ArtifactSignalTrigger = 'pedagogical_completion' | 'explicit_user_request'
@@ -126,7 +127,7 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
             trigger: { type: 'string', enum: ['explicit_user_request', 'pedagogical_completion'] },
             subject: { type: 'string', description: 'For emit_image, supply a concrete visual prompt with subject, composition and style; the runtime, not the tutor, generates the bytes.' },
             format: { type: 'string', enum: ['pdf', 'pdf_html', 'audio', 'image', 'native'] },
-            content: { type: 'object', description: 'Native only. table_matrix: {title,columns:[{key,label}],rows:[[ {text,tone:ok|warn|danger|info|neutral} ]]}. schema_pro: {title,subtitle,blocks:[{type:concept,title,body},{type:highlight,text,tone},{type:flow,steps:[...]},{type:table,columns:[...],rows:[[...]]}]}. chart: {title,subtitle?,categories:[every label, in order],panels:[{kind:bar|line,title,unit?,values:[one number per category]}]} (the runtime draws it from exactly these numbers). flowchart: {title,subtitle?,nodes:[{id,label,kind:start|step|decision|end}],edges:[{from,to,label?}]} (exactly one start, at least one end, every decision has 2-4 outgoing edges each with a distinct label, no dead ends, at most 4 nodes per level; the runtime lays it out and draws it). infographic: {title,subtitle?,stats?:[{value,label,tone?}] (max 4, figures must occur in your reply),sections:[{heading,body,icon?,tone?}] (2-6),takeaway?} (tone: ok|warn|danger|info|neutral|highlight). quiz: {title,questions:[{question,options:[...],correct:0-based index,explanation}]}. Use meaningful source-grounded material.', additionalProperties: true },
+            content: NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA,
           },
           required: ['type', 'trigger', 'subject', 'format'],
         } },
