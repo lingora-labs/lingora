@@ -39,6 +39,7 @@ export interface ArtifactFailure {
 
 export interface Msg {
   id: string; sender: 'user' | MK | 'ln'; text: string
+  complete?: boolean; // false while an SSE turn is still streaming; never export as complete
   artifact?: Artifact | null; score?: number
   // P10b — backend can emit multiple artifacts in one turn (e.g. two PDFs
   // from a compound teaching act). `artifact` is preserved as the legacy
