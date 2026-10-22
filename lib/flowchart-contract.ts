@@ -1,3 +1,4 @@
+import { VISUAL_LIMITS } from './native-visual-schema'
 // LINGORA 7.4.3 — flowchart instrument (Manifesto 7.1 arts. 49–52; Manifesto arts. 29–32).
 //
 // The Tutor Maestro decides that a flow diagram helps and AUTHORS its nodes and edges as a typed call.
@@ -21,12 +22,12 @@ const MAX_PER_LEVEL = 4
 const nodeWrap = (k: FlowKind) => (k === 'decision' ? 14 : 17)
 
 export function validateFlowchartContent(raw: unknown): FlowCheck {
-  if (!obj(raw) || !text(raw.title, 160)) return { ok: false, reason: 'flow_title' }
-  if (!Array.isArray(raw.nodes) || raw.nodes.length < 3 || raw.nodes.length > 16) return { ok: false, reason: 'flow_node_count' }
+  if (!obj(raw) || !text(raw.title, VISUAL_LIMITS.flow.titleMax)) return { ok: false, reason: 'flow_title' }
+  if (!Array.isArray(raw.nodes) || raw.nodes.length < VISUAL_LIMITS.flow.nodesMin || raw.nodes.length > VISUAL_LIMITS.flow.nodesMax) return { ok: false, reason: 'flow_node_count' }
   const nodes: FlowNode[] = []
   const ids = new Set<string>()
   for (const [i, n] of raw.nodes.entries()) {
-    if (!obj(n) || typeof n.id !== 'string' || !/^[A-Za-z0-9_-]{1,20}$/.test(n.id) || !text(n.label, 60)
+    if (!obj(n) || typeof n.id !== 'string' || !/^[A-Za-z0-9_-]{1,20}$/.test(n.id) || !text(n.label, VISUAL_LIMITS.flow.labelMax)
         || !KINDS.includes(n.kind as FlowKind)) return { ok: false, reason: `flow_node_shape:${i}` }
     if (ids.has(n.id)) return { ok: false, reason: `flow_duplicate_id:${n.id}` }
     ids.add(n.id)
@@ -36,14 +37,14 @@ export function validateFlowchartContent(raw: unknown): FlowCheck {
   }
   if (nodes.filter(n => n.kind === 'start').length !== 1) return { ok: false, reason: 'flow_start_count' }
   if (!nodes.some(n => n.kind === 'end')) return { ok: false, reason: 'flow_no_end' }
-  if (!Array.isArray(raw.edges) || raw.edges.length < 2 || raw.edges.length > 32) return { ok: false, reason: 'flow_edge_count' }
+  if (!Array.isArray(raw.edges) || raw.edges.length < VISUAL_LIMITS.flow.edgesMin || raw.edges.length > VISUAL_LIMITS.flow.edgesMax) return { ok: false, reason: 'flow_edge_count' }
   const edges: FlowEdge[] = []
   const seen = new Set<string>()
   for (const [i, e] of raw.edges.entries()) {
     if (!obj(e) || typeof e.from !== 'string' || typeof e.to !== 'string' || !ids.has(e.from) || !ids.has(e.to))
       return { ok: false, reason: `flow_edge_ref:${i}` }
     if (e.from === e.to) return { ok: false, reason: `flow_self_loop:${i}` }
-    if (e.label !== undefined && !text(e.label, 30)) return { ok: false, reason: `flow_edge_label:${i}` }
+    if (e.label !== undefined && !text(e.label, VISUAL_LIMITS.flow.edgeLabelMax)) return { ok: false, reason: `flow_edge_label:${i}` }
     const key = `${e.from}>${e.to}`
     if (seen.has(key)) return { ok: false, reason: `flow_duplicate_edge:${key}` }
     seen.add(key)
