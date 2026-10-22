@@ -101,7 +101,7 @@ assert.equal((html.match(/<script/gi)||[]).length,1,'HTML keeps its single pinne
 // structure the Tutor wrote stays structure (no pipe-soup tables, no literal rules, emphasis and blanks intact)
 assert.equal((html.match(/<table class="ln-table">/g)||[]).length,2,'both Markdown tables are real tables')
 assert.ok(!visible.includes('|'),'no raw pipes in visible text'); assert.ok(!html.includes('|---'))
-assert.match(html,/<th>SER<\/th>/);assert.match(html,/<td>soy<\/td>/)
+assert.match(html,/<th dir="ltr">SER<\/th>/);assert.match(html,/<td dir="ltr">soy<\/td>/)
 assert.equal(docBlocks.filter(b=>b.type==='divider').length,(source.match(/^---$/gm)||[]).length,'rules become dividers')
 assert.equal(docBlocks.filter(b=>b.type==='quote').length,2,'blockquotes become quotes')
 assert.ok((html.match(/<strong>/g)||[]).length>150,'bold survives to the shared HTML')
