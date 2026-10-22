@@ -59,7 +59,14 @@ assert.ok(frontend.includes('sessionRef.current = selected'))
 assert.ok(!frontend.includes("if (mode !== 'structured' || loading) return"),
   'structured completion must be queued even while another request loads')
 assert.ok(mentor.includes('formatQuizEvidence(state.quizEvidence)'))
-assert.ok(quizComponent.includes('expected:q.options[q.correct]'))
+// 7.4 contract (tests/quiz-dual-7-4.test.mjs): the evidence the Tutor receives carries the answer the SYSTEM verified,
+// never the index the model authored; a quiz with any unverifiable item sends no evidence and goes to Tutor review.
+assert.ok(quizComponent.includes('expected:q.options[verified[i] as number]'))
+assert.ok(!quizComponent.includes('expected:q.options[q.correct]'),'the model-authored index never becomes evidence')
+assert.ok(quizComponent.includes('requiresReview || reported.current'),'unverified quizzes report no automatic evidence')
 const artifactSource = fs.readFileSync(fileURLToPath(new URL('../server/core/native-artifact.ts',import.meta.url)), 'utf8')
-assert.ok(artifactSource.includes('single answer-key'))
+// quiz shape safeguard, 7.4 form: the materializer validates every key and degrades to a real tactile Tutor review
+assert.ok(artifactSource.includes('validateQuizAnswerKey'))
+assert.ok(artifactSource.includes("gradingMode:'tutor_review'"))
+assert.ok(artifactSource.includes('cannot be certified by one answer-key'))
 console.log('PASS — exact selection disclosure, structured feedback queue, and quiz shape safeguard')
