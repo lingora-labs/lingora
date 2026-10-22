@@ -126,7 +126,7 @@ export function renderFlowchartSvg(f: FlowContent, opts: { fixed?: boolean } = {
   const lv = layoutLevels(f)
   const levels = Math.max(...lv.values()) + 1
   const maxAcross = Math.max(1, ...Array.from({length:levels},(_,l)=>f.nodes.filter(n=>lv.get(n.id)===l).length))
-  const W = Math.max(600, maxAcross * 280 + 80)
+  const W = Math.max(600, (maxAcross + 1) * 260)
   const pos = new Map<string, { x: number; y: number; w: number; h: number }>()
   let cursor = TOPY
   for (let l = 0; l < levels; l++) {
