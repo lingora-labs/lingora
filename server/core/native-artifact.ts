@@ -6,6 +6,8 @@ import type { ArtifactPayload } from '../../lib/contracts'
 import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
 import { normalizeSchemaPro } from '../../lib/native-schema-contract'
 import { validateChartContent, type ChartSources } from '../../lib/chart-contract'
+import { validateFlowchartContent } from '../../lib/flowchart-contract'
+import { validateInfographicContent } from '../../lib/infographic-contract'
 
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -23,6 +25,16 @@ export function materializeNativeArtifact(signal: ArtifactSignal, sources: Chart
     const checked = validateChartContent(c, sources)
     if (!checked.ok) { console.error('[chart] rejected', checked.reason); return null }
     return { type: 'chart', content: checked.chart } as unknown as ArtifactPayload
+  }
+  if (signal.type === 'flowchart') {
+    const checked = validateFlowchartContent(c)
+    if (!checked.ok) { console.error('[flowchart] rejected', checked.reason); return null }
+    return { type: 'flowchart', content: checked.flow } as unknown as ArtifactPayload
+  }
+  if (signal.type === 'infographic') {
+    const checked = validateInfographicContent(c, sources)
+    if (!checked.ok) { console.error('[infographic] rejected', checked.reason); return null }
+    return { type: 'infographic', content: checked.info } as unknown as ArtifactPayload
   }
   if (signal.type === 'table_matrix') {
     if (!Array.isArray(c.columns) || c.columns.length < 2 || c.columns.length > 6 ||
