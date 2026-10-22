@@ -36,8 +36,10 @@ assert.ok(/ width="\d+" height="\d+"/.test(renderFlowchartSvg(ok.flow,{fixed:tru
 // layout: nothing overlaps, nothing leaves the canvas
 const boxes=[...svg.matchAll(/<rect data-node="[^"]+" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map(m=>[+m[1],+m[2],+m[1]+ +m[3],+m[2]+ +m[4]])
 for(const m of svg.matchAll(/<polygon data-node="[^"]+" points="([^"]+)"/g)){const p=m[1].split(' ').map(s=>s.split(',').map(Number));boxes.push([Math.min(...p.map(q=>q[0])),Math.min(...p.map(q=>q[1])),Math.max(...p.map(q=>q[0])),Math.max(...p.map(q=>q[1]))])}
-const H=+/viewBox="0 0 520 (\d+)"/.exec(svg)[1]
-for(const b of boxes) assert.ok(b[0]>=0&&b[2]<=520&&b[1]>=0&&b[3]<=H,'node inside canvas')
+const dimensions=/viewBox="0 0 (\d+) (\d+)"/.exec(svg)
+assert.ok(dimensions,'SVG has full viewBox dimensions')
+const W=Number(dimensions[1]),H=Number(dimensions[2])
+for(const b of boxes) assert.ok(b[0]>=0&&b[2]<=W&&b[1]>=0&&b[3]<=H,'node inside canvas')
 for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){const a=boxes[i],b=boxes[j];assert.ok(a[2]<=b[0]||b[2]<=a[0]||a[3]<=b[1]||b[3]<=a[1],'nodes must not overlap')}
 const lv=layoutLevels(ok.flow); assert.equal(lv.get('s'),0); assert.ok(lv.get('e')>lv.get('d1'))
 // back edge (rev→d1) is drawn, not lost
