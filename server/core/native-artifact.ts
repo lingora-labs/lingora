@@ -5,6 +5,7 @@ import type { ArtifactSignal } from '../../lib/artifact-signal'
 import type { ArtifactPayload } from '../../lib/contracts'
 import { validateQuizAnswerKey } from '../../lib/quiz-answer-key'
 import { normalizeSchemaPro } from '../../lib/native-schema-contract'
+import { validateChartContent, type ChartSources } from '../../lib/chart-contract'
 
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -15,9 +16,14 @@ const tone = (v: unknown): v is string => typeof v === 'string' &&
 const strings = (v: unknown, min = 1, max = 12): v is string[] =>
   Array.isArray(v) && v.length >= min && v.length <= max && v.every(str)
 
-export function materializeNativeArtifact(signal: ArtifactSignal): ArtifactPayload | null {
+export function materializeNativeArtifact(signal: ArtifactSignal, sources: ChartSources = {}): ArtifactPayload | null {
   const c = signal.content
   if (!c || !obj(c) || !str(c.title)) return null
+  if (signal.type === 'chart') {
+    const checked = validateChartContent(c, sources)
+    if (!checked.ok) { console.error('[chart] rejected', checked.reason); return null }
+    return { type: 'chart', content: checked.chart } as unknown as ArtifactPayload
+  }
   if (signal.type === 'table_matrix') {
     if (!Array.isArray(c.columns) || c.columns.length < 2 || c.columns.length > 6 ||
         !c.columns.every((x: unknown) => obj(x) && str(x.key) && str(x.label)) ||
