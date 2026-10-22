@@ -116,8 +116,9 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const validation = validateStateInvariants(baseState);
     const state = repairState(baseState, validation.errors);
     const stateValidationStatus = validation.valid ? 'passed' : 'repaired';
-    // One central authority produces ALL execution plans, including
-    // diagnostics. The mentor alone supplies pedagogical content.
+    // 7.1: the Tutor Maestro is the only cognitive authority. The runtime plan
+    // is instrumental (UI operations, diagnostics, structural invariants); the
+    // mentor alone interprets intent and supplies pedagogical content.
     const preflightPlan=orchestrateTutorFirst({
       message:message ?? '',state,interfaceLanguage:state.interfaceLanguage ?? 'en',
     });
@@ -143,7 +144,8 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         commitHint:        COMMIT_HINT,
         sourceOfTruth:     'code+vercel-auto',
         timestamp:         new Date().toISOString(),
-        orchestratorActive: true,
+        instrumentalPlanActive: true,
+        cognitiveAuthority: 'tutor-maestro',
         stateValidation:   stateValidationStatus,
         streamingEnabled:  STREAMING_ENABLED,
         debugTrace:        DEBUG_TRACE,
@@ -152,7 +154,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         tutorPhase:        state.tutorPhase,
         mentorProfile:     state.mentorProfile ?? 'Alex',
         runtimeFeatures:   RUNTIME_FEATURES,
-        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto. Tutor First: centralized deterministic execution planner; tutor owns cognitive content.`,
+        _note: `SEEK ${PATCH_SET} — seekBase:${SEEK_BASE} patchSet:${PATCH_SET} deploymentId:${VERCEL_DEPLOY_ID} gitCommit:${VERCEL_COMMIT_SHA.slice(0,8)}. Source: code+vercel-auto. Constitution 7.1: Tutor Maestro owns intent and content; runtime is a deterministic instrumental layer.`,
       };
       const diagResponse = IS_PRODUCTION
         ? {
