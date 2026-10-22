@@ -559,6 +559,8 @@ export interface AttachedFile {
 export interface ChatRequest {
   message: string;
   exportTranscript?: string;
+  // Structured conversation snapshot: the same visible turns and native artifacts, not a flat lossy transcript.
+  exportTurns?: unknown;
   // 7.1 — explicit UI operation, not language intent inferred from conversation.
   uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review' | 'retry_delivery';
   // Material currently visible to the student, supplied by an explicit UI click.
