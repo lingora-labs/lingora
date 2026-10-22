@@ -28,12 +28,31 @@ export function materializeNativeArtifact(signal: ArtifactSignal, sources: Chart
   }
   if (signal.type === 'flowchart') {
     const checked = validateFlowchartContent(c)
-    if (!checked.ok) { console.error('[flowchart] rejected', checked.reason); return null }
+    if (!checked.ok) {
+      const nodes = Array.isArray(c.nodes) ? c.nodes : []
+      const suspect = /flow_node_shape:(\d+)/.exec(checked.reason)
+      const node = suspect ? nodes[Number(suspect[1])] : null
+      const shape = node && typeof node === 'object' && !Array.isArray(node)
+        ? { kindType: typeof (node as Obj).kind, typeType: typeof (node as Obj).type,
+            labelType: typeof (node as Obj).label, textType: typeof (node as Obj).text,
+            labelLength: typeof (node as Obj).label === 'string' ? String((node as Obj).label).length : null }
+        : null
+      console.error('[flowchart] rejected', checked.reason, JSON.stringify({ nodeCount: nodes.length, edgeCount: Array.isArray(c.edges) ? c.edges.length : null, shape }))
+      return null
+    }
     return { type: 'flowchart', content: checked.flow } as unknown as ArtifactPayload
   }
   if (signal.type === 'infographic') {
     const checked = validateInfographicContent(c, sources)
-    if (!checked.ok) { console.error('[infographic] rejected', checked.reason); return null }
+    if (!checked.ok) {
+      console.error('[infographic] rejected', checked.reason, JSON.stringify({
+        sections: Array.isArray(c.sections) ? c.sections.length : null,
+        cards: Array.isArray(c.cards) ? c.cards.length : null,
+        blocks: Array.isArray(c.blocks) ? c.blocks.length : null,
+        stats: Array.isArray(c.stats) ? c.stats.length : null,
+      }))
+      return null
+    }
     return { type: 'infographic', content: checked.info } as unknown as ArtifactPayload
   }
   if (signal.type === 'table_matrix') {
