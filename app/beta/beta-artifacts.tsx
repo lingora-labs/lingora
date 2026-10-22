@@ -60,16 +60,17 @@ function ChartBlock({ content }: { content: Record<string, unknown> }) {
   const checked = validateChartContent(content)
   if (!checked.ok) return null
   const svg = renderChartSvg(checked.chart)
+  const fileSvg = renderChartSvg(checked.chart, { fixed: true })
   const save = (href: string, name: string) => {
     const a = document.createElement('a'); a.href = href; a.download = name
     document.body.appendChild(a); a.click(); a.remove()
   }
   const downloadSvg = () => {
-    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
+    const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
     save(url, 'lingora-grafico.svg'); setTimeout(() => URL.revokeObjectURL(url), 60000)
   }
   const downloadPng = () => {
-    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
+    const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
     const img = new Image()
     img.onload = () => {
       const c = document.createElement('canvas'); c.width = img.width * 2; c.height = img.height * 2
@@ -84,7 +85,7 @@ function ChartBlock({ content }: { content: Record<string, unknown> }) {
   const btn: React.CSSProperties = { fontSize:12, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0, marginRight:14 }
   return (
     <div style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid="chart-artifact">
-      <div style={{ borderRadius:14, overflow:'hidden', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: svg }} />
+      <div style={{ borderRadius:14, overflowX:'auto', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: svg }} />
       <div style={{ marginTop:5 }}>
         <button type="button" data-testid="chart-download-png" onClick={downloadPng} style={btn}>↓ Descargar imagen</button>
         <button type="button" data-testid="chart-download-svg" onClick={downloadSvg} style={btn}>↓ SVG</button>
@@ -97,7 +98,7 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
   if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
-  if ((a.type as string) === 'chart') return <ChartBlock content={(a.content ?? a) as Record<string, unknown>} />
+  if (a.type === 'chart') return <ChartBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table_matrix') return <MatrixTableBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'quiz') {
     type QuizOption = string | { text: string; correct?: boolean }
