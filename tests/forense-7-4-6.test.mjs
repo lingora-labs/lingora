@@ -32,6 +32,16 @@ assert.equal(buildExportTurns([msg({}),msg({sender:'user',text:'q'}),msg({comple
 const r=buildExportTurns([msg({artifacts:[{type:'schema_pro',content:{title:'x'}},{type:'pdf',url:'u'},{type:'chart',content:{a:1}}]})])
 assert.ok(r.ok); assert.deepEqual(r.turns[0].artifacts.map(a=>a.type),['schema_pro','chart'],'unsupported types are SENT (server refuses explicitly), only link-only files are skipped')
 assert.equal(buildExportTurns([]).ok,false)
+// F-G (AE dictamen): Markdown that printed literally — link, rule, h6, __bold__, ~~strike~~, nested list — and the content stays complete
+h=html('Ver [LINGORA](https://example.org/a_b) y [x](javascript:alert(1))\n\n---\n\n###### Seis\n\n__negrita__ y ~~tachado~~\n\n- uno\n  - sub\n    - subsub')
+assert.match(h,/<a href="https:\/\/example\.org\/a_b">LINGORA<\/a> <span class="ln-url">\(https:\/\/example\.org\/a_b\)<\/span>/,'link is a link and its address is printed')
+assert.ok(!h.includes('href="javascript'),'unsafe scheme is never a link'); assert.ok(h.includes('javascript:alert(1)'),'and its text is still printed')
+assert.ok(h.includes('<hr>')&&!h.includes('<p>---</p>'),'rule is a rule')
+assert.ok(h.includes('<h6>Seis</h6>')&&h.includes('<strong>negrita</strong>')&&h.includes('<del>tachado</del>'))
+assert.match(h,/margin-left:26px[^>]*>• sub/); assert.match(h,/margin-left:40px[^>]*>• subsub/)
+assert.ok(!/\[LINGORA\]\(|\*\*|__negrita__|~~tachado/.test(h),'no literal Markdown syntax left')
+// F-H: a turn header never sits alone at the foot of a page
+assert.match(html('x'),/\.ln-turn h2\{[^}]*break-after:avoid[;}]/); assert.ok(html('x').includes('.ln-text{display:flow-root}'),'flow-root is what makes Chromium honour the header keep-with-next (measured: orphan header on page 16 of the 17-page document)')
 // F-E: static wiring — no private cap, one shared limit, acceptance handshake, header menu uses the builder
 const src=p=>fs.readFileSync(new URL('../'+p,import.meta.url),'utf8')
 const page=src('app/beta/use-beta-page.ts'), quiz=src('app/beta/beta-schema-a.tsx'), io=src('app/beta/beta-io.ts')
