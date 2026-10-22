@@ -1,3 +1,4 @@
+import { VISUAL_LIMITS } from './native-visual-schema'
 // LINGORA 7.4.3 — infographic instrument (Manifesto 7.1 arts. 49–52; Manifesto arts. 28–32 bis).
 //
 // The Tutor Maestro AUTHORS the infographic (headline figures, titled sections, takeaway) as a typed call.
@@ -21,24 +22,24 @@ const tone = (v: unknown): v is string => typeof v === 'string' && TONE_KEYS.inc
 export interface InfoSources { text?: string; tables?: { rows: string[][] }[] }
 
 export function validateInfographicContent(raw: unknown, src: InfoSources = {}): InfoCheck {
-  if (!obj(raw) || !text(raw.title, 120)) return { ok: false, reason: 'info_title' }
+  if (!obj(raw) || !text(raw.title, VISUAL_LIMITS.infographic.titleMax)) return { ok: false, reason: 'info_title' }
   const sections = raw.sections
-  if (!Array.isArray(sections) || sections.length < 2 || sections.length > 6) return { ok: false, reason: 'info_section_count' }
+  if (!Array.isArray(sections) || sections.length < VISUAL_LIMITS.infographic.sectionsMin || sections.length > VISUAL_LIMITS.infographic.sectionsMax) return { ok: false, reason: 'info_section_count' }
   const secs: InfoSection[] = []
   for (const [i, s] of sections.entries()) {
-    if (!obj(s) || !text(s.heading, 60) || !text(s.body, 420)) return { ok: false, reason: `info_section_shape:${i}` }
+    if (!obj(s) || !text(s.heading, VISUAL_LIMITS.infographic.headingMax) || !text(s.body, VISUAL_LIMITS.infographic.bodyMax)) return { ok: false, reason: `info_section_shape:${i}` }
     if (s.icon !== undefined && !(typeof s.icon === 'string' && s.icon.length > 0 && s.icon.length <= 8 && !/[<>&]/.test(s.icon))) return { ok: false, reason: `info_icon:${i}` }
     if (s.tone !== undefined && !tone(s.tone)) return { ok: false, reason: `info_tone:${i}` }
     secs.push({ heading: s.heading.trim(), body: s.body.trim(), ...(typeof s.icon === 'string' ? { icon: s.icon } : {}), ...(typeof s.tone === 'string' ? { tone: s.tone } : {}) })
   }
   const stats: InfoStat[] = []
   if (raw.stats !== undefined) {
-    if (!Array.isArray(raw.stats) || raw.stats.length > 4) return { ok: false, reason: 'info_stat_count' }
+    if (!Array.isArray(raw.stats) || raw.stats.length > VISUAL_LIMITS.infographic.statsMax) return { ok: false, reason: 'info_stat_count' }
     const pool = new Set<number>()
     for (const n of numbersIn(src.text ?? '')) pool.add(n)
     for (const t of src.tables ?? []) for (const r of t.rows) for (const c of r) for (const n of numbersIn(c)) pool.add(n)
     for (const [i, s] of raw.stats.entries()) {
-      if (!obj(s) || !text(s.value, 14) || !text(s.label, 60)) return { ok: false, reason: `info_stat_shape:${i}` }
+      if (!obj(s) || !text(s.value, VISUAL_LIMITS.infographic.statValueMax) || !text(s.label, VISUAL_LIMITS.infographic.statLabelMax)) return { ok: false, reason: `info_stat_shape:${i}` }
       if (s.tone !== undefined && !tone(s.tone)) return { ok: false, reason: `info_stat_tone:${i}` }
       const nums = numbersIn(s.value)
       // A headline figure is a magnitude: it must occur in the turn (student text, Tutor reply, same-turn tables).
@@ -48,7 +49,7 @@ export function validateInfographicContent(raw: unknown, src: InfoSources = {}):
       stats.push({ value: s.value.trim(), label: s.label.trim(), ...(typeof s.tone === 'string' ? { tone: s.tone } : {}) })
     }
   }
-  if (raw.takeaway !== undefined && !text(raw.takeaway, 220)) return { ok: false, reason: 'info_takeaway' }
+  if (raw.takeaway !== undefined && !text(raw.takeaway, VISUAL_LIMITS.infographic.takeawayMax)) return { ok: false, reason: 'info_takeaway' }
   return { ok: true, info: { title: (raw.title as string).trim(), ...(text(raw.subtitle, 140) ? { subtitle: (raw.subtitle as string).trim() } : {}), stats, sections: secs, ...(typeof raw.takeaway === 'string' ? { takeaway: raw.takeaway.trim() } : {}) } }
 }
 
