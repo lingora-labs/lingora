@@ -33,6 +33,18 @@ export function transcriptPrintHtml(title: string, content: string): string {
     '</h1></header><main>' + entries + '</main></body></html>';
 }
 
+// The shared interactive page ships a strict CSP (default-src 'none'). The PDF
+// engine embeds its glyph faces as data: URIs, which that CSP blocks as a
+// network error. Widen ONLY font-src, only for the print render, and only for
+// data: payloads that this module itself produced.
+function allowEmbeddedFonts(html: string): string {
+  return html.replace(
+    /(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")/i,
+    (_m, open: string, policy: string, close: string) =>
+      /font-src/i.test(policy) ? open + policy + close : open + policy + '; font-src data:' + close,
+  );
+}
+
 export async function renderDocumentPdf(
   html: string,
   options: { layout?: 'document' | 'lesson' } = {},
@@ -71,9 +83,10 @@ export async function renderDocumentPdf(
       '.ln-source-start{margin-top:14px!important}' +
       '.ln-next{margin-top:12px!important;padding-top:10px!important}' +
       '</style>';
-    const prepared = html.includes('</head>')
-      ? html.replace('</head>', commonCSS + '</head>')
-      : '<!DOCTYPE html><html><head>' + commonCSS + '</head><body>' + html + '</body></html>';
+    const source = allowEmbeddedFonts(html);
+    const prepared = source.includes('</head>')
+      ? source.replace('</head>', () => commonCSS + '</head>')
+      : '<!DOCTYPE html><html><head>' + commonCSS + '</head><body>' + source + '</body></html>';
     await page.setContent(prepared, { waitUntil: 'load', timeout: 30000 });
     // Embedded faces are lazy: a face nobody has requested yet stays
     // "unloaded" and would be miscounted as missing. Force-load every
@@ -85,35 +98,17 @@ export async function renderDocumentPdf(
       const faces = Array.from(document.fonts);
       const outcomes = await Promise.allSettled(faces.map(face => face.load()));
       await document.fonts.ready;
-      const reasons = outcomes.map(o => o.status === 'rejected'
-        ? String((o.reason && (o.reason.message || o.reason.name)) || o.reason).slice(0, 80) : 'ok');
-      // Payload shape of the first embedded face (never the bytes themselves).
-      let shape = 'none';
-      try {
-        const rule = Array.from(document.styleSheets).flatMap(s => Array.from(s.cssRules))
-          .find(r => r.type === CSSRule.FONT_FACE_RULE) as CSSFontFaceRule | undefined;
-        const src = rule ? rule.style.getPropertyValue('src') : '';
-        const m = src.match(/url\("?(data:[^;,]+);base64,([^")]*)/);
-        if (m) {
-          const head = atob(m[2].slice(0, 8));
-          shape = m[1] + ' b64len=' + m[2].length + ' magic=' +
-            Array.from(head.slice(0, 4)).map(c => c.charCodeAt(0).toString(16)).join('.');
-        } else {
-          shape = 'src=' + src.slice(0, 60);
-        }
-      } catch (e) { shape = 'shape-error'; }
       return {
         total: faces.length,
         loaded: faces.filter(face => face.status === 'loaded').length,
         states: faces.map(face => face.family + ':' + face.status).slice(0, 12),
-        reasons: reasons.slice(0, 6),
-        shape,
+        reasons: outcomes.map(o => o.status === 'rejected'
+          ? String((o.reason && (o.reason.message || o.reason.name)) || o.reason).slice(0, 80) : 'ok').slice(0, 6),
       };
     });
     if (!fontReport.loaded) {
       throw Error('No web fonts loaded for PDF document (faces=' + fontReport.total +
-        ', reasons=' + fontReport.reasons.join('|') + ', states=' + fontReport.states.join('|') +
-        ', payload=' + fontReport.shape + ')');
+        ', reasons=' + fontReport.reasons.join('|') + ', states=' + fontReport.states.join('|') + ')');
     }
     const bytes = await page.pdf({
       format: 'A4', printBackground: true, preferCSSPageSize: true,
