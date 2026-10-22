@@ -4,27 +4,27 @@
 // This module never alters, transliterates or translates document text.
 type FaceSpec = { family: string; scripts: RegExp };
 const CATALOG: FaceSpec[] = [
-  { family: 'Noto Naskh Arabic', scripts: /[\u0600-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/u },
-  { family: 'Noto Sans Hebrew', scripts: /[\u0590-\u05FF]/u },
-  { family: 'Noto Sans Devanagari', scripts: /[\u0900-\u097F]/u },
-  { family: 'Noto Sans Bengali', scripts: /[\u0980-\u09FF]/u },
-  { family: 'Noto Sans Gurmukhi', scripts: /[\u0A00-\u0A7F]/u },
-  { family: 'Noto Sans Gujarati', scripts: /[\u0A80-\u0AFF]/u },
-  { family: 'Noto Sans Tamil', scripts: /[\u0B80-\u0BFF]/u },
-  { family: 'Noto Sans Telugu', scripts: /[\u0C00-\u0C7F]/u },
-  { family: 'Noto Sans Kannada', scripts: /[\u0C80-\u0CFF]/u },
-  { family: 'Noto Sans Malayalam', scripts: /[\u0D00-\u0D7F]/u },
-  { family: 'Noto Sans Sinhala', scripts: /[\u0D80-\u0DFF]/u },
-  { family: 'Noto Sans Thai', scripts: /[\u0E00-\u0E7F]/u },
-  { family: 'Noto Sans Lao', scripts: /[\u0E80-\u0EFF]/u },
-  { family: 'Noto Sans Myanmar', scripts: /[\u1000-\u109F]/u },
-  { family: 'Noto Sans Khmer', scripts: /[\u1780-\u17FF]/u },
-  { family: 'Noto Sans Georgian', scripts: /[\u10A0-\u10FF]/u },
-  { family: 'Noto Sans Armenian', scripts: /[\u0530-\u058F]/u },
-  { family: 'Noto Sans Ethiopic', scripts: /[\u1200-\u137F]/u },
-  { family: 'Noto Sans JP', scripts: /[\u3040-\u30FF]/u },
-  { family: 'Noto Sans KR', scripts: /[\uAC00-\uD7AF]/u },
-  { family: 'Noto Sans SC', scripts: /[\u3400-\u9FFF]/u },
+  { family: 'Noto Naskh Arabic', scripts: /[؀-ࣿﭐ-﷿ﹰ-﻿]/u },
+  { family: 'Noto Sans Hebrew', scripts: /[֐-׿]/u },
+  { family: 'Noto Sans Devanagari', scripts: /[ऀ-ॿ]/u },
+  { family: 'Noto Sans Bengali', scripts: /[ঀ-৿]/u },
+  { family: 'Noto Sans Gurmukhi', scripts: /[਀-੿]/u },
+  { family: 'Noto Sans Gujarati', scripts: /[઀-૿]/u },
+  { family: 'Noto Sans Tamil', scripts: /[஀-௿]/u },
+  { family: 'Noto Sans Telugu', scripts: /[ఀ-౿]/u },
+  { family: 'Noto Sans Kannada', scripts: /[ಀ-೿]/u },
+  { family: 'Noto Sans Malayalam', scripts: /[ഀ-ൿ]/u },
+  { family: 'Noto Sans Sinhala', scripts: /[඀-෿]/u },
+  { family: 'Noto Sans Thai', scripts: /[฀-๿]/u },
+  { family: 'Noto Sans Lao', scripts: /[຀-໿]/u },
+  { family: 'Noto Sans Myanmar', scripts: /[က-႟]/u },
+  { family: 'Noto Sans Khmer', scripts: /[ក-៿]/u },
+  { family: 'Noto Sans Georgian', scripts: /[Ⴀ-ჿ]/u },
+  { family: 'Noto Sans Armenian', scripts: /[԰-֏]/u },
+  { family: 'Noto Sans Ethiopic', scripts: /[ሀ-፿]/u },
+  { family: 'Noto Sans JP', scripts: /[぀-ヿ]/u },
+  { family: 'Noto Sans KR', scripts: /[가-힯]/u },
+  { family: 'Noto Sans SC', scripts: /[㐀-鿿]/u },
 ];
 // Noto Sans covers Latin, Greek and Cyrillic as the shared baseline.
 // Add scripts to this DATA catalog, not special cases to PDF orchestration.
@@ -34,7 +34,11 @@ const MAX_INLINE_FONT_BYTES = 4_000_000;
 const MAX_FONT_CSS_BYTES = 450_000;
 const cssCache = new Map<string, Promise<string>>();
 const fontCache = new Map<string, Promise<string>>();
-const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+// Google Fonts picks the file format from the User-Agent. A browser UA yields
+// woff2, which the serverless Chromium rejected at decode time ("A network
+// error occurred" on every face). An unrecognised UA yields TrueType, which
+// every Chromium build sanitises and embeds.
+const FONT_UA = 'LINGORA-PDF/1.0 (font-embed)';
 
 function cssRangesCover(text: string, ranges: string | null): boolean {
   if (!ranges) return true;
@@ -81,7 +85,7 @@ async function fontFacesFor(family: string, relevantText: string): Promise<strin
       const url = FONT_CSS_HOST + encodeURIComponent(family).replace(/%20/g, '+') +
         ':wght@400&display=swap';
       const response = await fetch(url, {
-        headers: { 'User-Agent': BROWSER_UA, Accept: 'text/css' },
+        headers: { 'User-Agent': FONT_UA, Accept: 'text/css' },
         signal: AbortSignal.timeout(18000),
       });
       if (!response.ok) throw Error('Font CSS HTTP ' + response.status + ' for ' + family);
@@ -106,7 +110,8 @@ async function fontFacesFor(family: string, relevantText: string): Promise<strin
     const match = face.match(/url\((['"]?)(https:\/\/fonts\.gstatic\.com\/[^)'"]+)\1\)/i);
     if (!match) throw Error('Font CSS contains no trusted font URL');
     const data = await fontAsBase64(match[2]);
-    return '@font-face{' + face.replace(match[2], data) + '}';
+    // Function replacer: the payload must never be read as a $-pattern.
+    return '@font-face{' + face.replace(match[2], () => data) + '}';
   }));
   return embedded.join('\n');
 }
