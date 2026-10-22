@@ -15,7 +15,6 @@ import { mergeStatePatch, documentContractStatePatch, toWireState } from './stat
 import { recordedImmersionOfferPatch } from './commercial-context'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
-import { directFormatFor, formatDirectAnswer } from '../../lib/direct-intent-contract'
 import { creditLearningProgress } from '../../lib/progress-tokens'
 import type { ArtifactFailure } from './artifact-side-effect'
 
@@ -54,24 +53,19 @@ export function executePlanStream(
         // the explanation, never an inferred substitute for those selections.
         const { disclosedQuizSelections } = await import('../../lib/quiz-evidence')
         const quizFact = disclosedQuizSelections(state.quizEvidence, request.message)
-        const directFormat = directFormatFor(request.message)
         let fullText = quizFact
-        if (quizFact && !directFormat) emit({ delta: quizFact })
+        if (quizFact) emit({ delta: quizFact })
         for await (const delta of stream) {
           fullText += delta
-          // Buffer only strict direct transformations; otherwise retain
-          // progressive SSE streaming without altering tutoring or artifacts.
-          if (!directFormat) emit({ delta })
+          // 7.1 art. 51/52: the runtime never rewrites, trims or reinterprets
+          // the Tutor's text. What the Tutor wrote is what is streamed,
+          // persisted and delivered (7.4.2: no post-processing of the reply).
+          emit({ delta })
         }
-        if (directFormat) {
-          fullText = formatDirectAnswer(directFormat, fullText)
-          if (fullText) emit({ delta: fullText })
-        }
-        // Direct transformation is user authority for text alone.
         // 7.3: the Tutor's own typed calls are the authorization. The runtime
         // validates technically; it never reads the student's words.
-        const deliveries = directFormat ? [] : (stream.textDeliveries ?? [])
-        const signals: ArtifactSignal[] = directFormat ? [] : [...(stream.artifactSignals ?? [])]
+        const deliveries = stream.textDeliveries ?? []
+        const signals: ArtifactSignal[] = [...(stream.artifactSignals ?? [])]
         for (const d of deliveries) {
           if (d.kind === 'pdf' || d.kind === 'pdf_html') {
             signals.push({ type: 'emit_pdf', trigger: 'explicit_user_request', subject: d.title, format: d.kind })
@@ -81,7 +75,7 @@ export function executePlanStream(
         let artifactFailures: ArtifactFailure[] = []
         if (signals.length > 0) {
           const { fulfillArtifactSignals } = await import('./artifact-side-effect')
-          const fulfilled = await fulfillArtifactSignals(signals, fullText, state)
+          const fulfilled = await fulfillArtifactSignals(signals, fullText, state, request.message)
           artifacts = fulfilled.artifacts
           artifactFailures = fulfilled.failures
         }

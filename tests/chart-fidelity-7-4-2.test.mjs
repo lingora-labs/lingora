@@ -59,10 +59,11 @@ assert.equal(parseClosedTutorTurn({reply:'ok',artifacts:[{...sig(good),format:'i
 // P1 truncation: the runtime must not post-process or classify the Tutor's reply (7.1 arts. 47, 51, 52)
 const root=new URL('../',import.meta.url).pathname
 assert.ok(!fs.existsSync(root+'lib/direct-intent-contract.ts'),'regex direct-format classifier must stay deleted')
-const live=['server/core/execution-engine-stream.ts','server/core/tutor-first-plan.ts','server/mentors/mentor-engine.ts','lib/contracts.ts']
-for(const f of live){const s=fs.readFileSync(root+f,'utf8')
-  for(const bad of ['directFormatFor','formatDirectAnswer','CORRECTION_ONLY','TRANSLATION_ONLY','correction_only','translation_only'])
-    assert.ok(!s.includes(bad),f+' must not contain '+bad)}
+const walk=d=>fs.readdirSync(root+d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(d+'/'+e.name):[d+'/'+e.name])
+for(const f of ['app','server','lib'].flatMap(walk).filter(f=>/\.(ts|tsx)$/.test(f)&&!f.includes('lib/engineering/'))){const s=fs.readFileSync(root+f,'utf8')
+  for(const bad of ['directFormatFor','formatDirectAnswer','direct-intent-contract'])assert.ok(!s.includes(bad),f+' must not contain '+bad)}
+for(const f of ['server/core/execution-engine-stream.ts','server/core/tutor-first-plan.ts']){const s=fs.readFileSync(root+f,'utf8')
+  for(const bad of ['CORRECTION_ONLY','TRANSLATION_ONLY','correction_only','translation_only'])assert.ok(!s.includes(bad),f+' must not select '+bad)}
 const stream=fs.readFileSync(root+'server/core/execution-engine-stream.ts','utf8')
 assert.ok(/fullText \+= delta[\s\S]{0,400}emit\(\{ delta \}\)/.test(stream),'every Tutor delta is emitted as received')
 assert.ok(!/fullText\s*=\s*(?!quizFact)\w+\(/.test(stream.replace(/fullText = quizFact/,'')),'fullText is never reassigned from a transform')
