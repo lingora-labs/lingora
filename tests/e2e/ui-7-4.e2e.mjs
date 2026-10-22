@@ -10,12 +10,14 @@ const require=createRequire(import.meta.url),ts=require('typescript')
 require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}}).outputText,file)
 const {chromium}=require('playwright')
 const {renderArtifactHtml}=require('../../server/tools/web/renderArtifactHtml.ts')
+const {composeDocumentFromTaught}=require('../../server/tools/pdf/composeArtifactDocument.ts')
+const {fidelityTokens}=require('../../server/tools/pdf/documentFidelity.ts')
 const base=process.argv[2]||'http://localhost:3111'
 const out=process.env.E2E_OUT||'/tmp/e2e-out'; fs.mkdirSync(out,{recursive:true})
 const results=[]
 const ok=(name,detail='')=>{results.push({name,pass:true,detail});console.log('PASS',name,detail)}
 const fail=(name,e)=>{results.push({name,pass:false,detail:String(e&&e.message||e)});console.log('FAIL',name,String(e&&e.message||e))}
-async function step(name,fn){try{const d=await fn();ok(name,d||'')}catch(e){fail(name,e)}}
+async function step(name,fn){try{const d=await fn();ok(name,d||'')}catch(e){fail(name,e);console.log('  console:',JSON.stringify(consoleLog.slice(-6)),'pageerrors:',JSON.stringify(errors.slice(-3)));console.log('  last requests:',JSON.stringify(apiBodies.slice(-3).map(b=>String(b.message).slice(0,80)+' | ui='+b.uiAction)));try{await page.screenshot({path:path.join(out,'fail-'+name.slice(0,3).trim()+'.png')});fs.writeFileSync(path.join(out,'fail-'+name.slice(0,3).trim()+'.txt'),(await page.locator('body').innerText()).slice(-3000))}catch{}}}
 
 // ── fixtures ───────────────────────────────────────────────────────────────────────────────
 const doc={title:'Ser y estar',documentType:'lesson',mentorName:'sarah',generatedAt:'2026-10-22',level:'A2',blocks:[
@@ -39,6 +41,12 @@ const quizUnverified={type:'quiz',title:'Cultura',questions:[
  {question:'¿Cuál es la capital de España?',options:['Madrid','Lima','Roma','Bogotá'],correct:0},
  {question:'¿En qué continente está Colombia?',options:['Asia','América','Europa','África'],correct:1}]}
 
+const sarahSource=fs.readFileSync(new URL('../fixtures/ser-estar-ar-es.md',import.meta.url),'utf8')
+const composedBilingual=await composeDocumentFromTaught({subject:'الفرق بين SER و ESTAR',fullContent:sarahSource,otherSubjects:[],mentorName:'Sarah',preferVerbatim:true})
+assert.equal(composedBilingual.ok,true)
+const bilingualHtml=renderArtifactHtml(composedBilingual.content)
+const bilingualWebUrl='data:text/html;charset=utf-8;base64,'+Buffer.from(bilingualHtml,'utf8').toString('base64')
+const retrySignal={type:'emit_pdf',trigger:'explicit_user_request',subject:'الفرق بين SER و ESTAR',format:'pdf_html'}
 let turn=0; const apiBodies=[]
 function sse(text,artifacts){
   const frames=[`data: ${JSON.stringify({delta:text})}\n\n`,`data: ${JSON.stringify({done:true,state:{tutorMemory:[{id:'m1',kind:'goal',text:'DELE A2',learnedTurn:1,updatedTurn:1,at:'2026-10-22T00:00:00.000Z'}],tutorMemorySeq:1},artifacts,suggestedActions:[]})}\n\n`]
@@ -48,6 +56,17 @@ async function wire(page){
   await page.route('**/api/chat',async route=>{
     const body=JSON.parse(route.request().postData()||'{}'); apiBodies.push(body); turn++
     const msg=String(body.message||'')
+    if(body.uiAction==='retry_delivery'){
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({message:'Entrega completada.',retryOf:true,state:{},artifacts:[{type:'pdf',url:pdfUrl,title:'الفرق بين SER و ESTAR',webUrl:bilingualWebUrl}],suggestedActions:[]})})
+    }
+    if(/pdf y html bilingüe/i.test(msg)){
+      const frames=[`data: ${JSON.stringify({delta:sarahSource})}\n\n`,`data: ${JSON.stringify({done:true,state:{},artifactFailures:[{subject:retrySignal.subject+' (PDF y HTML no disponibles)'}],artifactSignals:[retrySignal],suggestedActions:[{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{signals:[retrySignal]}}]})}\n\n`]
+      return route.fulfill({status:200,headers:{'content-type':'text/event-stream'},body:frames.join('')})
+    }
+    if(/fallo total/i.test(msg)){
+      const frames=[`data: ${JSON.stringify({delta:'\n\nNo se pudo completar la entrega solicitada. Puedes reintentar sin perder la conversación.'})}\n\n`,`data: ${JSON.stringify({done:true,state:{},artifactFailures:[{subject:'Entrega no completada en este turno'}],suggestedActions:[{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:msg}}]})}\n\n`]
+      return route.fulfill({status:200,headers:{'content-type':'text/event-stream'},body:frames.join('')})
+    }
     let text='Hola, soy Sarah.',arts
     if(/quiz verificado/i.test(msg)){text='Quiz listo.';arts=[quizVerified]}
     else if(/quiz abierto/i.test(msg)){text='Quiz listo.';arts=[quizUnverified]}
@@ -75,6 +94,7 @@ const browser=await chromium.launch({executablePath:process.env.CHROMIUM||'/opt/
 const ctx=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true,acceptDownloads:true})
 const page=await ctx.newPage(); const errors=[]
 page.on('pageerror',e=>errors.push(String(e)))
+const consoleLog=[]; page.on('console',m=>{if(['error','warning'].includes(m.type()))consoleLog.push(m.type()+': '+m.text().slice(0,300))})
 await wire(page)
 
 await step('E1 onboarding→mode→chat (touch viewport)',async()=>{await startChat(page);return 'reached chat'})
@@ -167,14 +187,17 @@ await step('Q3 "Seguir aprendiendo" sends a Tutor turn without requesting an art
 })
 await step('Q4 unverifiable quiz: no automatic score; Tutor review required',async()=>{
   await send(page,'quiz abierto')
-  await page.getByText('Cultura').last().waitFor({timeout:20000})
+  await page.getByText('Cultura').last().waitFor({timeout:20000}); console.log('  Q4: quiz visible')
   const q=page.getByTestId('quiz-block').last()
   assert.equal(await q.getByTestId('quiz-autoscore').count(),0,'no auto score')
   await q.getByTestId('quiz-opt-0-0').tap(); await q.getByTestId('quiz-opt-1-1').tap()
   assert.equal(await q.getByTestId('quiz-pending-0').count(),1)
+  // The review handler is gated by `loading`: for ~100 ms after a quiz appears the previous request is still
+  // finishing and a review fired in that window is ignored by design. A person cannot answer two questions that fast.
+  await page.waitForTimeout(1200)
   const before=apiBodies.length
   await q.getByTestId('quiz-review-send').tap()
-  await page.getByText('Revisión del Tutor: bien hecho.').waitFor({timeout:20000})
+  console.log('  Q4: review sent'); await page.getByText('Revisión del Tutor: bien hecho.').waitFor({timeout:20000})
   const b=apiBodies[before]; assert.match(b.message,/sin calificación automática/); assert.ok(!/acierto|✅/.test(b.message),'no invented score')
   await q.getByTestId('quiz-sent').waitFor()
 })
@@ -193,6 +216,74 @@ await step('S2b memory block survives into the request after reload (state persi
   await page.reload({waitUntil:'domcontentloaded'}); await page.locator('textarea').first().waitFor({timeout:20000})
   await send(page,'seguimos'); await page.waitForTimeout(1500)
   const last=apiBodies[apiBodies.length-1]; assert.equal(last.state.tutorMemory?.[0]?.id,'m1'); assert.equal(last.state.tutorMemorySeq,1)
+})
+
+// ── 7.4.1: delivery retry on the bilingual Arabic/Spanish material ─────────────────────────────
+const count=async(id)=>page.getByTestId(id).count()
+let before={}
+await step('R1 failed paired delivery shows the Tutor text, the failure and ONE retry button',async()=>{
+  await page.reload({waitUntil:'domcontentloaded'}).catch(()=>{})
+  await send(page,'dame el pdf y html bilingüe de SER y ESTAR')
+  await page.getByTestId('artifact-failure').last().waitFor({timeout:20000})
+  await page.getByRole('button',{name:/Reintentar entrega/}).waitFor({timeout:5000})
+  assert.equal(await page.getByRole('button',{name:/Reintentar entrega/}).count(),1)
+  before={user:await count('bubble-user'),mentor:await count('bubble-mentor')}
+  return JSON.stringify(before)
+})
+await step('R2 retry updates the SAME message: no new bubble, no new Tutor turn, signals not student text',async()=>{
+  const n=apiBodies.length, opens=await count('html-open')
+  await page.getByRole('button',{name:/Reintentar entrega/}).tap()
+  await page.getByTestId('artifact-failure').waitFor({state:'detached',timeout:20000})
+  await page.waitForFunction(k=>document.querySelectorAll('[data-testid="html-open"]').length===k,opens+1,{timeout:20000})
+  const b=apiBodies[n]; assert.equal(apiBodies.length,n+1,'exactly one request')
+  assert.equal(b.uiAction,'retry_delivery'); assert.equal(b.retrySignals[0].format,'pdf_html')
+  assert.ok(b.materialText.includes('الفرق بين'),'the Tutor\'s own text is what gets materialised')
+  assert.equal(await count('bubble-user'),before.user,'no duplicated student bubble')
+  assert.equal(await count('bubble-mentor'),before.mentor,'no second Tutor answer')
+  assert.equal(await page.getByTestId('artifact-failure').count(),0,'failure cleared')
+  assert.equal(await page.getByRole('button',{name:/Reintentar entrega/}).count(),0,'retry action consumed')
+})
+await step('R3 a replayed/double retry event cannot duplicate anything',async()=>{
+  const n=apiBodies.length, a=await count('html-open')
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('lingora-suggested-action',{detail:{action:'retry_delivery',type:'retry_delivery',label:'x',payload:{signals:[{type:'emit_pdf',trigger:'explicit_user_request',subject:'x y',format:'pdf_html'}]}}})))
+  await page.waitForTimeout(600)
+  assert.equal(apiBodies.length,n,'no request'); assert.equal(await count('html-open'),a); assert.equal(await count('bubble-user'),before.user)
+})
+let bilingualPopup
+await step('R4 the delivered HTML opens and carries every word of the Tutor text; real tables; interactive',async()=>{
+  const [pp]=await Promise.all([ctx.waitForEvent('page',{timeout:15000}),page.getByTestId('html-open').last().click()])
+  bilingualPopup=pp; await pp.waitForLoadState('domcontentloaded')
+  assert.match(pp.url(),/^blob:/); assert.ok(await pp.locator('html.js').count()===1)
+  // text as the reader gets it: inline wrappers (bdi/strong/em) add no space, block elements do
+  const text=(await pp.evaluate(()=>document.body.innerHTML)).replace(/<script[\s\S]*?<\/script>/g,' ').replace(/<style[\s\S]*?<\/style>/g,' ')
+    .replace(/<\/?(?:bdi|strong|em|span|b|i)\b[^>]*>/g,'').replace(/<[^>]+>/g,' ')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&')
+  const strip=t=>t.replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm,'')
+  const rem=new Map(); for(const w of fidelityTokens(text)) rem.set(w,(rem.get(w)??0)+1)
+  const lost=[]; for(const w of fidelityTokens(strip(sarahSource))){const c=rem.get(w)??0; if(c>0) rem.set(w,c-1); else lost.push(w)}
+  assert.deepEqual(lost,[],'lost tokens in the opened document: '+lost.length+' of '+fidelityTokens(strip(sarahSource)).length+' (document text '+text.length+' chars, title '+await pp.title()+')')
+  assert.equal(await pp.locator('table.ln-table').count(),2,'both comparison tables are tables'); assert.ok(!(text.includes('|---')))
+  assert.ok(await pp.locator('blockquote.ln-quote').count()>=2)
+  await pp.locator('#ln-collapse').tap(); assert.equal(await pp.locator('details.ln-sec[open]').count(),0)
+  await pp.locator('#ln-expand').tap(); assert.ok(await pp.locator('details.ln-sec[open]').count()>=1)
+  await pp.locator('#ln-theme').tap(); assert.equal(await pp.locator('html').getAttribute('data-theme'),'dark')
+  await pp.screenshot({path:path.join(out,'bilingual-html.png'),fullPage:false})
+  return fidelityTokens(sarahSource).length+' source tokens, 0 lost'
+})
+await bilingualPopup?.close().catch(()=>{})
+await step('R5 the retried artifact is persisted in place (reload keeps it, no retry button)',async()=>{
+  await page.bringToFront(); await page.waitForTimeout(1500); await page.reload({waitUntil:'domcontentloaded'})
+  await page.getByTestId('html-open').last().waitFor({timeout:20000})
+  assert.equal(await page.getByRole('button',{name:/Reintentar entrega/}).count(),0); assert.equal(await page.getByTestId('artifact-failure').count(),0)
+})
+await step('R6 turn that failed BEFORE any material existed: re-ask shows no second student bubble and no duplicated history',async()=>{
+  await send(page,'dame esto con fallo total'); await page.getByRole('button',{name:/Reintentar entrega/}).waitFor({timeout:20000})
+  const u=await count('bubble-user'), n=apiBodies.length
+  await page.getByRole('button',{name:/Reintentar entrega/}).tap()
+  await page.getByText('Hola, soy Sarah.').last().waitFor({timeout:20000})
+  const b=apiBodies[n]; assert.equal(apiBodies.length,n+1); assert.match(b.message,/fallo total/)
+  assert.equal(b.conversationHistory.filter(m=>m.role==='user'&&/fallo total/.test(m.content)).length,0,'the student\'s words reach the Tutor once (as the message), not twice')
+  assert.equal(await count('bubble-user'),u,'no second student bubble')
 })
 await step('S3 reset clears IndexedDB; no cross-session leakage',async()=>{
   await page.getByRole('button',{name:'Reset'}).click(); await page.waitForTimeout(800)
