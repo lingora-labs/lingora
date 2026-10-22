@@ -44,6 +44,23 @@ assert.equal(validateChartContent({...good,panels:[{...good.panels[0],values:[..
 assert.equal(validateChartContent({...good,categories:['A','a','B','C','D','E']},{}).ok,false)
 assert.equal(validateChartContent({...good,title:'<b>x</b>'},src).ok,false)
 
+// AE 7.4.2 dictamen — association WITHOUT a native table: swapped figures between categories are rejected
+const textOnly={text:student}
+assert.ok(validateChartContent(good,textOnly).ok,'faithful chart passes with text only')
+assert.equal(validateChartContent({...good,panels:[{...good.panels[0],values:[120,180,300,240,420,510]},good.panels[1]]},textOnly).ok,false,'Marzo/Abril visitas swapped, no table')
+assert.equal(validateChartContent({...good,panels:[good.panels[0],{...good.panels[1],values:[4,5,6,7,8,9]}]},textOnly).ok,false,'conversion swapped Marzo/Abril, no table')
+assert.equal(validateChartContent({...good,panels:[{...good.panels[0],values:[510,180,240,300,420,120]},good.panels[1]]},textOnly).ok,false,'first and last swapped, no table')
+// prose that lists labels first and figures afterwards is not mis-rejected (association check not applicable)
+assert.ok(validateChartContent(good,{text:'Meses: Enero, Febrero, Marzo, Abril, Mayo, Junio. Usuarios: 120, 180, 240, 300, 420, 510. Conversion: 4, 5, 7, 6, 8, 9.'}).ok)
+// mobile: inline SVG scales with its container and never clips; export keeps explicit pixels
+const inl=renderChartSvg(ok.chart), fix=renderChartSvg(ok.chart,{fixed:true})
+assert.match(inl,/viewBox="0 0 520 /);assert.ok(!/<svg[^>]*\swidth="/.test(inl),'inline svg has no fixed pixel width')
+assert.match(inl,/width:100%;min-width:440px;height:auto/)
+assert.match(fix,/<svg[^>]* width="520" height="/)
+for(const m of months)assert.ok(inl.includes('>'+m+'<'),'every category drawn at any width: '+m)
+const ui=fs.readFileSync(new URL('../app/beta/beta-artifacts.tsx',import.meta.url),'utf8')
+assert.match(ui,/overflowX:\s*'auto'/,'chart container scrolls instead of clipping');assert.ok(!/ChartBlock[\s\S]{0,1500}overflow:\s*'hidden'/.test(ui.slice(ui.indexOf('function ChartBlock'),ui.indexOf('export function ArtifactRender'))),'no overflow:hidden around the chart')
+
 // Tutor-localised labels are allowed when numbers still trace (Arabic months)
 const ar={...good,categories:['يناير','فبراير','مارس','أبريل','مايو','يونيو']}
 assert.ok(validateChartContent(ar,{text:student}).ok,'localised labels, numbers traceable')
@@ -70,4 +87,4 @@ assert.ok(!/fullText\s*=\s*(?!quizFact)\w+\(/.test(stream.replace(/fullText = qu
 // The image model must not be the chart path
 const sigsrc=fs.readFileSync(root+'lib/artifact-signal.ts','utf8')
 assert.match(sigsrc,/never use emit_image/)
-console.log('PASS 7.4.2 — chart fidelity (6/6, no shift, no invention, deterministic) and no reply rewriting')
+console.log('PASS 7.4.2 — chart fidelity (6/6, no shift, no invention, swapped values rejected without table, responsive, deterministic) and no reply rewriting')
