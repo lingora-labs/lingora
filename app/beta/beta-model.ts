@@ -71,6 +71,35 @@ export function resolveMsgArtifacts(msg: Pick<Msg, 'artifact' | 'artifacts'>): A
 export function resolveMsgArtifactFailures(msg: Pick<Msg, 'artifactFailures'>): ArtifactFailure[] {
   return msg.artifactFailures ?? []
 }
+/**
+ * 7.4.1 — a delivery retry repeats the DELIVERY of material the Tutor already wrote. It never adds a message:
+ * it updates the one that failed. Pure and idempotent: applying the same result twice changes nothing more,
+ * artifacts are never duplicated, and the retry action disappears only when nothing is left to retry.
+ */
+export function applyDeliveryRetry(
+  msgs: Msg[], targetId: string,
+  data: { artifacts?: unknown; artifactFailures?: unknown; suggestedActions?: unknown },
+): Msg[] {
+  const failures = Array.isArray(data.artifactFailures) ? data.artifactFailures as ArtifactFailure[] : []
+  const fresh = Array.isArray(data.artifacts) ? data.artifacts as Artifact[] : []
+  const offered = Array.isArray(data.suggestedActions) ? data.suggestedActions as SuggestedAction[] : []
+  const isRetry = (a: SuggestedAction) => (a.action ?? a.type) === 'retry_delivery'
+  return msgs.map(m => {
+    if (m.id !== targetId) return m
+    const known = new Set((m.artifacts ?? []).map(a => JSON.stringify(a)))
+    const merged = [...(m.artifacts ?? []), ...fresh.filter(a => !known.has(JSON.stringify(a)))]
+    const stillFailing = failures.length > 0
+    return {
+      ...m,
+      artifacts: merged.length > 0 ? merged : null,
+      artifactFailures: stillFailing ? failures : null,
+      suggestedActions: stillFailing && offered.some(isRetry)
+        ? offered
+        : (m.suggestedActions ?? []).filter(a => !isRetry(a)),
+    }
+  })
+}
+
 export type ActiveMode = 'interact' | 'structured' | 'pdf_course' | 'free'
 
 export interface SS {
