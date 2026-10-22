@@ -3,6 +3,8 @@ import React from 'react'
 import type { Artifact } from './beta-model'
 import type { QuizQ } from './beta-model'
 import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
+import { renderFlowchartSvg, validateFlowchartContent } from '../../lib/flowchart-contract'
+import { renderInfographicSvg, validateInfographicContent } from '../../lib/infographic-contract'
 import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock, fmt } from './beta-schema'
 
 // 7.4 — Chromium blocks top-level navigation to data: URLs, so a plain <a href="data:text/html…">
@@ -55,19 +57,16 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
   )
 }
 
-// 7.4.2 — chart drawn deterministically from the Tutor's validated numbers.
-function ChartBlock({ content }: { content: Record<string, unknown> }) {
-  const checked = validateChartContent(content)
-  if (!checked.ok) return null
-  const svg = renderChartSvg(checked.chart)
-  const fileSvg = renderChartSvg(checked.chart, { fixed: true })
+// 7.4.2/7.4.3 — native SVG instruments (chart, flowchart, infographic): drawn deterministically from the
+// Tutor's validated content. Fluid inside a horizontally scrollable box, so nothing is ever clipped.
+function SvgInstrumentBlock({ svg, fileSvg, kind, file }: { svg: string; fileSvg: string; kind: string; file: string }) {
   const save = (href: string, name: string) => {
     const a = document.createElement('a'); a.href = href; a.download = name
     document.body.appendChild(a); a.click(); a.remove()
   }
   const downloadSvg = () => {
     const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
-    save(url, 'lingora-grafico.svg'); setTimeout(() => URL.revokeObjectURL(url), 60000)
+    save(url, `${file}.svg`); setTimeout(() => URL.revokeObjectURL(url), 60000)
   }
   const downloadPng = () => {
     const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
@@ -76,7 +75,7 @@ function ChartBlock({ content }: { content: Record<string, unknown> }) {
       const c = document.createElement('canvas'); c.width = img.width * 2; c.height = img.height * 2
       const g = c.getContext('2d'); if (!g) { downloadSvg(); return }
       g.scale(2, 2); g.drawImage(img, 0, 0)
-      c.toBlob(b => { if (b) { const u = URL.createObjectURL(b); save(u, 'lingora-grafico.png'); setTimeout(() => URL.revokeObjectURL(u), 60000) } else downloadSvg() }, 'image/png')
+      c.toBlob(b => { if (b) { const u = URL.createObjectURL(b); save(u, `${file}.png`); setTimeout(() => URL.revokeObjectURL(u), 60000) } else downloadSvg() }, 'image/png')
       URL.revokeObjectURL(url)
     }
     img.onerror = () => { URL.revokeObjectURL(url); downloadSvg() }
@@ -84,14 +83,30 @@ function ChartBlock({ content }: { content: Record<string, unknown> }) {
   }
   const btn: React.CSSProperties = { fontSize:12, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0, marginRight:14 }
   return (
-    <div style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid="chart-artifact">
+    <div style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid={`${kind}-artifact`}>
       <div style={{ borderRadius:14, overflowX:'auto', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: svg }} />
       <div style={{ marginTop:5 }}>
-        <button type="button" data-testid="chart-download-png" onClick={downloadPng} style={btn}>↓ Descargar imagen</button>
-        <button type="button" data-testid="chart-download-svg" onClick={downloadSvg} style={btn}>↓ SVG</button>
+        <button type="button" data-testid={`${kind}-download-png`} onClick={downloadPng} style={btn}>↓ Descargar imagen</button>
+        <button type="button" data-testid={`${kind}-download-svg`} onClick={downloadSvg} style={btn}>↓ SVG</button>
       </div>
     </div>
   )
+}
+
+function ChartBlock({ content }: { content: Record<string, unknown> }) {
+  const checked = validateChartContent(content)
+  if (!checked.ok) return null
+  return <SvgInstrumentBlock kind="chart" file="lingora-grafico" svg={renderChartSvg(checked.chart)} fileSvg={renderChartSvg(checked.chart, { fixed: true })} />
+}
+function FlowchartBlock({ content }: { content: Record<string, unknown> }) {
+  const checked = validateFlowchartContent(content)
+  if (!checked.ok) return null
+  return <SvgInstrumentBlock kind="flowchart" file="lingora-diagrama" svg={renderFlowchartSvg(checked.flow)} fileSvg={renderFlowchartSvg(checked.flow, { fixed: true })} />
+}
+function InfographicBlock({ content }: { content: Record<string, unknown> }) {
+  const checked = validateInfographicContent(content)
+  if (!checked.ok) return null
+  return <SvgInstrumentBlock kind="infographic" file="lingora-infografia" svg={renderInfographicSvg(checked.info)} fileSvg={renderInfographicSvg(checked.info, { fixed: true })} />
 }
 
 export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: string }) {
@@ -99,6 +114,8 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'chart') return <ChartBlock content={(a.content ?? a) as Record<string, unknown>} />
+  if (a.type === 'flowchart') return <FlowchartBlock content={(a.content ?? a) as Record<string, unknown>} />
+  if (a.type === 'infographic') return <InfographicBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table_matrix') return <MatrixTableBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'quiz') {
     type QuizOption = string | { text: string; correct?: boolean }
