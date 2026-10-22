@@ -24,6 +24,7 @@ for(const [tone,fragment] of [['ok','#c5f4e6'],['warn','#fff0b3'],['danger','#ff
   assert.ok(colored.includes('data-tone="'+tone+'" style="background:'+fragment),'D2 — keeps the author’s semantic '+tone+' tone')
 }
 assert.ok(colored.includes('sin tono'),'D2 — unlabeled cell remains printed')
+assert.throws(()=>renderConversationExportHtml('Inválido',[{sender:'SARAH',text:'Tablas',artifacts:[{type:'table_matrix',content:{...tb.content,rows:[[{text:'x',tone:'not-a-tone'},{text:'b'},{text:'c'}]]}}]}]),/export_invalid_table_tone/,'D2/D3 — invalid semantic tone fails rather than being silently recolored')
 const badChart={type:'chart',content:{title:'Roto',categories:['Enero','Febrero'],panels:[{title:'Enero',kind:'bar',values:[8]}]}}
 assert.throws(()=>renderConversationExportHtml('Invalido',[{sender:'SARAH',text:'Hay un gráfico',artifacts:[badChart]}]),
   /export_invalid_chart/,'D3 — invalid visual stops export rather than silently disappearing')
