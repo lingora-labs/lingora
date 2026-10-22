@@ -69,13 +69,14 @@ export async function fulfillArtifactSignals(
   signals: ArtifactSignal[],
   pedagogicalContent: string,
   state: SessionState,
+  studentMessage = '',
 ): Promise<FulfillResult> {
   const deduped = dedupeSignals(signals);
   // 7.3: the Tutor's typed signal IS the authorization. The runtime validates
   // technically (trigger declared, per-turn caps, real content) and never
   // reinterprets the student's words.
   const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
-  const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz'].includes(s.type)).slice(0, 3);
+  const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz', 'chart'].includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
   // Costed operation: Tutor declaration with trigger, hard cap of one per turn.
   const imageSignals = deduped.filter((s) =>
@@ -97,8 +98,14 @@ export async function fulfillArtifactSignals(
   // fabricated exercise or automatic file is involved.
   if (native.length) {
     const { materializeNativeArtifact } = await import('./native-artifact')
+    // 7.4.2: a chart is validated against the same turn's text and tables.
+    const tables = native.filter(x => x.type === 'table_matrix').flatMap(x => {
+      const c = x.content as { rows?: unknown } | undefined
+      const rows = Array.isArray(c?.rows) ? (c!.rows as unknown[]).map(r => Array.isArray(r) ? r.map(cell => String((cell as { text?: unknown })?.text ?? '')) : []) : []
+      return rows.length ? [{ rows }] : []
+    })
     for (const signal of native) {
-      const payload = materializeNativeArtifact(signal)
+      const payload = materializeNativeArtifact(signal, { text: `${studentMessage}\n${pedagogicalContent}`, tables })
       if (payload) artifacts.push(payload)
       else failures.push({ subject: `Componente interactivo no válido: ${signal.subject}` })
     }
