@@ -18,11 +18,12 @@ export interface ExportTurn {
 }
 const escapeHtml=(v:string):string=>v.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
 const inline=(s:string):string=>{
-  let x=escapeHtml(s)
-  x=x.replace(/\\x60([^\\x60]+)\\x60/g,'<code>$1</code>')
-  x=x.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-  x=x.replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>')
-  return x
+  // Parse code before emphasis; no formatting or markup interpretation inside backticks.
+  return s.split(/(\x60[^\x60\n]+\x60)/g).map(part=>{
+    if(/^\x60[^\x60\n]+\x60$/.test(part))return '<code>'+escapeHtml(part.slice(1,-1))+'</code>'
+    return escapeHtml(part).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>')
+  }).join('')
 }
 const ROW=/^\|(.+)\|$/
 function mdSafe(source:string):string {
@@ -30,7 +31,7 @@ function mdSafe(source:string):string {
   let code=false,codeLines:string[]=[]
   for(let i=0;i<lines.length;i++){
     const line=lines[i].trim()
-    if(/^\\x60\\x60\\x60/.test(line)) {
+    if(/^\x60{3,}/.test(line)) {
       if(code){out.push('<pre><code>'+escapeHtml(codeLines.join('\n'))+'</code></pre>');codeLines=[]}
       code=!code;continue
     }
@@ -60,43 +61,85 @@ function mdSafe(source:string):string {
   return out.join('\n')
 }
 function visual(a:ExportArtifact):string {
-  if(!a || !a.content || typeof a.content!=='object')return ''
-  try {
-    let svg=''
-    if(a.type==='chart'){const v=validateChartContent(a.content);if(!v.ok)return '';svg=renderChartSvg(v.chart,{fixed:true})}
-    if(a.type==='flowchart'){const v=validateFlowchartContent(a.content);if(!v.ok)return '';svg=renderFlowchartSvg(v.flow,{fixed:true})}
-    if(a.type==='infographic'){const v=validateInfographicContent(a.content);if(!v.ok)return '';svg=renderInfographicSvg(v.info,{fixed:true})}
-    if(svg)return '<figure class="ln-visual" data-type="'+escapeHtml(a.type)+'">'+svg+'</figure>'
-    if(a.type==='table_matrix'){
-      const c=a.content
-      if(!Array.isArray(c.columns)||!Array.isArray(c.rows))return ''
-      const cols=c.columns as Array<{label?:unknown}>
-      const heads=cols.map(x=>typeof x?.label==='string'?x.label:'')
-      if(!heads.length)return ''
-      const colors=['#d5f5ee','#e0f2fe','#eee5ff','#fff1d5','#ffe4e6','#e8edf4']
-      const th=heads.map((h,i)=>'<th style="background:'+colors[i%colors.length]+'">'+escapeHtml(h)+'</th>').join('')
-      const rows=(c.rows as unknown[]).map(row=>Array.isArray(row)?
-        '<tr>'+heads.map((_,i)=>{
-          const obj=row[i] as unknown
-          const cell=typeof obj==='string'?obj:obj&&typeof obj==='object'&&'text' in obj?String((obj as {text:unknown}).text):''
-          return '<td style="background:'+colors[i%colors.length]+'">'+escapeHtml(cell)+'</td>'
-        }).join('')+'</tr>':'').join('')
-      return '<section class="ln-native-table"><h3>'+escapeHtml(String(c.title??'Tabla'))+'</h3><table><thead><tr>'+th+'</tr></thead><tbody>'+rows+'</tbody></table></section>'
+  if(!a || !a.content || typeof a.content!=='object')
+    throw new Error('export_missing_artifact_content:'+String(a?.type??'unknown'))
+  const type=a.type, c=a.content
+  let svg=''
+  if(type==='chart'){
+    const v=validateChartContent(c)
+    if(!v.ok)throw new Error('export_invalid_chart:'+v.reason)
+    svg=renderChartSvg(v.chart,{fixed:true})
+  }else if(type==='flowchart'){
+    const v=validateFlowchartContent(c)
+    if(!v.ok)throw new Error('export_invalid_flowchart:'+v.reason)
+    svg=renderFlowchartSvg(v.flow,{fixed:true})
+  }else if(type==='infographic'){
+    const v=validateInfographicContent(c)
+    if(!v.ok)throw new Error('export_invalid_infographic:'+v.reason)
+    svg=renderInfographicSvg(v.info,{fixed:true})
+  }
+  if(svg){
+    if(!svg.includes('<svg'))throw new Error('export_missing_svg:'+type)
+    return '<figure class="ln-visual" data-type="'+escapeHtml(type)+'">'+svg+'</figure>'
+  }
+  if(type==='table_matrix'){
+    if(!Array.isArray(c.columns)||!Array.isArray(c.rows))
+      throw new Error('export_invalid_table_structure')
+    const heads=(c.columns as unknown[]).map((x,i)=>{
+      if(!x||typeof x!=='object'||typeof (x as {label?:unknown}).label!=='string')
+        throw new Error('export_invalid_column:'+i)
+      return (x as {label:string}).label
+    })
+    if(!heads.length)throw new Error('export_empty_table')
+    const fallback=['#d5f5ee','#e0f2fe','#eee5ff','#fff1d5','#ffe4e6','#e8edf4']
+    const palette:Record<string,{bg:string;fg:string}>={
+      ok:{bg:'#c5f4e6',fg:'#065f46'},
+      warn:{bg:'#fff0b3',fg:'#754a00'},
+      danger:{bg:'#ffe1e4',fg:'#991b1b'},
+      info:{bg:'#d5efff',fg:'#075985'},
+      highlight:{bg:'#e8dcff',fg:'#5b21b6'},
+      neutral:{bg:'#e7edf3',fg:'#22374b'},
     }
-    if(a.type==='quiz'){
-      const qs=a.content.questions
-      if(!Array.isArray(qs))return ''
-      return '<section class="ln-quiz"><h3>'+escapeHtml(String(a.content.title??'Cuestionario'))+'</h3>'+
-        qs.map((q,i)=>{
-          if(!q||typeof q!=='object')return ''
-          const o=q as Record<string,unknown>
-          const options=Array.isArray(o.options)?o.options:[]
-          return '<p><strong>'+String(i+1)+'. '+escapeHtml(String(o.question??''))+'</strong></p>'+
-            options.map((op,j)=>'<p>'+String.fromCharCode(65+j)+') '+escapeHtml(String(op))+'</p>').join('')
-        }).join('')+'</section>'
-    }
-  }catch{return ''}
-  return ''
+    const th=heads.map((h,i)=>'<th style="background:'+fallback[i%fallback.length]+'">'+escapeHtml(h)+'</th>').join('')
+    const rows=(c.rows as unknown[]).map((row,ri)=>{
+      if(!Array.isArray(row)||row.length!==heads.length)
+        throw new Error('export_invalid_table_row:'+ri)
+      return '<tr>'+heads.map((_,i)=>{
+        const raw=row[i]
+        const cell=typeof raw==='string'?{text:raw}:raw
+        if(!cell||typeof cell!=='object'||typeof (cell as {text?:unknown}).text!=='string')
+          throw new Error('export_invalid_table_cell:'+ri+':'+i)
+        const item=cell as {text:string;tone?:unknown;icon?:unknown}
+        if(item.tone!==undefined && (typeof item.tone!=='string'||!(item.tone in palette)))
+          throw new Error('export_invalid_table_tone:'+ri+':'+i)
+        const style=typeof item.tone==='string'?palette[item.tone]:null
+        const bg=style?.bg??fallback[i%fallback.length]
+        const fg=style?.fg??'#1f2937'
+        const prefix=typeof item.icon==='string'?escapeHtml(item.icon)+' ':''
+        return '<td data-tone="'+escapeHtml(typeof item.tone==='string'?item.tone:'column-default')+
+          '" style="background:'+bg+';color:'+fg+'">'+prefix+escapeHtml(item.text)+'</td>'
+      }).join('')+'</tr>'
+    }).join('')
+    return '<section class="ln-native-table"><h3>'+escapeHtml(String(c.title??'Tabla'))+
+      '</h3><table><thead><tr>'+th+'</tr></thead><tbody>'+rows+'</tbody></table></section>'
+  }
+  if(type==='quiz'){
+    if(!Array.isArray(c.questions)||!c.questions.length)throw new Error('export_invalid_quiz')
+    return '<section class="ln-quiz"><h3>'+escapeHtml(String(c.title??'Cuestionario'))+'</h3>'+
+      c.questions.map((question,i)=>{
+        if(!question||typeof question!=='object')throw new Error('export_invalid_quiz_question:'+i)
+        const q=question as Record<string,unknown>
+        if(typeof q.question!=='string'||!Array.isArray(q.options)||!q.options.length)
+          throw new Error('export_invalid_quiz_question:'+i)
+        return '<p><strong>'+String(i+1)+'. '+escapeHtml(q.question)+'</strong></p>'+
+          q.options.map((op,j)=>{
+            if(typeof op!=='string')throw new Error('export_invalid_quiz_option:'+i+':'+j)
+            return '<p>'+String.fromCharCode(65+j)+') '+escapeHtml(op)+'</p>'
+          }).join('')
+      }).join('')+'</section>'
+  }
+  // Non-printable native artifacts must not disappear silently.
+  throw new Error('export_unsupported_artifact_type:'+type)
 }
 export function validateExportTurns(raw:unknown):ExportTurn[] | null {
   if(!Array.isArray(raw)||raw.length<1||raw.length>120)return null

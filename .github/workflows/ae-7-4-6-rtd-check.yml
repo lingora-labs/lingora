@@ -1,0 +1,30 @@
+name: AE 7.4.6 RTD regression
+on:
+  push:
+    branches:
+      - ae/7-4-6-rtd-release-candidate
+  pull_request:
+    branches:
+      - ae/7-4-5-rtd-continuity
+permissions:
+  contents: read
+concurrency:
+  group: ae-rtd-746-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install dependencies without credentials
+        run: npm install --no-audit --no-fund
+      - name: Run all deterministic regressions and Next.js compile
+        # Only satisfies OpenAI SDK constructor while Next collects route data.
+        # No model calls or production credentials are involved in this test job.
+        env:
+          OPENAI_API_KEY: ci-build-only-no-live-requests
+        run: npm run build
