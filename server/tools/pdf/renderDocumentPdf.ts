@@ -75,14 +75,27 @@ export async function renderDocumentPdf(
       ? html.replace('</head>', commonCSS + '</head>')
       : '<!DOCTYPE html><html><head>' + commonCSS + '</head><body>' + html + '</body></html>';
     await page.setContent(prepared, { waitUntil: 'load', timeout: 30000 });
-    const loadedFonts = await page.evaluate(async () => {
-      await document.fonts.ready;
+    // Embedded faces are lazy: a face nobody has requested yet stays
+    // "unloaded" and would be miscounted as missing. Force-load every
+    // embedded face, then verify that at least one really decoded.
+    const fontReport = await page.evaluate(async () => {
       document.querySelectorAll('p,li,td,th,blockquote,h1,h2,h3,h4,.ln-speech').forEach(el => {
         if (!el.hasAttribute('dir')) el.setAttribute('dir', 'auto');
       });
-      return Array.from(document.fonts).filter(face => face.status === 'loaded').length;
+      const faces = Array.from(document.fonts);
+      const outcomes = await Promise.allSettled(faces.map(face => face.load()));
+      await document.fonts.ready;
+      return {
+        total: faces.length,
+        loaded: faces.filter(face => face.status === 'loaded').length,
+        states: faces.map(face => face.family + ':' + face.status).slice(0, 12),
+        rejected: outcomes.filter(o => o.status === 'rejected').length,
+      };
     });
-    if (!loadedFonts) throw Error('No web fonts loaded for PDF document');
+    if (!fontReport.loaded) {
+      throw Error('No web fonts loaded for PDF document (faces=' + fontReport.total +
+        ', rejected=' + fontReport.rejected + ', states=' + fontReport.states.join('|') + ')');
+    }
     const bytes = await page.pdf({
       format: 'A4', printBackground: true, preferCSSPageSize: true,
       displayHeaderFooter: false, timeout: 90000,
