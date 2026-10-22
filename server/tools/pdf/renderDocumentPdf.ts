@@ -85,16 +85,35 @@ export async function renderDocumentPdf(
       const faces = Array.from(document.fonts);
       const outcomes = await Promise.allSettled(faces.map(face => face.load()));
       await document.fonts.ready;
+      const reasons = outcomes.map(o => o.status === 'rejected'
+        ? String((o.reason && (o.reason.message || o.reason.name)) || o.reason).slice(0, 80) : 'ok');
+      // Payload shape of the first embedded face (never the bytes themselves).
+      let shape = 'none';
+      try {
+        const rule = Array.from(document.styleSheets).flatMap(s => Array.from(s.cssRules))
+          .find(r => r.type === CSSRule.FONT_FACE_RULE) as CSSFontFaceRule | undefined;
+        const src = rule ? rule.style.getPropertyValue('src') : '';
+        const m = src.match(/url\("?(data:[^;,]+);base64,([^")]*)/);
+        if (m) {
+          const head = atob(m[2].slice(0, 8));
+          shape = m[1] + ' b64len=' + m[2].length + ' magic=' +
+            Array.from(head.slice(0, 4)).map(c => c.charCodeAt(0).toString(16)).join('.');
+        } else {
+          shape = 'src=' + src.slice(0, 60);
+        }
+      } catch (e) { shape = 'shape-error'; }
       return {
         total: faces.length,
         loaded: faces.filter(face => face.status === 'loaded').length,
         states: faces.map(face => face.family + ':' + face.status).slice(0, 12),
-        rejected: outcomes.filter(o => o.status === 'rejected').length,
+        reasons: reasons.slice(0, 6),
+        shape,
       };
     });
     if (!fontReport.loaded) {
       throw Error('No web fonts loaded for PDF document (faces=' + fontReport.total +
-        ', rejected=' + fontReport.rejected + ', states=' + fontReport.states.join('|') + ')');
+        ', reasons=' + fontReport.reasons.join('|') + ', states=' + fontReport.states.join('|') +
+        ', payload=' + fontReport.shape + ')');
     }
     const bytes = await page.pdf({
       format: 'A4', printBackground: true, preferCSSPageSize: true,
