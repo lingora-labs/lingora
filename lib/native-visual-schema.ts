@@ -5,6 +5,8 @@ export const VISUAL_LIMITS = {
   flow: { nodesMin: 3, nodesMax: 32, edgesMin: 2, edgesMax: 64, labelMax: 180, edgeLabelMax: 30, titleMax: 160, subtitleMax: 80 },
   infographic: { sectionsMin: 2, sectionsMax: 6, headingMax: 60, bodyMax: 420, statsMax: 4, statLabelMax: 60, statValueMax: 14, takeawayMax: 220, titleMax: 120 },
   table: { columnsMin: 2, columnsMax: 16, rowsMin: 2, rowsMax: 80 },
+  // One quiz cap for the materializer, the text parser AND the touch-review handler (7.4.6: the handler kept a private 8).
+  quiz: { questionsMin: 2, questionsMax: 20 },
 } as const
 
 const colors = ['ok','warn','danger','info','neutral','highlight'] as const
