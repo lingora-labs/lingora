@@ -6,7 +6,7 @@
 // self-validation + sha256 chain of custody, P14-C failure truth, P15 audio,
 // P19-D dual delivery): see git history.
 import type { ArtifactPayload, SessionState } from '../../lib/contracts'
-import { dedupeSignals, type ArtifactSignal } from '../../lib/artifact-signal'
+import { dedupeSignals, NATIVE_TYPES, type ArtifactSignal } from '../../lib/artifact-signal'
 
 function excerptForSubject(content: string, subject: string): string {
   const text = content.trim()
@@ -76,7 +76,7 @@ export async function fulfillArtifactSignals(
   // technically (trigger declared, per-turn caps, real content) and never
   // reinterprets the student's words.
   const pdfs = deduped.filter((s) => s.type === 'emit_pdf' && s.trigger === 'explicit_user_request').slice(0, 3);
-  const native = deduped.filter(s => ['table_matrix', 'schema_pro', 'quiz', 'chart'].includes(s.type)).slice(0, 3);
+  const native = deduped.filter(s => NATIVE_TYPES.includes(s.type)).slice(0, 3);
   const audioSignals = deduped.filter((s) => s.type === 'emit_audio').slice(0, 2);
   // Costed operation: Tutor declaration with trigger, hard cap of one per turn.
   const imageSignals = deduped.filter((s) =>
