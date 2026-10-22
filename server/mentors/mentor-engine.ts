@@ -114,7 +114,9 @@ import type {
   TutorMode as ContractsTutorMode,
 } from '@/lib/contracts'
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+// Transient provider pressure (429 / 5xx / connection resets) is retried by the SDK with
+// exponential backoff and Retry-After before the student ever sees a failure.
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 5 })
 const COMPOUND_MAX_OUTPUT_TOKENS = 8192
 
 const FALLBACKS: Record<string, string> = {
@@ -435,8 +437,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      messages:baseMessages,
    })
  }catch(e){
-   const p=e&&typeof e==='object'?e as {status?:number;name?:string}:{}
-   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,class:p.name??'UnknownError'}))
+   const p=e&&typeof e==='object'?e as {status?:number;name?:string;code?:string|null;type?:string|null}:{}
+   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,code:p.code??null,type:p.type??null,class:p.name??'UnknownError'}))
  }
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
