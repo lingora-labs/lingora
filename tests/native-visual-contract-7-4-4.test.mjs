@@ -58,6 +58,20 @@ assert.equal(validateFlowchartContent(unknown).ok,false,'unknown decision type n
 const unlabeled={...equivalent,edges:equivalent.edges.map(e=>e.source==='question'&&e.target==='ser'?{source:e.source,target:e.target}:e)}
 assert.equal(validateFlowchartContent(unlabeled).ok,false,'decision with missing branch label rejected')
 
+// Work real-Sol rejection 7.4.4: 22 valid nodes were rejected by the old 16-node cap.
+// A complete Tutor-authored flow must not be clipped to fit an arbitrary UI limit.
+const longNodes=[{id:'s',label:'Inicio',kind:'start'},
+  ...Array.from({length:20},(_,i)=>({id:'step'+i,label:'Paso '+(i+1),kind:'step'})),
+  {id:'e',label:'Fin',kind:'end'}]
+const longEdges=longNodes.slice(1).map((node,i)=>({from:longNodes[i].id,to:node.id}))
+const longFlow={title:'Curso paso a paso',nodes:longNodes,edges:longEdges}
+const longCheck=validateFlowchartContent(longFlow)
+assert.equal(longCheck.ok,true,JSON.stringify(longCheck))
+assert.equal((renderFlowchartSvg(longCheck.flow).match(/data-node=/g)||[]).length,22,'22 nodes rendered, none lost')
+assert.equal((renderFlowchartSvg(longCheck.flow).match(/data-edge=/g)||[]).length,21,'21 edges rendered, none lost')
+assert.equal(schema.properties.nodes.maxItems,32,'Tutor advertised cap agrees with server')
+assert.equal(validateFlowchartContent({...longFlow,nodes:[...longNodes,...longNodes]}).ok,false,'bounded graph still rejects oversized payload')
+
 const info={title:'SER y ESTAR — infografía',sections:[
   {heading:'SER',body:'Identidad, profesión, origen y definiciones estables.'},
   {heading:'ESTAR',body:'Estados temporales, localizaciones y resultados.'},
