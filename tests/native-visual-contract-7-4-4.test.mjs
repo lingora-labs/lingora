@@ -49,7 +49,8 @@ const equivalent={...flow,nodes:flow.nodes.map(n=>({
 const parsed=validateFlowchartContent(equivalent)
 assert.equal(parsed.ok,true,JSON.stringify(parsed))
 assert.deepEqual(parsed.flow,flow,'adapters preserve exactly all original labels, branch labels and topology')
-assert.match(renderFlowchartSvg(parsed.flow),/¿Identidad o estado\?/)
+assert.ok(renderFlowchartSvg(parsed.flow).includes('data-node="question"'),'decision node rendered')
+assert.equal(parsed.flow.nodes.find(n=>n.id==='question').label,'¿Identidad o estado?','complete Tutor label survives wrapping')
 const broken={...equivalent,nodes:equivalent.nodes.filter(n=>n.id!=='estar')}
 assert.equal(validateFlowchartContent(broken).ok,false,'never invent a missing branch')
 const unknown={...equivalent,nodes:equivalent.nodes.map(n=>n.id==='question'?{...n,type:'something-else'}:n)}
