@@ -11,7 +11,8 @@ export function MatrixTableBlock({ content }: { content: Record<string, unknown>
     warn:   { color:'#f5c842', bg:'rgba(245,200,66,.1)' },
     danger: { color:'#ff6b6b', bg:'rgba(255,107,107,.1)' },
     info:   { color:'#38bdf8', bg:'rgba(56,189,248,.1)' },
-    neutral:{ color:'var(--silver)', bg:'transparent' },
+    neutral:{ color:'var(--silver)', bg:'rgba(148,163,184,.06)' },
+    highlight:{color:'#c4b5fd',bg:'rgba(196,181,253,.18)'},
   }
   return (
     <div style={{ marginTop:10, width:'100%', maxWidth:620, borderRadius:16, overflow:'hidden', border:'1px solid var(--border)', background:'rgba(255,255,255,.02)' }}>
@@ -22,7 +23,7 @@ export function MatrixTableBlock({ content }: { content: Record<string, unknown>
         </div>
       )}
       <div style={{ overflowX:'auto' }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+        <table style={{ minWidth:Math.max(520,c.columns.length*145), width:'100%', borderCollapse:'collapse', fontSize:13 }}>
           <thead>
             <tr style={{ background:'rgba(255,255,255,.04)' }}>
               {c.columns.map((col, i) => (
@@ -34,7 +35,8 @@ export function MatrixTableBlock({ content }: { content: Record<string, unknown>
             {c.rows.map((row, ri) => (
               <tr key={ri} style={{ borderBottom: ri < c.rows.length-1 ? '1px solid rgba(255,255,255,.04)' : 'none', background: ri%2===0?'transparent':'rgba(255,255,255,.015)' }}>
                 {row.map((cell, ci) => {
-                  const ts = toneStyle[cell.tone ?? 'neutral'] ?? toneStyle.neutral
+                  const columnPalette = ['ok','info','highlight','warn','danger','neutral'] as const
+                  const ts = toneStyle[cell.tone ?? columnPalette[ci % columnPalette.length]] ?? toneStyle.neutral
                   return (
                     <td key={ci} style={{ padding:'9px 12px', color: ts.color, background: ts.bg || 'transparent', fontWeight: cell.bold ? 700 : ci===0 ? 600 : 400, verticalAlign:'top', textAlign: (cell.align as 'left'|'center'|'right') ?? 'left' }}>
                       {cell.icon && <span style={{ marginRight:5 }}>{cell.icon}</span>}
