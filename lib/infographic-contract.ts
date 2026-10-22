@@ -23,14 +23,20 @@ export interface InfoSources { text?: string; tables?: { rows: string[][] }[] }
 
 export function validateInfographicContent(raw: unknown, src: InfoSources = {}): InfoCheck {
   if (!obj(raw) || !text(raw.title, VISUAL_LIMITS.infographic.titleMax)) return { ok: false, reason: 'info_title' }
-  const sections = raw.sections
+  // Read equivalent section arrays supplied by the Tutor. Never synthesize missing sections.
+  const sections = Array.isArray(raw.sections) ? raw.sections : Array.isArray(raw.cards) ? raw.cards : raw.blocks
   if (!Array.isArray(sections) || sections.length < VISUAL_LIMITS.infographic.sectionsMin || sections.length > VISUAL_LIMITS.infographic.sectionsMax) return { ok: false, reason: 'info_section_count' }
   const secs: InfoSection[] = []
-  for (const [i, s] of sections.entries()) {
-    if (!obj(s) || !text(s.heading, VISUAL_LIMITS.infographic.headingMax) || !text(s.body, VISUAL_LIMITS.infographic.bodyMax)) return { ok: false, reason: `info_section_shape:${i}` }
-    if (s.icon !== undefined && !(typeof s.icon === 'string' && s.icon.length > 0 && s.icon.length <= 8 && !/[<>&]/.test(s.icon))) return { ok: false, reason: `info_icon:${i}` }
-    if (s.tone !== undefined && !tone(s.tone)) return { ok: false, reason: `info_tone:${i}` }
-    secs.push({ heading: s.heading.trim(), body: s.body.trim(), ...(typeof s.icon === 'string' ? { icon: s.icon } : {}), ...(typeof s.tone === 'string' ? { tone: s.tone } : {}) })
+  for (const [i, section] of sections.entries()) {
+    if (!obj(section)) return { ok: false, reason: `info_section_shape:${i}` }
+    const heading = section.heading ?? section.title
+    const body = section.body ?? section.text
+    if (!text(heading, VISUAL_LIMITS.infographic.headingMax) || !text(body, VISUAL_LIMITS.infographic.bodyMax))
+      return { ok: false, reason: `info_section_shape:${i}` }
+    if (section.icon !== undefined && !(typeof section.icon === 'string' && section.icon.length > 0 && section.icon.length <= 8 && !/[<>&]/.test(section.icon)))
+      return { ok: false, reason: `info_icon:${i}` }
+    if (section.tone !== undefined && !tone(section.tone)) return { ok: false, reason: `info_tone:${i}` }
+    secs.push({ heading: heading.trim(), body: body.trim(), ...(typeof section.icon === 'string' ? { icon: section.icon } : {}), ...(typeof section.tone === 'string' ? { tone: section.tone } : {}) })
   }
   const stats: InfoStat[] = []
   if (raw.stats !== undefined) {
