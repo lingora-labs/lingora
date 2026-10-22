@@ -34,11 +34,9 @@ const MAX_INLINE_FONT_BYTES = 4_000_000;
 const MAX_FONT_CSS_BYTES = 450_000;
 const cssCache = new Map<string, Promise<string>>();
 const fontCache = new Map<string, Promise<string>>();
-// Google Fonts picks the file format from the User-Agent. A browser UA yields
-// woff2, which the serverless Chromium rejected at decode time ("A network
-// error occurred" on every face). An unrecognised UA yields TrueType, which
-// every Chromium build sanitises and embeds.
-const FONT_UA = 'LINGORA-PDF/1.0 (font-embed)';
+// A browser UA makes Google Fonts answer with unicode-range woff2 subsets,
+// the smallest payload per document (also keeps CJK under the inline cap).
+const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
 function cssRangesCover(text: string, ranges: string | null): boolean {
   if (!ranges) return true;
@@ -85,7 +83,7 @@ async function fontFacesFor(family: string, relevantText: string): Promise<strin
       const url = FONT_CSS_HOST + encodeURIComponent(family).replace(/%20/g, '+') +
         ':wght@400&display=swap';
       const response = await fetch(url, {
-        headers: { 'User-Agent': FONT_UA, Accept: 'text/css' },
+        headers: { 'User-Agent': BROWSER_UA, Accept: 'text/css' },
         signal: AbortSignal.timeout(18000),
       });
       if (!response.ok) throw Error('Font CSS HTTP ' + response.status + ' for ' + family);
