@@ -411,7 +411,15 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         // new AI-authored study guide. It is deliberately deterministic.
         // "Study summary" remains a distinct, separately named capability.
         const transcript = ctx.request.exportTranscript?.trim() ?? '';
-        if (!transcript) {
+        const { validateExportTurns } = await import('../tools/pdf/conversationExport');
+        const turns = ctx.request.exportTurns === undefined ? null : validateExportTurns(ctx.request.exportTurns);
+        // A structured export can only be produced from complete turns.
+        // Never claim that a partially streamed message was exported in full.
+        if(ctx.request.exportTurns !== undefined && !turns) {
+          console.warn('[7.4.5] rich transcript rejected: incomplete or malformed snapshot');
+          return {text:'No se puede exportar un turno incompleto. Finaliza la respuesta antes de exportar.'};
+        }
+        if (!transcript && !turns) {
           console.warn('[7.1] transcript export rejected: empty source');
           return { text: 'No hay conversación que exportar.' };
         }
@@ -421,6 +429,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         const result = await generatePDF({
           title: `LINGORA — Historial íntegro de conversación — ${date}`,
           content: transcript,
+          ...(turns ? { conversationTurns: turns } : {}),
           filename: `lingora-full-transcript-${Date.now()}`,
         });
         if (!result.success || !result.url) {
