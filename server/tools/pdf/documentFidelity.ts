@@ -13,8 +13,23 @@ function blockText(blocks: DocumentBlock[]): string {
   return blocks.map(b => [b.content ?? '', ...(b.items ?? []), ...(b.headers ?? []),
     ...(b.rows ?? []).flat()].join(' ')).join(' ')
 }
+/**
+ * ONE comparison projection for BOTH sides of every fidelity audit.
+ * Inline emphasis delimiters (`*`, `_`, backtick) are presentation, not
+ * content: the converter strips them, so the verifier must not let them act
+ * as token boundaries on one side only. 7.4.1 root cause: the source
+ * "و**ESTAR**" was tokenised as two words (و, estar) while the converted text
+ * "وESTAR" is one, so a lossless conversion was rejected as `loss_of_source`.
+ * The projection is applied BEFORE normalisation so composition across a
+ * removed delimiter is symmetric too. It removes no letter or digit: a
+ * dropped sentence, exercise or answer is still detected, and strictly.
+ */
+export function fidelityTokens(value: string): string[] {
+  return value.replace(/[*_\x60]/g, '').toLocaleLowerCase().normalize('NFKC')
+    .match(/[\p{L}\p{N}]+/gu) ?? []
+}
 function words(value: string): string[] {
-  return value.toLocaleLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]{4,}/gu) ?? []
+  return fidelityTokens(value).filter(w => Array.from(w).length >= 4)
 }
 
 export function auditDocumentFidelity(source: string, blocks: DocumentBlock[]): DocumentFidelityResult {
@@ -39,19 +54,38 @@ export function auditDocumentFidelity(source: string, blocks: DocumentBlock[]): 
   return { ok: coverage >= 0.9, reason: coverage >= 0.9 ? 'ok' : 'loss_of_source', coverage }
 }
 
+/**
+ * Inline marks the shared HTML renderer understands (**bold**, _italic_) are KEPT;
+ * `__bold__` is normalised to `**bold**`. Runs of underscores are exercise blanks
+ * ("______") and are never touched. Code ticks are dropped.
+ */
 function plain(text: string): string {
-  return text.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1')
+  return text.replace(/(?<![\w_])__([^_\n]+?)__(?![\w_])/gu, '**$1**')
     .replace(/\x60([^\x60]+)\x60/g, '$1')
 }
+const bare = (text: string): string => plain(text).replace(/\*\*/g, '')
 
-/** The fallback is THE document, not a second copy appended to a document. */
+const isPipeLine = (line: string): boolean => line.startsWith('|') && line.length > 1
+const isSeparator = (line: string): boolean =>
+  line.includes('|') && /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?$/.test(line)
+function cells(line: string): string[] {
+  const body = line.replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
+  return body.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, '|').trim())
+}
+
+/**
+ * The fallback is THE document, not a second copy appended to a document.
+ * Structure the Tutor wrote is kept as structure: headings, lists, GFM tables,
+ * block quotes, rules and line breaks inside a paragraph. Nothing is summarised
+ * or reordered; `auditRecoveredSource` proves that no word was lost.
+ */
 export function sourceToDocumentBlocks(source: string): DocumentBlock[] {
   const blocks: DocumentBlock[] = []
   let paragraph: string[] = []
   let items: string[] = []
   let listType: 'bullets' | 'numbered' | null = null
   const flushParagraph = () => {
-    if (paragraph.length) blocks.push({ type: 'paragraph', content: plain(paragraph.join(' ')) })
+    if (paragraph.length) blocks.push({ type: 'paragraph', content: plain(paragraph.join('\n')) })
     paragraph = []
   }
   const flushList = () => {
@@ -63,6 +97,43 @@ export function sourceToDocumentBlocks(source: string): DocumentBlock[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) { flushParagraph(); flushList(); continue }
+    // GFM table: header, separator, rows. Blank lines are tolerated until the
+    // separator has been seen; a pipe run with no separator stays plain text.
+    if (isPipeLine(line)) {
+      const run: string[] = []
+      let separators = 0
+      let k = i
+      for (; k < lines.length; k++) {
+        const t = lines[k].trim()
+        if (!t) { if (separators) break; continue }
+        if (!isPipeLine(t)) break
+        if (isSeparator(t)) { separators++; continue }
+        run.push(t)
+      }
+      if (separators && run.length) {
+        flushParagraph(); flushList()
+        const [head, ...rows] = run.map(cells)
+        const width = head.length
+        blocks.push({
+          type: 'table', headers: head.map(h => bare(h)),
+          rows: rows.map(r => Array.from({ length: Math.max(width, r.length) }, (_, c) => plain(r[c] ?? ''))),
+        })
+        i = k - 1
+        continue
+      }
+    }
+    if (/^(?:-{3,}|\*{3,})$/.test(line)) { flushParagraph(); flushList(); blocks.push({ type: 'divider' }); continue }
+    if (line.startsWith('>')) {
+      flushParagraph(); flushList()
+      const quoted: string[] = []
+      for (; i < lines.length && lines[i].trim().startsWith('>'); i++) {
+        quoted.push(lines[i].trim().replace(/^>+\s?/, ''))
+      }
+      i--
+      const text = quoted.join('\n').trim()
+      if (text) blocks.push({ type: 'quote', content: plain(text) })
+      continue
+    }
     const heading = line.match(/^(#{1,4})\s+(.+)$/)
     const titledSection = line.match(/^\d{1,2}[.)]\s+(.{3,90})$/)
     const followedByBlank = i + 1 < lines.length && !lines[i + 1].trim()
@@ -71,7 +142,7 @@ export function sourceToDocumentBlocks(source: string): DocumentBlock[] {
       blocks.push({
         type: 'heading',
         level: heading ? Math.min(3, heading[1].length) as 1 | 2 | 3 : 2,
-        content: plain(heading ? heading[2] : line),
+        content: bare(heading ? heading[2] : line),
       })
       continue
     }
@@ -102,8 +173,7 @@ export function auditRecoveredSource(
 ): DocumentFidelityResult {
   if (!source.trim()) return { ok: false, reason: 'empty_source', coverage: 0 }
   if (!blocks.length) return { ok: false, reason: 'empty_blocks', coverage: 0 }
-  const tokens = (s: string) =>
-    s.toLocaleLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu) ?? []
+  const tokens = fidelityTokens
   const normalizedSource = source.replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, '')
   const expected = tokens(normalizedSource)
   const actual = tokens(blockText(blocks))
