@@ -290,6 +290,32 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 
     const normalizedMessage = audioTranscript || rawMessageForNormalization;
 
+    // 7.4.1 — "Reintentar entrega" re-materialises what the Tutor ALREADY wrote. It is not a student turn and
+    // not a Tutor turn: no new message, no second authoring, no change to the conversation or the memory.
+    if (body.uiAction === 'retry_delivery') {
+      const text = body.materialText?.trim() ?? '';
+      const { parseClosedTutorTurn } = await import('../../lib/artifact-signal');
+      const declared = Array.isArray(body.retrySignals) ? body.retrySignals.slice(0, 3) : [];
+      const signals = (parseClosedTutorTurn({ reply: 'retry', artifacts: declared })?.artifacts ?? [])
+        .filter(sig => sig.type === 'emit_pdf');
+      if (!text || text.length > 50000 || !signals.length) {
+        return NextResponse.json({
+          message: 'No hay material disponible para repetir esta entrega.',
+          retryOf: true, state, suggestedActions: [], artifactFailures: [{ subject: 'Reintento de entrega' }],
+        }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+      }
+      const { fulfillArtifactSignals } = await import('../core/artifact-side-effect');
+      const done = await fulfillArtifactSignals(signals, text, state);
+      return NextResponse.json({
+        message: done.failures.length ? 'No se pudo completar la entrega.' : 'Entrega completada.',
+        retryOf: true, state,
+        artifacts: done.artifacts,
+        ...(done.failures.length ? { artifactFailures: done.failures } : {}),
+        suggestedActions: done.failures.length
+          ? [{ type: 'retry_delivery', action: 'retry_delivery', label: 'Reintentar entrega', payload: { signals } }]
+          : [],
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+    }
     if (body.uiAction && !(['export_chat_pdf', 'download_pdf', 'hear_audio', 'create_visual_review'] as string[]).includes(body.uiAction)) {
       return errorResponse(400, 'Unsupported UI operation', state);
     }
