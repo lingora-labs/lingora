@@ -61,7 +61,12 @@ bad(f=>{f.nodes[2].label='<b>Uso SER</b>'},'markup in label')
 bad(f=>{f.edges[0].to='s'},'self loop')
 bad(f=>{f.edges.push({from:'e',to:'s'})},'end with outgoing / start with incoming')
 bad(f=>{f.nodes=f.nodes.slice(0,2)},'too few nodes')
-bad(f=>{f.nodes[1].label='¿Es esta característica de la persona permanente o transitoria en el tiempo?'},'label that would be truncated')
+const detailedFlow=JSON.parse(JSON.stringify(flow))
+detailedFlow.nodes[1].label='¿Es esta característica de la persona permanente o transitoria en el tiempo?'
+const detailed=validateFlowchartContent(detailedFlow)
+assert.equal(detailed.ok,true,'detailed Tutor decision remains legible with adaptive layout')
+assert.equal(detailed.flow.nodes[1].label,detailedFlow.nodes[1].label,'no Tutor wording is truncated')
+bad(f=>{f.nodes[1].label='Explicación extensa '.repeat(20)},'label exceeding the bounded visual contract')
 { // too wide: 5 parallel branches in one level
   const wide={title:'Ancho',nodes:[{id:'s',label:'Inicio',kind:'start'},{id:'d',label:'Elige',kind:'decision'},...[1,2,3,4,5].map(i=>({id:'a'+i,label:'Opción '+i,kind:'step'})),{id:'e',label:'Fin',kind:'end'}],
     edges:[{from:'s',to:'d'},...[1,2,3,4,5].map(i=>({from:'d',to:'a'+i,label:'L'+i})),...[1,2,3,4,5].map(i=>({from:'a'+i,to:'e'}))]}
