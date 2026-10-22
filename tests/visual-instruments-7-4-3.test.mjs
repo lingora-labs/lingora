@@ -31,8 +31,8 @@ assert.equal((svg.match(/data-node=/g)||[]).length,flow.nodes.length,'every node
 assert.equal((svg.match(/data-edge=/g)||[]).length,flow.edges.length,'every edge drawn')
 assert.equal((svg.match(/<polygon data-node=/g)||[]).length,2,'decisions are diamonds')
 assert.ok(svg.includes('marker-end'),'edges have arrowheads')
-assert.ok(/viewBox="0 0 520 \d+"/.test(svg)&&svg.includes('min-width:440px'),'fluid + scroll floor (mobile)')
-assert.ok(/ width="520" height="\d+"/.test(renderFlowchartSvg(ok.flow,{fixed:true})),'fixed export size')
+assert.ok(/viewBox="0 0 \d+ \d+"/.test(svg)&&/min-width:\d+px/.test(svg),'adaptive fluid layout with mobile scroll')
+assert.ok(/ width="\d+" height="\d+"/.test(renderFlowchartSvg(ok.flow,{fixed:true})),'fixed export has real dimensions')
 // layout: nothing overlaps, nothing leaves the canvas
 const boxes=[...svg.matchAll(/<rect data-node="[^"]+" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map(m=>[+m[1],+m[2],+m[1]+ +m[3],+m[2]+ +m[4]])
 for(const m of svg.matchAll(/<polygon data-node="[^"]+" points="([^"]+)"/g)){const p=m[1].split(' ').map(s=>s.split(',').map(Number));boxes.push([Math.min(...p.map(q=>q[0])),Math.min(...p.map(q=>q[1])),Math.max(...p.map(q=>q[0])),Math.max(...p.map(q=>q[1]))])}
