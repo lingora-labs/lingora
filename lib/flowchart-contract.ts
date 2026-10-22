@@ -17,38 +17,50 @@ type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
 const text = (v: unknown, max: number): v is string =>
   typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/<\s*\/?\s*[a-z][^>]*>/i.test(v)
-const KINDS: FlowKind[] = ['start', 'step', 'decision', 'end']
 const MAX_PER_LEVEL = 4
 const nodeWrap = (k: FlowKind) => (k === 'decision' ? 14 : 17)
+
+// Only equivalent Tutor-authored forms are normalized; never invent nodes or branches.
+function canonicalKind(value: unknown): FlowKind | null {
+  const aliases: Record<string, FlowKind> = { start:'start', begin:'start', inicio:'start', step:'step', process:'step', action:'step', paso:'step', decision:'decision', question:'decision', condition:'decision', pregunta:'decision', end:'end', finish:'end', final:'end', fin:'end' }
+  return typeof value === 'string' ? aliases[value.trim().toLowerCase()] ?? null : null
+}
 
 export function validateFlowchartContent(raw: unknown): FlowCheck {
   if (!obj(raw) || !text(raw.title, VISUAL_LIMITS.flow.titleMax)) return { ok: false, reason: 'flow_title' }
   if (!Array.isArray(raw.nodes) || raw.nodes.length < VISUAL_LIMITS.flow.nodesMin || raw.nodes.length > VISUAL_LIMITS.flow.nodesMax) return { ok: false, reason: 'flow_node_count' }
   const nodes: FlowNode[] = []
   const ids = new Set<string>()
-  for (const [i, n] of raw.nodes.entries()) {
-    if (!obj(n) || typeof n.id !== 'string' || !/^[A-Za-z0-9_-]{1,20}$/.test(n.id) || !text(n.label, VISUAL_LIMITS.flow.labelMax)
-        || !KINDS.includes(n.kind as FlowKind)) return { ok: false, reason: `flow_node_shape:${i}` }
-    if (ids.has(n.id)) return { ok: false, reason: `flow_duplicate_id:${n.id}` }
-    ids.add(n.id)
-    // Lossless drawing: a label must fit its shape without truncation.
-    if (wrapLines(n.label, nodeWrap(n.kind as FlowKind)).length > 4) return { ok: false, reason: `flow_label_too_long:${n.id}` }
-    nodes.push({ id: n.id, label: n.label.trim(), kind: n.kind as FlowKind })
+  for (const [i, rawNode] of raw.nodes.entries()) {
+    if (!obj(rawNode)) return { ok: false, reason: `flow_node_shape:${i}` }
+    const id = rawNode.id
+    const label = rawNode.label ?? rawNode.text
+    const kind = canonicalKind(rawNode.kind ?? rawNode.type)
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,20}$/.test(id) || !text(label, VISUAL_LIMITS.flow.labelMax) || !kind)
+      return { ok: false, reason: `flow_node_shape:${i}` }
+    if (ids.has(id)) return { ok: false, reason: `flow_duplicate_id:${id}` }
+    ids.add(id)
+    if (wrapLines(label, nodeWrap(kind)).length > 4) return { ok: false, reason: `flow_label_too_long:${id}` }
+    nodes.push({ id, label: label.trim(), kind })
   }
   if (nodes.filter(n => n.kind === 'start').length !== 1) return { ok: false, reason: 'flow_start_count' }
   if (!nodes.some(n => n.kind === 'end')) return { ok: false, reason: 'flow_no_end' }
   if (!Array.isArray(raw.edges) || raw.edges.length < VISUAL_LIMITS.flow.edgesMin || raw.edges.length > VISUAL_LIMITS.flow.edgesMax) return { ok: false, reason: 'flow_edge_count' }
   const edges: FlowEdge[] = []
   const seen = new Set<string>()
-  for (const [i, e] of raw.edges.entries()) {
-    if (!obj(e) || typeof e.from !== 'string' || typeof e.to !== 'string' || !ids.has(e.from) || !ids.has(e.to))
+  for (const [i, rawEdge] of raw.edges.entries()) {
+    if (!obj(rawEdge)) return { ok: false, reason: `flow_edge_ref:${i}` }
+    const from = rawEdge.from ?? rawEdge.source
+    const to = rawEdge.to ?? rawEdge.target
+    if (typeof from !== 'string' || typeof to !== 'string' || !ids.has(from) || !ids.has(to))
       return { ok: false, reason: `flow_edge_ref:${i}` }
-    if (e.from === e.to) return { ok: false, reason: `flow_self_loop:${i}` }
-    if (e.label !== undefined && !text(e.label, VISUAL_LIMITS.flow.edgeLabelMax)) return { ok: false, reason: `flow_edge_label:${i}` }
-    const key = `${e.from}>${e.to}`
+    if (from === to) return { ok: false, reason: `flow_self_loop:${i}` }
+    if (rawEdge.label !== undefined && !text(rawEdge.label, VISUAL_LIMITS.flow.edgeLabelMax))
+      return { ok: false, reason: `flow_edge_label:${i}` }
+    const key = `${from}>${to}`
     if (seen.has(key)) return { ok: false, reason: `flow_duplicate_edge:${key}` }
     seen.add(key)
-    edges.push({ from: e.from, to: e.to, ...(typeof e.label === 'string' ? { label: e.label.trim() } : {}) })
+    edges.push({ from, to, ...(typeof rawEdge.label === 'string' ? { label: rawEdge.label.trim() } : {}) })
   }
   const out = (id: string) => edges.filter(e => e.from === id)
   const inc = (id: string) => edges.filter(e => e.to === id)
