@@ -8,6 +8,7 @@ import { normalizeSchemaPro } from '../../lib/native-schema-contract'
 import { validateChartContent, type ChartSources } from '../../lib/chart-contract'
 import { validateFlowchartContent } from '../../lib/flowchart-contract'
 import { validateInfographicContent } from '../../lib/infographic-contract'
+import { VISUAL_LIMITS } from '../../lib/native-visual-schema'
 
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -56,15 +57,37 @@ export function materializeNativeArtifact(signal: ArtifactSignal, sources: Chart
     return { type: 'infographic', content: checked.info } as unknown as ArtifactPayload
   }
   if (signal.type === 'table_matrix') {
-    if (!Array.isArray(c.columns) || c.columns.length < 2 || c.columns.length > 6 ||
-        !c.columns.every((x: unknown) => obj(x) && str(x.key) && str(x.label)) ||
-        !Array.isArray(c.rows) || c.rows.length < 2 || c.rows.length > 18) return null
-    const rows = c.rows as unknown[]
-    if (!rows.every(r => Array.isArray(r) && r.length === (c.columns as unknown[]).length &&
-      r.every((cell: unknown) => obj(cell) && str(cell.text) &&
-        (cell.tone === undefined || tone(cell.tone)) &&
-        (cell.icon === undefined || str(cell.icon))))) return null
-    return { type:'table_matrix', content: c } as unknown as ArtifactPayload
+    // Preserve every Tutor-authored column and row. Normalize syntax only:
+    // column labels may be strings, and cell values may be strings or {text,tone}.
+    const cols = Array.isArray(c.columns) ? c.columns : []
+    const rows = Array.isArray(c.rows) ? c.rows : []
+    if (cols.length < VISUAL_LIMITS.table.columnsMin || cols.length > VISUAL_LIMITS.table.columnsMax ||
+        rows.length < VISUAL_LIMITS.table.rowsMin || rows.length > VISUAL_LIMITS.table.rowsMax) {
+      console.error('[table_matrix] rejected', 'table_bounds', JSON.stringify({columns:cols.length,rows:rows.length}))
+      return null
+    }
+    const columns = cols.map((col:unknown,i:number) => {
+      if (typeof col === 'string' && str(col)) return {key:'c'+i,label:col}
+      if (!obj(col) || !str(col.label)) return null
+      return {key:typeof col.key === 'string' && col.key.trim() ? col.key : 'c'+i,
+        label:col.label,...(typeof col.width === 'string' ? {width:col.width}: {})}
+    })
+    if (columns.some(x=>!x)) return null
+    const matrix: Array<Array<{text:string;tone?:string;icon?:string}>> = []
+    for(const row of rows) {
+      if(!Array.isArray(row) || row.length!==columns.length) return null
+      const converted = row.map((cell:unknown) => {
+        if(typeof cell === 'string' && str(cell)) return {text:cell}
+        if(!obj(cell) || !str(cell.text) ||
+          (cell.tone !== undefined && !tone(cell.tone)) ||
+          (cell.icon !== undefined && !str(cell.icon))) return null
+        return {text:cell.text as string,...(typeof cell.tone==='string'?{tone:cell.tone}:{ }),
+          ...(typeof cell.icon==='string'?{icon:cell.icon}:{ }) }
+      })
+      if(converted.some(x=>!x)) return null
+      matrix.push(converted as Array<{text:string;tone?:string;icon?:string}>)
+    }
+    return {type:'table_matrix', content:{title:c.title, subtitle:c.subtitle,columns,rows:matrix}} as unknown as ArtifactPayload
   }
   if (signal.type === 'schema_pro') {
     // Shared typed materialization boundary: re-map only equivalent author-
@@ -73,7 +96,7 @@ export function materializeNativeArtifact(signal: ArtifactSignal, sources: Chart
     return canonical ? ({type:'schema_pro',content:canonical} as unknown as ArtifactPayload) : null
   }
   if (signal.type === 'quiz') {
-    if (!Array.isArray(c.questions) || c.questions.length < 2 || c.questions.length > 8) return null
+    if (!Array.isArray(c.questions) || c.questions.length < 2 || c.questions.length > 20) return null
     // QA13: a multi-gap compound item cannot be certified by one answer-key
     // index when none of the combined options is fully grammatical. Fail
     // closed before rendering or scoring; don't award false points.
@@ -183,7 +206,7 @@ export function tutorQuizFromText(text:string):ArtifactPayload|null {
   if(current)drafts.push(current)
   const complete=drafts.filter(q=>q.question.length>=6 && q.question.length<=1800 &&
     q.options.length>=2 && q.options.length<=4 && new Set(q.options.map(v=>v.toLocaleLowerCase())).size===q.options.length)
-  if(complete.length<2 || complete.length>8 || complete.length!==drafts.length)return null
+  if(complete.length<2 || complete.length>20 || complete.length!==drafts.length)return null
   const signal:ArtifactSignal={type:'quiz',trigger:'explicit_user_request',
     subject:'Quiz solicitado',format:'native',
     content:{title:'Quiz táctil — revisión con el Tutor',gradingMode:'tutor_review',
