@@ -4,7 +4,7 @@
 export const VISUAL_LIMITS = {
   flow: { nodesMin: 3, nodesMax: 32, edgesMin: 2, edgesMax: 64, labelMax: 180, edgeLabelMax: 30, titleMax: 160, subtitleMax: 80 },
   infographic: { sectionsMin: 2, sectionsMax: 6, headingMax: 60, bodyMax: 420, statsMax: 4, statLabelMax: 60, statValueMax: 14, takeawayMax: 220, titleMax: 120 },
-  table: { columnsMin: 2, columnsMax: 6, rowsMin: 2, rowsMax: 18 },
+  table: { columnsMin: 2, columnsMax: 16, rowsMin: 2, rowsMax: 80 },
 } as const
 
 const colors = ['ok','warn','danger','info','neutral','highlight'] as const
