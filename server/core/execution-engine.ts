@@ -434,7 +434,10 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
         });
         if (!result.success || !result.url) {
           console.error('[7.1] transcript export failed', result.error, result.message);
-          return { text: 'No se pudo generar el historial íntegro en PDF.' };
+          // 7.4.6: name the cause of a deterministic refusal; never a generic "try again" for content that cannot be printed.
+          const { explainExportRefusal } = await import('../tools/pdf/conversationExport');
+          const cause = explainExportRefusal(result.message);
+          return { text: cause ?? 'No se pudo generar el historial íntegro en PDF.' };
         }
         const messageCount = (transcript.match(/^\[(?:Student|USER|SARAH|ALEX|NICK)\]:/gim) ?? []).length;
         return {
@@ -463,7 +466,7 @@ async function dispatchToExecutor(step: ExecutionStep, ctx: StepContext): Promis
           const up = (msg ?? '').toUpperCase();
           const cm = up.match(/\b(A0|A1|A2|B1|B2|C1|C2)\b/);
           if (cm) return cm[1];
-          const rm = up.match(/\b([A-C][0-2])[-\u2013]([A-C][0-2])\b/);
+          const rm = up.match(/\b([A-C][0-2])[-–]([A-C][0-2])\b/);
           if (rm) return `${rm[1]}-${rm[2]}`;
           if (/UNIVERSITARIO/.test(up)) return 'Universitario';
           if (/PROFESIONAL/.test(up))  return 'Profesional';
