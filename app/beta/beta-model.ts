@@ -14,7 +14,7 @@ export interface Artifact {
         'illustration' | 'pdf' | 'course_pdf' | 'pdf_chat' | 'audio' |
         'pronunciation_report' | 'simulacro_result' | 'audio_transcript' |
         'roadmap' | 'score_report' | 'lesson_module' | 'pdf_assignment' | 'submission_feedback' |
-        'diagnostic_report' | 'rich_content' | 'chart'
+        'diagnostic_report' | 'rich_content' | 'chart' | 'flowchart' | 'infographic'
   url?: string
   dataUrl?: string
   content?: Record<string, unknown>
