@@ -210,12 +210,13 @@ export function useBetaPage() {
         const reader = res.body!.getReader()
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
-        const openTurn: Msg = { id: streamId, sender: mentorRef.current, text: '', artifact: null, artifacts: null, artifactFailures: null }
+        const openTurn: Msg = { id: streamId, sender: mentorRef.current, text: '', complete: false, artifact: null, artifacts: null, artifactFailures: null }
         // Keep the canonical snapshot in sync with streamed text, not just React's next render.
         msgsRef.current = [...msgsRef.current, openTurn]
         setMsgs(msgsRef.current)
         let accumulated = ''
         let sseBuffer = ''
+        let sawCompleted = false
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
@@ -232,6 +233,7 @@ export function useBetaPage() {
                 setMsgs(msgsRef.current)
               }
               if (parsed.done) {
+                sawCompleted = true
                 const previous = sessionRef.current
                 const nextSession: SS = parsed.state
                   ? { ...previous, ...parsed.state,
@@ -242,7 +244,7 @@ export function useBetaPage() {
                 const safeActions = Array.isArray(parsed.suggestedActions) ? filterPdfActions(parsed.suggestedActions) : []
                 const finalActions = safeActions.length > 0 ? safeActions : defaultActions
                 const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
-                  ...m, text: accumulated,
+                  ...m, text: accumulated, complete:true,
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
                   artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
@@ -268,6 +270,7 @@ export function useBetaPage() {
             } catch {}
           }
         }
+        if(!sawCompleted) throw new Error('STREAM_ENDED_WITHOUT_COMPLETION')
         return
       }
       if (!res.ok) {
@@ -367,7 +370,17 @@ export function useBetaPage() {
       }
       if (actionKey === 'export_chat_pdf') {
         const transcript = msgs.map(m => ({ sender: m.sender === 'user' ? 'Student' : m.sender.toUpperCase(), text: (m.text || '').trim() })).filter(l => l.text.length > 0).map(l => `[${l.sender}]: ${l.text}`).join('\n\n')
-        callAPI({ message: msg, exportTranscript: transcript, uiAction: 'export_chat_pdf' })
+        const turns = msgs.filter(m=>m.sender!=='ln').map(m=>({
+          sender:m.sender==='user'?'Student':m.sender.toUpperCase(), text:m.text,
+          complete:m.complete !== false,
+          artifacts:resolveMsgArtifacts(m).filter(a=>['chart','flowchart','infographic','table_matrix','quiz'].includes(a.type))
+            .map(a=>({type:a.type,content:a.content}))
+        }))
+        if (turns.some(t=>!t.complete)) {
+          setPersistWarning('Hay una respuesta todavía en curso. No se exportará un historial truncado.')
+          return
+        }
+        callAPI({ message: msg, exportTranscript: transcript, exportTurns:turns, uiAction: 'export_chat_pdf' })
       } else if (actionKey === 'create_visual_review') {
         // Exact touch intent, not a PDF keyword and not a cognitive router.
         callAPI({ message: msg, uiAction: 'create_visual_review' })
