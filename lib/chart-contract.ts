@@ -36,7 +36,10 @@ export interface ChartSources {
  *     category per panel (no missing, no extra, no NaN);
  *  2. traceability: every plotted value occurs as a number in the turn's text
  *     or tables (the chart can never invent magnitudes);
- *  3. coverage: when a same-turn table exists, its category column and a
+ *  3. association: when the text interleaves each category with its numbers
+ *     ("Enero 120 4%, Febrero 180 5%…"), every plotted value must belong to
+ *     ITS category's segment, so swapped values are rejected even without a table;
+ *  4. coverage: when a same-turn table exists, its category column and a
  *     value column must equal the panel exactly, in order (no lost month, no
  *     shifted conversion).
  */
@@ -68,6 +71,13 @@ export function validateChartContent(raw: unknown, src: ChartSources = {}): Char
         if (!pool.has(n)) return { ok: false, reason: `chart_untraceable_value:${i}:${j}:${n}` }
   }
 
+  const assoc = categorySegments(categories, src.text ?? '')
+  if (assoc) {
+    for (const [i, p] of panels.entries())
+      for (const [j, n] of p.values.entries())
+        if (!assoc[j].has(n)) return { ok: false, reason: `chart_value_category:${i}:${j}:${n}` }
+  }
+
   for (const t of src.tables ?? []) {
     const body = t.rows.filter(r => r.length >= 2)
     if (body.length === 0) continue
@@ -90,6 +100,36 @@ export function validateChartContent(raw: unknown, src: ChartSources = {}): Char
   return { ok: true, chart: { title: (raw.title as string).trim(), ...(text(raw.subtitle, 200) ? { subtitle: (raw.subtitle as string).trim() } : {}), categories, panels } }
 }
 
+/**
+ * Numbers that follow each category label in the turn's text, up to the next
+ * category label. Returns null (check not applicable) unless EVERY category
+ * occurs in the text AND every category owns at least one number, i.e. the
+ * author interleaved labels and figures. Prose that lists labels first and
+ * numbers afterwards is left to the traceability and table checks.
+ */
+function categorySegments(categories: string[], raw: string): Set<number>[] | null {
+  const text = fold(raw)
+  const marks: { pos: number; len: number; cat: number }[] = []
+  for (const [k, c] of categories.entries()) {
+    const f = fold(c)
+    if (!f) return null
+    let at = text.indexOf(f), found = false
+    while (at !== -1) {
+      const before = text[at - 1], after = text[at + f.length]
+      if (!(before && /\p{L}/u.test(before)) && !(after && /\p{L}/u.test(after))) { marks.push({ pos: at, len: f.length, cat: k }); found = true }
+      at = text.indexOf(f, at + f.length)
+    }
+    if (!found) return null
+  }
+  marks.sort((a, b) => a.pos - b.pos)
+  const sets = categories.map(() => new Set<number>())
+  marks.forEach((m, idx) => {
+    const end = idx + 1 < marks.length ? marks[idx + 1].pos : text.length
+    for (const n of numbersIn(text.slice(m.pos + m.len, end))) sets[m.cat].add(n)
+  })
+  return sets.every(s => s.size > 0) ? sets : null
+}
+
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 export function niceMax(max: number): number {
   if (max <= 0) return 1
@@ -99,14 +139,16 @@ export function niceMax(max: number): number {
 }
 const fmt = (n: number, unit?: string) => `${Number.isInteger(n) ? n : Number(n.toFixed(2))}${unit === '%' ? '%' : ''}`
 
-/** Deterministic SVG. Same input, same bytes; every category and value drawn. */
-export function renderChartSvg(chart: ChartContent): string {
-  const W = 640, PH = 270, TOP = 52, L = 56, R = 20, B = 52
+/** Deterministic SVG. Same input, same bytes; every category and value drawn.
+ *  Inline use is fluid (viewBox scaling, 440px floor inside a scrollable box, so no category is ever clipped);
+ *  `fixed` gives explicit pixel size for file export. */
+export function renderChartSvg(chart: ChartContent, opts: { fixed?: boolean } = {}): string {
+  const W = 520, PH = 270, TOP = 52, L = 56, R = 20, B = 52
   const H = TOP + chart.panels.length * PH
   const n = chart.categories.length
   const plotW = W - L - R
   const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(chart.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${opts.fixed ? `width="${W}" height="${H}"` : `preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;min-width:440px;height:auto"`} role="img" aria-label="${esc(chart.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
     `<rect width="${W}" height="${H}" rx="14" fill="#ffffff"/>`,
     `<text x="${W / 2}" y="30" text-anchor="middle" font-size="18" font-weight="700" fill="#111827" style="unicode-bidi:plaintext">${esc(chart.title)}</text>`,
   ]
