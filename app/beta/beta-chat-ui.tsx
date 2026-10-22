@@ -10,7 +10,7 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
   const isUser = msg.sender === 'user'
   return (
     <>
-      <div style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
+      <div data-testid={isUser ? 'bubble-user' : 'bubble-mentor'} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
         <div style={{ width:28, height:28, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, flexShrink:0, background: isUser ? 'var(--teal)' : mc, color:'#fff' }}>
           {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
         </div>
@@ -41,7 +41,7 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
             <div className="artifact-in" key={`artifact-${msg.id}-${i}`}><ArtifactRender a={art} instanceId={`${msg.id}#${i}`} /></div>
           ))}
           {resolveMsgArtifactFailures(msg).map((f, i) => (
-            <div key={`artifact-failure-${msg.id}-${i}`}
+            <div key={`artifact-failure-${msg.id}-${i}`} data-testid="artifact-failure"
               style={{ padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:320 }}>
               {f.subject?.startsWith('Componente interactivo') || f.subject?.startsWith('Refuerzo visual') ? 'No se pudo mostrar el componente interactivo solicitado' : 'No se pudo generar este material descargable'}{f.subject ? ` (${f.subject})` : ''}. Intenta de nuevo.
             </div>
