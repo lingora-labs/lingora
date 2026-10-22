@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     const url = typeof a.url === 'string' ? a.url : ''
     const web = typeof a.webUrl === 'string' ? a.webUrl : ''
     let webHtml = ''
-    if (web.startsWith('data:text/html')) { try { const m = /^data:text\/html[^,]*?(;base64)?,(.*)$/s.exec(web); webHtml = m ? (m[1] ? Buffer.from(m[2], 'base64').toString('utf8') : decodeURIComponent(m[2])) : '' } catch { webHtml = '' } }
+    if (web.startsWith('data:text/html')) { try { const m = /^data:text\/html[^,]*?(;base64)?,([\s\S]*)$/.exec(web); webHtml = m ? (m[1] ? Buffer.from(m[2], 'base64').toString('utf8') : decodeURIComponent(m[2])) : '' } catch { webHtml = '' } }
     let pdfPages = 0, pdfBytes = 0
     if (url.startsWith('data:application/pdf')) { const b = Buffer.from(url.split(',')[1] ?? '', 'base64'); pdfBytes = b.length; pdfPages = (b.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length }
     return { type: a.type, title: a.title, content: a.type === 'chart' || a.type === 'table_matrix' ? a.content : undefined, urlKind: url.slice(0, 24), pdfBytes, pdfPages, webHtmlLen: webHtml.length, webHtmlDirs: webHtml ? { rtl: (webHtml.match(/dir="rtl"/g) ?? []).length, ltr: (webHtml.match(/dir="ltr"/g) ?? []).length, bdi: (webHtml.match(/<bdi/g) ?? []).length, tables: (webHtml.match(/<table/g) ?? []).length, lis: (webHtml.match(/<li/g) ?? []).length } : undefined }
