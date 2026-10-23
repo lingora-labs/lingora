@@ -1,0 +1,34 @@
+name: LINGORA 7.5 Publish Original Opus SHA
+on:
+  push:
+    branches:
+      - ae/7-5-opus-payload
+    paths:
+      - ops/start-import.flag
+permissions:
+  contents: write
+jobs:
+  publish-original-sha:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify and publish original git commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '77ce3953d5b32b942e879ca44f985608d13a90b785a696c311e2e4152238fcbc  ops/l75-bundle.tar.gz' | sha256sum -c -
+          tar -xzf ops/l75-bundle.tar.gz LINGORA_7_5.bundle
+          echo '367c2b525af6de05be1d3d45ca617161f8f00f90f73d700cead445dc36a1b819  LINGORA_7_5.bundle' | sha256sum -c -
+          git fetch origin release/7.5-canonical
+          parent=$(git rev-parse FETCH_HEAD)
+          test "$parent" = '30b27d3b8e5a7106223ae06287189df3e946cbb5'
+          git bundle verify LINGORA_7_5.bundle
+          git fetch LINGORA_7_5.bundle HEAD
+          sha=$(git rev-parse FETCH_HEAD)
+          test "$sha" = '39d14b4d8e9a15f0a3c2d342e7bb8c6ec8b951a5'
+          test "$(git rev-parse "$sha^")" = "$parent"
+          git push origin "$sha:refs/heads/ae/7-5-opus-original"
