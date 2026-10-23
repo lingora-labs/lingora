@@ -101,7 +101,8 @@ export function printArtifact(a: PrintableArtifact): string {
     const url = String(c.url ?? '')
     const caption = typeof c.prompt === 'string' ? `<figcaption dir="auto">${esc(c.prompt)}</figcaption>` : ''
     if (DATA_IMAGE.test(url)) return `<figure class="ln-art ln-img"><img src="${url}" alt="">${caption}</figure>`
-    if (/^https:\/\//.test(url)) return `<figure class="ln-art ln-img"><a href="${esc(url)}">${esc(url)}</a>${caption}</figure>`
+    // An external URL is not an embedded image. Do not report a complete PDF.
+    if (/^https:\/\//.test(url)) throw new Error('export_external_image_not_embedded:illustration')
     throw new Error('export_missing_artifact_content:illustration')
   }
   throw new Error('export_unsupported_artifact_type:' + a.type)
