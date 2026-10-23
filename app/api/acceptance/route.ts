@@ -6,12 +6,14 @@
 //   L0 raw model output (captured from the provider stream) → L1 tool contract →
 //   L2 validators/materialization → delivered artifacts and visible failures.
 //
-// Safety: refuses unless VERCEL_ENV === 'preview' AND LINGORA_ACCEPTANCE_RUNNER === 'enabled'
-// (branch-scoped variable). Preview deployments are additionally behind Vercel
-// Authentication. No arbitrary prompt input: scenarios are a closed list, so cost is
-// bounded. Never returns credentials. Not part of the student product.
+// Safety: refuses (404) unless VERCEL_ENV === 'preview', LINGORA_ACCEPTANCE_RUNNER === 'enabled'
+// (branch-scoped) AND the caller presents LINGORA_ACCEPTANCE_TOKEN (branch-scoped, sensitive).
+// The token is required because this project's preview deployments are NOT behind Vercel
+// Authentication. No arbitrary prompt input: scenarios are a closed list, so cost is bounded.
+// Never returns credentials. Not part of the student product; delete both variables after
+// the acceptance campaign.
 import { NextRequest, NextResponse } from 'next/server'
-import { createHash } from 'crypto'
+import { createHash, timingSafeEqual } from 'crypto'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -156,7 +158,11 @@ function slimCapture(c: Capture) {
 }
 
 export async function GET(req: NextRequest) {
-  if (process.env.VERCEL_ENV !== 'preview' || process.env.LINGORA_ACCEPTANCE_RUNNER !== 'enabled') {
+  const expected = process.env.LINGORA_ACCEPTANCE_TOKEN ?? ''
+  const supplied = req.nextUrl.searchParams.get('t') ?? ''
+  const tokenOk = expected.length >= 24 && supplied.length === expected.length
+    && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
+  if (process.env.VERCEL_ENV !== 'preview' || process.env.LINGORA_ACCEPTANCE_RUNNER !== 'enabled' || !tokenOk) {
     return new NextResponse('Not found', { status: 404 })
   }
   const id = req.nextUrl.searchParams.get('s') ?? ''
