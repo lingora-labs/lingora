@@ -49,14 +49,22 @@ export async function fulfillArtifactSignals(
 
   // Native components: validated deterministically against the same turn's text and tables.
   if (native.length) {
-    const { materializeNativeArtifactOrReason } = await import('./native-artifact')
+    const { materializeNativeArtifactOrReason, quizFromTutorText } = await import('./native-artifact')
     const tables = native.filter((x) => x.type === 'table_matrix').flatMap((x) => {
       const c = x.content as { rows?: unknown } | undefined
       const rows = Array.isArray(c?.rows) ? (c!.rows as unknown[]).map((r) => Array.isArray(r) ? r.map((cell) => String((cell as { text?: unknown })?.text ?? cell ?? '')) : []) : []
       return rows.length ? [{ rows }] : []
     })
     for (const signal of native) {
-      const out = materializeNativeArtifactOrReason(signal, { text: `${studentMessage}\n${pedagogicalContent}`, tables })
+      // Work P1: the Tutor's visible questions take precedence over a second,
+      // inconsistent typed copy of that same quiz. Both paths reuse the same
+      // canonical reader/materializer; no questions or answer keys are invented.
+      const fromText = signal.type === 'quiz'
+        ? quizFromTutorText(pedagogicalContent, signal.subject)
+        : null
+      const out = fromText && 'payload' in fromText
+        ? fromText
+        : materializeNativeArtifactOrReason(signal, { text: `${studentMessage}\n${pedagogicalContent}`, tables })
       if ('payload' in out) artifacts.push(out.payload)
       else failures.push({ subject: `Componente interactivo no válido: ${signal.subject} — ${out.reason}` })
     }
