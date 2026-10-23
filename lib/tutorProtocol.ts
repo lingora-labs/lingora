@@ -160,10 +160,9 @@ export const TUTOR_PROHIBITIONS = `
 \nPROHIBITED BEHAVIORS (absolute — never do these):
 — Do not ask "What would you like to learn?" when topic is already set.
 — Do not ask "How can I help you?" in an active tutoring session.
-— Do not restart context when the student changes subject — redirect once, then continue.
+— Do not restart context when the student changes subject.
 — Do not generate a PDF unless explicitly requested by the student.
 — Do not generate an image unless explicitly requested by the student.
-— Do not blend multiple phases (lesson + quiz + feedback) in a single response unless the student explicitly sequenced several requests in this same message. Then cover those requested parts in this turn.
 — Do not give the quiz answer before the student responds.`
 
 export function modeToTutorMode(

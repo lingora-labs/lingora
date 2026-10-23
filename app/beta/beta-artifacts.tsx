@@ -5,7 +5,17 @@ import type { QuizQ } from './beta-model'
 import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
 import { renderFlowchartSvg, validateFlowchartContent } from '../../lib/flowchart-contract'
 import { renderInfographicSvg, validateInfographicContent } from '../../lib/infographic-contract'
-import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock, fmt } from './beta-schema'
+import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock } from './beta-schema'
+import { renderTutorMarkdown } from '../../lib/content/markdown'
+
+/** 7.5: a component that cannot be drawn says so; it never disappears (7.4 returned null). */
+export function ArtifactUnavailable({ type, reason }: { type: string; reason: string }) {
+  return (
+    <div data-testid="artifact-unavailable" role="status" style={{ marginTop:8, padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:420 }}>
+      No se puede mostrar este componente ({type}): {reason}.
+    </div>
+  )
+}
 
 // 7.4 — Chromium blocks top-level navigation to data: URLs, so a plain <a href="data:text/html…">
 // never opens. The same bytes are turned into a Blob in the browser and opened (or downloaded)
@@ -95,17 +105,17 @@ function SvgInstrumentBlock({ svg, fileSvg, kind, file }: { svg: string; fileSvg
 
 function ChartBlock({ content }: { content: Record<string, unknown> }) {
   const checked = validateChartContent(content)
-  if (!checked.ok) return null
+  if (!checked.ok) return <ArtifactUnavailable type="gráfico" reason={checked.reason} />
   return <SvgInstrumentBlock kind="chart" file="lingora-grafico" svg={renderChartSvg(checked.chart)} fileSvg={renderChartSvg(checked.chart, { fixed: true })} />
 }
 function FlowchartBlock({ content }: { content: Record<string, unknown> }) {
   const checked = validateFlowchartContent(content)
-  if (!checked.ok) return null
+  if (!checked.ok) return <ArtifactUnavailable type="diagrama" reason={checked.reason} />
   return <SvgInstrumentBlock kind="flowchart" file="lingora-diagrama" svg={renderFlowchartSvg(checked.flow)} fileSvg={renderFlowchartSvg(checked.flow, { fixed: true })} />
 }
 function InfographicBlock({ content }: { content: Record<string, unknown> }) {
   const checked = validateInfographicContent(content)
-  if (!checked.ok) return null
+  if (!checked.ok) return <ArtifactUnavailable type="infografía" reason={checked.reason} />
   return <SvgInstrumentBlock kind="infographic" file="lingora-infografia" svg={renderInfographicSvg(checked.info)} fileSvg={renderInfographicSvg(checked.info, { fixed: true })} />
 }
 
@@ -176,7 +186,7 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     const r = (a.content ?? a) as { title?: string; topic?: string; mentor?: string; level?: string; modules?: Array<{ index: number; title: string; focus: string; completed: boolean; current: boolean }>; steps?: string[]; first?: string }
     const mods = Array.isArray(r.modules) ? r.modules : []
     const steps = Array.isArray(r.steps) ? r.steps : []
-    if (!mods.length && !steps.length) return null
+    if (!mods.length && !steps.length) return <ArtifactUnavailable type="ruta" reason="no tiene módulos ni pasos" />
     return (
       <div style={{ marginTop:10, maxWidth:480, borderRadius:16, overflow:'hidden', border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)' }}>
@@ -223,11 +233,11 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     const raw = (a.content ?? a) as Record<string, unknown>
     const title = String(raw.title ?? '')
     const body = String(raw.body ?? '')
-    if (!body) return null
+    if (!body) return <ArtifactUnavailable type="contenido" reason="llegó vacío" />
     return (
       <div style={{ marginTop:10, maxWidth:560, borderRadius:14, border:'1px solid var(--border)', background:'rgba(255,255,255,.02)', padding:'14px 16px' }}>
         {title && <div style={{ fontSize:14, fontWeight:800, color:'#fff', marginBottom:8 }}>{title}</div>}
-        <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }} dangerouslySetInnerHTML={{ __html: fmt(body) }} />
+        <div style={{ fontSize:14, color:'var(--silver)', lineHeight:1.65 }} dangerouslySetInnerHTML={{ __html: renderTutorMarkdown(body) }} />
       </div>
     )
   }
@@ -254,5 +264,6 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
       </div>
     )
   }
-  return null
+  // Link-only and unknown types: say what arrived instead of rendering nothing.
+  return <ArtifactUnavailable type={String(a.type)} reason="este tipo de componente no tiene vista en el chat" />
 }

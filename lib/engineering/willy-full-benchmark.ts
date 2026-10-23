@@ -372,27 +372,12 @@ export async function adaptAndFulfillWillySignal(
   }
 
   if (signal.type === 'emit_pdf') {
+    // 7.5: the product has one document path (canonical page → Chromium); the benchmark uses it too.
     const { generatePDF } = await import('../../server/tools/pdf-generator');
-    const { composeDocumentFromTaught } = await import('../../server/tools/pdf/composeArtifactDocument');
-    const composed = await composeDocumentFromTaught({
-      subject: signal.subject,
-      fullContent: pedagogicalContent,
-      otherSubjects: [],
-      mentorName: 'Sarah',
-    });
-    // AE correction (15.10.2026, "DICTAMEN SOBRE PR #4 Y BLOQUEO DE
-    // CRÉDITOS"): capture composer outcome explicitly BEFORE branching on
-    // it for generatePDF's input — these two fields are surfaced on every
-    // return path below so a result never has to be inferred from byte
-    // size alone (AE's example: a short forced input is fully compatible
-    // with a small fallback PDF that never touched the structured
-    // composer).
-    const composedByStructuredComposer = composed.ok;
-    const compositionFailureReason = composed.ok ? undefined : composed.reason;
-    const title = composed.ok ? composed.content.title : `LINGORA — ${signal.subject}`.slice(0, 80);
-    const result = composed.ok
-      ? await generatePDF({ title, content: '', courseContent: composed.content, filename: `willy-prep-v1-${Date.now()}` })
-      : await generatePDF({ title, content: `# ${signal.subject}\n\n${pedagogicalContent.slice(0, 6000)}`, filename: `willy-prep-v1-${Date.now()}` });
+    const composedByStructuredComposer = false;
+    const compositionFailureReason = 'canonical_document_path';
+    const title = `LINGORA — ${signal.subject}`.slice(0, 80);
+    const result = await generatePDF({ title, document: { title, sections: [{ text: pedagogicalContent }] }, filename: `willy-prep-v1-${Date.now()}` });
 
     // Post-hoc isolation re-check — never trust the pre-flight check alone.
     if (result.method === 's3') {

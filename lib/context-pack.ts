@@ -16,7 +16,8 @@ export type ActiveFlowType = 'drill' | 'simulation' | 'course' | null;
 export interface ContextPack {
   interfaceLanguage: string;
   targetLanguage: string;
-  languageProficiency: CEFRLevel;
+  // 7.5: null when the level is unknown (7.4 told the Tutor 'A1' for every student without a level).
+  languageProficiency: CEFRLevel | null;
   domain: string | null;
   domainProficiency: DomainProficiency;
   pedagogicalGoal: PedagogicalGoal | null;
@@ -34,9 +35,9 @@ export type LevelConfirmed = boolean;
 
 const CEFR: CEFRLevel[] = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
-function asCefr(value: string | undefined): CEFRLevel {
+function asCefr(value: string | undefined): CEFRLevel | null {
   const raw = (value ?? '').toUpperCase();
-  return (CEFR as string[]).includes(raw) ? (raw as CEFRLevel) : 'A1';
+  return (CEFR as string[]).includes(raw) ? (raw as CEFRLevel) : null;
 }
 
 /** @deprecated 7.3 — intent is the Tutor's. Kept only so the offline benchmark
@@ -101,7 +102,7 @@ export function formatContextPack(pack: ContextPack, opts: { opening?: boolean }
     '[ContextPack — information for this turn; not a decision procedure]',
     // The UI default never appears here: one language statement (the turn note), no competing value.
     `targetLanguage: ${pack.targetLanguage}`,
-    `languageProficiency: ${pack.languageProficiency}`,
+    `languageProficiency: ${pack.languageProficiency ?? 'unknown'}`,
     `domain: ${pack.domain ?? 'null'}`,
     `domainProficiency: ${pack.domainProficiency}`,
     ...(pack.pedagogicalGoal != null ? [`pedagogicalGoal: ${pack.pedagogicalGoal}`] : []),

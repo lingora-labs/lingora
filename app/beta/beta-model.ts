@@ -40,6 +40,10 @@ export interface ArtifactFailure {
 export interface Msg {
   id: string; sender: 'user' | MK | 'ln'; text: string
   complete?: boolean; // false while an SSE turn is still streaming; never export as complete
+  // 7.5: how the server closed the turn. 'complete_with_failures' = text delivered, some material not (failures listed).
+  turnState?: 'complete' | 'complete_with_failures' | 'failed'
+  // 7.5: the browser could not keep one of this message's files (reduced session); exports refuse to call themselves complete.
+  persistLoss?: boolean
   artifact?: Artifact | null; score?: number
   // P10b — backend can emit multiple artifacts in one turn (e.g. two PDFs
   // from a compound teaching act). `artifact` is preserved as the legacy

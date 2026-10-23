@@ -132,7 +132,7 @@ export const COMPLETE_TUTOR_TURN_TOOL = {
           required: ['type', 'trigger', 'subject', 'format'],
         } },
       },
-      required: ['reply', 'artifacts'],
+      required: ['artifacts'],
     },
   },
 }
@@ -167,11 +167,16 @@ export function parseTextDelivery(raw: unknown): TextDelivery | null {
 }
 
 export interface ClosedTutorTurn { reply: string; artifacts: ArtifactSignal[] }
-export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
+/**
+ * The Tutor's typed closure. 7.5: the text the Tutor streamed is the reply; `reply` in the call is
+ * optional (it duplicated the streamed text and, when the two differed, the artifacts were dropped).
+ * No count cap on artifacts: costed side effects keep their own per-turn budget, reported visibly.
+ */
+export function parseClosedTutorTurn(raw: unknown, spokenReply = ''): ClosedTutorTurn | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
-  if (typeof r.reply !== 'string' || !r.reply.trim()
-      || !Array.isArray(r.artifacts) || r.artifacts.length > 5) return null
+  const reply = typeof r.reply === 'string' && r.reply.trim() ? r.reply : spokenReply
+  if (!Array.isArray(r.artifacts) || (!reply.trim() && !r.artifacts.length)) return null
   const artifacts: ArtifactSignal[] = []
   for (const item of r.artifacts) {
     const s = parseArtifactSignal(item)
@@ -188,15 +193,14 @@ export function parseClosedTutorTurn(raw: unknown): ClosedTutorTurn | null {
     } else return null
     artifacts.push(s)
   }
-  return { reply: r.reply, artifacts: dedupeSignals(artifacts) }
+  return { reply, artifacts: dedupeSignals(artifacts) }
 }
 /** First factual rejection, in parser order. No source content is returned. */
 export function diagnoseClosedTutorTurn(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object') return 'closure_invalid'
   const r = raw as Record<string, unknown>
-  if (typeof r.reply !== 'string' || !r.reply.trim()) return 'reply_empty'
   if (!Array.isArray(r.artifacts)) return 'artifacts_invalid'
-  if (r.artifacts.length > 5) return 'artifact_count'
+  if ((typeof r.reply !== 'string' || !r.reply.trim()) && !r.artifacts.length) return 'reply_empty'
   for (const [i, item] of r.artifacts.entries()) {
     if (!item || typeof item !== 'object') return `artifact_invalid:${i}`
     const o = item as Record<string, unknown>

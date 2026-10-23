@@ -8,7 +8,8 @@ export const BETA_SESSION_KEY = 'lingora-beta-session-v1'
 const DB_NAME = 'lingora-beta-v1'
 const DB_STORE = 'sessions'
 const DB_RECORD = 'current'
-const MAX_MESSAGES = 80
+// 7.5: no message-count cap (7.4 kept only the last 80 messages). The only limit is the size the
+// browser store can hold; above it the session is saved reduced and says so.
 const MAX_SNAPSHOT_CHARS = 60_000_000
 const LOCAL_LIMIT = 3_000_000
 const LOCAL_LINK_LIMIT = 180_000
@@ -42,7 +43,7 @@ function validated(raw: unknown): BetaSessionSnapshot | null {
   return {
     version: 1, phase: v.phase === 'chat' ? 'chat' : 'onboarding',
     lang: v.lang!, mentor: v.mentor!, topic: v.topic!, activeMode: v.activeMode!,
-    session: v.session as SS, msgs: msgs.slice(-MAX_MESSAGES), reduced: !!v.reduced,
+    session: v.session as SS, msgs, reduced: !!v.reduced,
   }
 }
 
@@ -113,7 +114,7 @@ function strippedArtifact(message: Msg): Msg {
   const missing = (!!message.artifact && !artifact)
     || (message.artifacts != null && artifacts != null && artifacts.length !== message.artifacts.length)
   return {
-    ...message, artifact, artifacts,
+    ...message, artifact, artifacts, ...(missing ? { persistLoss: true } : {}),
     audioUrl: message.audioUrl?.startsWith('data:') || message.audioUrl?.startsWith('blob:') ? undefined : message.audioUrl,
     imageUrl: message.imageUrl?.startsWith('data:') || message.imageUrl?.startsWith('blob:') ? undefined : message.imageUrl,
     artifactFailures: missing
@@ -144,8 +145,7 @@ export function saveBetaSession(
     const session = { ...input.session } as SS & { artifactRegistry?: unknown }
     delete session.artifactRegistry
     const snapshot: BetaSessionSnapshot = {
-      ...input, version: 1, session, msgs: input.msgs.slice(-MAX_MESSAGES),
-      reduced: input.msgs.length > MAX_MESSAGES,
+      ...input, version: 1, session, msgs: input.msgs, reduced: false,
     }
     // Do not silently crop real artifacts to satisfy a storage limit.
     // Failure must be visible to the student, while preserving a text

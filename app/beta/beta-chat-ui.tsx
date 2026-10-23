@@ -2,12 +2,15 @@
 import React from 'react'
 import type { Msg } from './beta-model'
 import { resolveMsgArtifacts, resolveMsgArtifactFailures } from './beta-model'
-import { fmt } from './beta-schema'
+import { renderTutorMarkdown } from '../../lib/content/markdown'
 import { CopyBlock, isCopyable, SuggestedActionBar } from './beta-actions'
 import { ArtifactRender } from './beta-artifacts'
 
-export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
+// 7.5: every bubble is the canonical rendering of the text (lib/content/markdown) — the same
+// HTML the PDF and the HTML version print. Memoized: a streamed delta re-renders one bubble.
+export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
   const isUser = msg.sender === 'user'
+  const html = React.useMemo(() => renderTutorMarkdown(msg.text || ''), [msg.text])
   return (
     <>
       <div data-testid={isUser ? 'bubble-user' : 'bubble-mentor'} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
@@ -19,11 +22,11 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
             !isUser && isCopyable(msg.text) ? (
               <CopyBlock text={msg.text}>
                 <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
-                  dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+                  dangerouslySetInnerHTML={{ __html: html }} />
               </CopyBlock>
             ) : (
-              <div style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
-                dangerouslySetInnerHTML={{ __html: fmt(msg.text || '') }} />
+              <div className={isUser ? 'ln-user' : undefined} style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
+                dangerouslySetInnerHTML={{ __html: html }} />
             )
           )}
           {msg.imageUrl && (
@@ -55,7 +58,7 @@ export function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
       )}
     </>
   )
-}
+})
 
 export function Typing({ mc }: { mc: string }) {
   return (

@@ -1,5 +1,5 @@
 import { ALLOWED_OWNER, ALLOWED_REPO, assertRepo, gh } from './github-app';
-import { POLICY, forbidDestructive, resolveBranch } from './policy';
+import { assertWritable, currentPolicy, forbidDestructive, resolveBranch } from './policy';
 import { CANONICAL_PRODUCT_URL } from '../product';
 
 type GhRef = { object: { sha: string } };
@@ -169,6 +169,7 @@ export async function callChatAPI(message: string, state: Record<string, unknown
 
 // P11 — ARTIFACT BINARY DELIVERY (QA escrow).
 async function putBinaryFile(path: string, base64Content: string, message: string, branch: string) {
+  assertWritable(branch);
   const existing = await readFile(path, branch);
   const { status, data } = await gh<{
     commit: { sha: string; html_url: string };
@@ -2285,7 +2286,7 @@ async function runDecisionHarnessJSON(runs: number): Promise<Record<string, unkn
 export async function repoStatus() {
   const { data: repo } = await gh<{ default_branch: string; html_url: string }>('GET', repoPath());
   const { data: ref } = await gh<GhRef>('GET', `${repoPath()}/git/ref/heads/main`);
-  return { owner: ALLOWED_OWNER, repo: ALLOWED_REPO, defaultBranch: repo.default_branch, mainHead: ref.object.sha, htmlUrl: repo.html_url, policy: POLICY };
+  return { owner: ALLOWED_OWNER, repo: ALLOWED_REPO, defaultBranch: repo.default_branch, mainHead: ref.object.sha, htmlUrl: repo.html_url, policy: currentPolicy() };
 }
 
 export async function listBranches() {
@@ -2340,11 +2341,13 @@ async function putFile(path: string, content: string, message: string, branch: s
 
 export async function writeFile(path: string, content: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertWritable(b);
   return putFile(path, content, message, b);
 }
 
 export async function writeFiles(files: Array<{ path: string; content: string }>, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertWritable(b);
   if (files.length === 1) return writeFile(files[0].path, files[0].content, message, b);
 
   const head = await getHeadSha(b);
@@ -2371,6 +2374,7 @@ export async function writeFiles(files: Array<{ path: string; content: string }>
 
 export async function deleteFile(path: string, message: string, branch = 'main') {
   const b = resolveBranch(branch);
+  assertWritable(b);
   const existing = await readFile(path, b);
   if (!existing.found || !existing.sha) throw new Error(`File not found: ${path}`);
   const { status, data } = await gh<{ commit: { sha: string } }>('DELETE', `${repoPath()}/contents/${encodeURIComponent(path)}`, { message, sha: existing.sha, branch: b });
@@ -2381,6 +2385,7 @@ export async function deleteFile(path: string, message: string, branch = 'main')
 export async function rollbackCommit(sha?: string, branch = 'main') {
   forbidDestructive('force_push', branch);
   const b = resolveBranch(branch);
+  assertWritable(b);
   const head = await getHeadSha(b);
   const target = sha || head;
   const { data: commit } = await gh<{ parents: Array<{ sha: string }>; sha: string; commit: { message: string } }>('GET', `${repoPath()}/commits/${target}`);
@@ -2395,8 +2400,8 @@ export async function rollbackCommit(sha?: string, branch = 'main') {
   return { reverted: target, newHead: newCommit.sha, branch: b };
 }
 
-export async function createPullRequest(title: string, head: string, base = 'main', body = '') {
-  const { status, data } = await gh<{ number: number; html_url: string }>('POST', `${repoPath()}/pulls`, { title, head, base, body });
+export async function createPullRequest(title: string, head: string, base = 'main', body = '', draft = false) {
+  const { status, data } = await gh<{ number: number; html_url: string }>('POST', `${repoPath()}/pulls`, { title, head, base, body, draft });
   if (status >= 400) throw new Error(`create_pull_request failed: ${JSON.stringify(data)}`);
   return data;
 }
@@ -2412,6 +2417,8 @@ export async function getPullRequest(number: number) {
 }
 
 export async function mergePullRequest(number: number) {
+  const { data: pr } = await gh<{ base?: { ref?: string } }>('GET', `${repoPath()}/pulls/${number}`);
+  assertWritable(String(pr?.base?.ref || 'main'));
   const { status, data } = await gh<{ merged: boolean; sha: string }>('PUT', `${repoPath()}/pulls/${number}/merge`, { merge_method: 'squash' });
   if (status >= 400) throw new Error(`merge failed: ${JSON.stringify(data)}`);
   return data;
@@ -2426,8 +2433,8 @@ export function toolCatalog() {
     { name: 'read_files', description: 'Read multiple text files' },
     { name: 'get_commit', description: 'Commit metadata by SHA or ref' },
     { name: 'compare_refs', description: 'Compare two refs' },
-    { name: 'write_file', description: 'Create or update one file. branch may be main.' },
-    { name: 'write_files', description: 'Atomic multi-file commit. branch may be main.' },
+    { name: 'write_file', description: 'Create or update one file. Writes to main only when the deployment enables them.' },
+    { name: 'write_files', description: 'Atomic multi-file commit. Writes to main only when the deployment enables them.' },
     { name: 'delete_file', description: 'Delete one file on a branch' },
     { name: 'create_branch', description: 'Create a branch from main or given SHA source' },
     { name: 'rollback_commit', description: 'Revert HEAD via new commit (no force push)' },
@@ -2460,7 +2467,7 @@ export async function dispatchTool(name: string, args: Record<string, unknown>):
     case 'delete_file': return deleteFile(String(args.path), String(args.message || `lingora(mcp): delete ${args.path}`), String(args.branch || 'main'));
     case 'create_branch': return createBranch(String(args.branch), String(args.from_branch || 'main'));
     case 'rollback_commit': return rollbackCommit(args.sha ? String(args.sha) : undefined, String(args.branch || 'main'));
-    case 'create_pull_request': return createPullRequest(String(args.title), String(args.head), String(args.base || 'main'), String(args.body || ''));
+    case 'create_pull_request': return createPullRequest(String(args.title), String(args.head), String(args.base || 'main'), String(args.body || ''), args.draft === true);
     case 'get_pull_request': return getPullRequest(Number(args.number));
     case 'list_pull_requests': return listPullRequests((args.state as 'open' | 'closed' | 'all') || 'open');
     case 'merge_pull_request': return mergePullRequest(Number(args.number));

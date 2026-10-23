@@ -131,12 +131,18 @@ try{
  pass('provider error: only class/status/code logged, fallback answer')
 
  // 7. malformed or empty closures degrade to a clear fallback without a retry
- for(const [cause,bad] of [['invalid_tool_json','{'],['invalid_tool_contract',{reply:'',artifacts:[]}],['unknown_tool',{envelope:[{name:'other',args:'{}'}]}],['multiple_closures',{envelope:[{name:'complete_tutor_turn',args:JSON.stringify(valid)},{name:'complete_tutor_turn',args:JSON.stringify(valid)}]}]]){
+ for(const [cause,bad] of [['invalid_tool_json','{'],['invalid_tool_contract',{reply:'',artifacts:[]}],['unknown_tool',{envelope:[{name:'other',args:'{}'}]}]]){
   r=await run(bad)
   const reasons=r.logs.filter(l=>l[0]==='[tutor-delivery]').map(l=>JSON.parse(l[1]).reason)
   assert.ok(reasons.includes(cause),cause+' in '+reasons)
-  if(cause==='multiple_closures'){assert.equal(r.text,REPLY);assert.deepEqual(r.signals,[quiz])}else assert.equal(r.text,FALLBACK)
+  assert.equal(r.text,FALLBACK)
  }
- pass('malformed closure / unknown tool / duplicate closure: single completion, honest outcome')
+ // 7.5: two closures in one turn are merged (7.4 kept the first and dropped the second's artifacts).
+ r=await run({envelope:[{name:'complete_tutor_turn',args:JSON.stringify(valid)},{name:'complete_tutor_turn',args:JSON.stringify(valid)}]})
+ assert.equal(r.text,REPLY);assert.deepEqual(r.signals,[quiz],'identical closures deduplicated')
+ const table={type:'table_matrix',trigger:'explicit_user_request',subject:'Tabla',format:'native',content:{title:'T',columns:['a','b'],rows:[['1','2']]}}
+ r=await run({envelope:[{name:'complete_tutor_turn',args:JSON.stringify(valid)},{name:'complete_tutor_turn',args:JSON.stringify({artifacts:[table]})}]})
+ assert.equal(r.text,REPLY);assert.deepEqual(r.signals.map(x=>x.type),['quiz','table_matrix'],'second closure no longer lost')
+ pass('malformed closure / unknown tool: single completion, honest outcome; duplicate closures merged without loss')
 }finally{console.warn=warn;console.info=originalInfo;console.error=originalError}
 console.log(`PASS Gate B (7.4.1): ${count} scenarios against the current single-Tutor contract (mocked transport, real mentor generator and artifact guards)`)

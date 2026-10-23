@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import {createRequire} from 'node:module'
 const require=createRequire(import.meta.url),ts=require('typescript')
 require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}}).outputText,file)
-const {NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA: schema,VISUAL_LIMITS}=require('../lib/native-visual-schema.ts')
+const {NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA: schema,NATIVE_RESOURCE_LIMITS,resourceRefusal}=require('../lib/native-visual-schema.ts')
 const {COMPLETE_TUTOR_TURN_TOOL,parseClosedTutorTurn}=require('../lib/artifact-signal.ts')
 const {validateFlowchartContent,renderFlowchartSvg}=require('../lib/flowchart-contract.ts')
 const {validateInfographicContent,renderInfographicSvg}=require('../lib/infographic-contract.ts')
@@ -16,15 +16,14 @@ assert.equal(exposed,schema,'tool and tests must use the same actual schema')
 const props=exposed.properties
 assert.deepEqual(props.nodes.items.properties.kind.enum,['start','step','decision','end'])
 assert.deepEqual(props.nodes.items.required,['id','label','kind'])
-assert.equal(props.nodes.items.properties.label.maxLength,VISUAL_LIMITS.flow.labelMax)
-assert.equal(props.nodes.minItems,VISUAL_LIMITS.flow.nodesMin)
-assert.equal(props.nodes.maxItems,VISUAL_LIMITS.flow.nodesMax)
-assert.equal(props.edges.items.properties.label.maxLength,VISUAL_LIMITS.flow.edgeLabelMax)
 assert.deepEqual(props.sections.items.required,['heading','body'])
-assert.equal(props.sections.minItems,VISUAL_LIMITS.infographic.sectionsMin)
-assert.equal(props.sections.maxItems,VISUAL_LIMITS.infographic.sectionsMax)
-assert.equal(props.stats.maxItems,VISUAL_LIMITS.infographic.statsMax)
-assert.equal(props.rows.minItems,VISUAL_LIMITS.table.rowsMin)
+// 7.5: the contract advertised to the Tutor carries shapes, never counts or lengths.
+const caps=[];(function walk(o,p){if(!o||typeof o!=='object')return;for(const k of ['maxItems','maxLength','minItems'])if(k in o)caps.push(p+'.'+k);for(const [k,v] of Object.entries(o))walk(v,p+'.'+k)})(schema,'schema')
+assert.deepEqual(caps,[],'no cognitive caps in the Tutor-facing schema')
+assert.ok(!/2-4|2-6|one start/.test(schema.description),'no layout opinions in the description')
+// Resource limits are bytes, enforced server-side with a stated reason.
+assert.equal(resourceRefusal({rows:Array.from({length:100},()=>['a','b','c','d'])}),null,'100-row table is far inside the resource limit')
+assert.match(resourceRefusal({body:'x'.repeat(NATIVE_RESOURCE_LIMITS.textChars+1)}),/máximo técnico/)
 assert.ok(props.rows.items.items.properties.tone.enum.includes('warn'),'colored table cell schema')
 
 const flow={title:'SER o ESTAR',nodes:[
@@ -56,7 +55,7 @@ assert.equal(validateFlowchartContent(broken).ok,false,'never invent a missing b
 const unknown={...equivalent,nodes:equivalent.nodes.map(n=>n.id==='question'?{...n,type:'something-else'}:n)}
 assert.equal(validateFlowchartContent(unknown).ok,false,'unknown decision type never guessed')
 const unlabeled={...equivalent,edges:equivalent.edges.map(e=>e.source==='question'&&e.target==='ser'?{source:e.source,target:e.target}:e)}
-assert.equal(validateFlowchartContent(unlabeled).ok,false,'decision with missing branch label rejected')
+assert.equal(validateFlowchartContent(unlabeled).ok,true,'7.5: an unlabelled branch is the Tutor\'s choice; it is drawn, not refused')
 
 // Work real-Sol rejection 7.4.4: 22 valid nodes were rejected by the old 16-node cap.
 // A complete Tutor-authored flow must not be clipped to fit an arbitrary UI limit.
@@ -69,8 +68,11 @@ const longCheck=validateFlowchartContent(longFlow)
 assert.equal(longCheck.ok,true,JSON.stringify(longCheck))
 assert.equal((renderFlowchartSvg(longCheck.flow).match(/data-node=/g)||[]).length,22,'22 nodes rendered, none lost')
 assert.equal((renderFlowchartSvg(longCheck.flow).match(/data-edge=/g)||[]).length,21,'21 edges rendered, none lost')
-assert.equal(schema.properties.nodes.maxItems,32,'Tutor advertised cap agrees with server')
-assert.equal(validateFlowchartContent({...longFlow,nodes:[...longNodes,...longNodes]}).ok,false,'bounded graph still rejects oversized payload')
+assert.equal(schema.properties.nodes.maxItems,undefined,'no node cap advertised')
+assert.equal(validateFlowchartContent({...longFlow,nodes:[...longNodes,...longNodes]}).ok,false,'duplicated ids still rejected')
+const hugeNodes=Array.from({length:60},(_,i)=>({id:'n'+i,label:'Paso '+i,kind:i?'step':'start'}))
+const huge=validateFlowchartContent({title:'60 pasos',nodes:hugeNodes,edges:hugeNodes.slice(1).map((n,i)=>({from:hugeNodes[i].id,to:n.id}))})
+assert.equal(huge.ok,true,'60 nodes (above the old cap of 32) accepted');assert.equal((renderFlowchartSvg(huge.flow).match(/data-node=/g)||[]).length,60)
 
 const info={title:'SER y ESTAR — infografía',sections:[
   {heading:'SER',body:'Identidad, profesión, origen y definiciones estables.'},
@@ -82,7 +84,7 @@ const alt=validateInfographicContent(infoAlt)
 assert.equal(alt.ok,true,JSON.stringify(alt))
 assert.deepEqual(alt.info, { title:info.title, stats:[],sections:info.sections,takeaway:info.takeaway })
 assert.match(renderInfographicSvg(alt.info),/ESTAR/)
-assert.equal(validateInfographicContent({...info,sections:info.sections.slice(0,1)}).ok,false,'single section remains invalid')
+assert.equal(validateInfographicContent({...info,sections:info.sections.slice(0,1)}).ok,true,'7.5: a single section is a valid infographic')
 assert.equal(validateInfographicContent({...info,sections:[]}).ok,false,'no fabricated sections')
 assert.equal(validateInfographicContent({...info,sections:[{heading:'SER',body:'<script>evil</script>'},info.sections[1]]}).ok,false,'markup rejected')
 assert.equal(validateInfographicContent({...info,stats:[{value:'99%',label:'dato inventado'}]},{text:'ser estar 10%'}).ok,false,'untraceable stat rejected')
@@ -91,4 +93,4 @@ for(const [type,content] of [['flowchart',equivalent],['infographic',infoAlt]]){
   assert.ok(parseClosedTutorTurn({reply:'Explicación sustantiva',artifacts:[s]}),'typed closure keeps artifact')
   assert.equal(materializeNativeArtifact(s,{text:'SER ESTAR'})?.type,type,'native instrument must materialize')
 }
-console.log('PASS 7.4.4 — typed tool schema, lossy aliases refused, compatible synonyms materialized, no invented nodes/sections or figures')
+console.log('PASS 7.4.4/7.5 — cap-free typed tool schema, resource limits,, lossy aliases refused, compatible synonyms materialized, no invented nodes/sections or figures')

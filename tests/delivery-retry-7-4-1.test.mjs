@@ -49,7 +49,7 @@ const branch=entry.slice(entry.indexOf("body.uiAction === 'retry_delivery'"),ent
 assert.ok(branch.length>300,'dedicated server branch')
 assert.ok(!/getMentorResponse|executePlan|orchestrateTutorFirst|OpenAI|openai/.test(branch),'the retry never reaches the Tutor or any model')
 assert.match(branch,/parseClosedTutorTurn/,'declarations are re-validated server-side');assert.match(branch,/filter\(sig => sig\.type === 'emit_pdf'\)/)
-assert.match(branch,/text\.length > 50000/,'bounded input')
+assert.match(branch,/text\.length > 400000/,'bounded input (resource limit, same as one document)')
 const hook=fs.readFileSync(root+'app/beta/use-beta-page.ts','utf8')
 const handler=hook.slice(hook.indexOf("if (actionKey === 'retry_delivery') {"),hook.indexOf("if (!['export_chat_pdf', 'download_pdf', 'hear_audio'].includes(actionKey)) {"))
 assert.ok(handler.length>300);assert.ok(!/addMsg\(/.test(handler),'a retry adds no bubble')

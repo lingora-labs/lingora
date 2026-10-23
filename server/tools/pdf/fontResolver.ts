@@ -126,3 +126,12 @@ export async function resolveDocumentFonts(documentText: string): Promise<{ css:
   if (!fontCSS) throw Error('No fonts resolved for document');
   return { css: fontCSS, families: selected.map(item => item.family) };
 }
+
+/** Monospace faces for code and formulas (Latin/Greek/Cyrillic subset). Optional: on failure
+ * code keeps the document fonts, which changes alignment, never content. */
+export async function resolveMonospaceFont(codeText: string): Promise<string> {
+  const covered = Array.from(codeText).filter(ch => /[\u0020-\u052F]/u.test(ch)).join('');
+  if (!covered.trim()) return '';
+  try { return await fontFacesFor('Noto Sans Mono', covered); }
+  catch (e) { console.warn('[pdf-fonts] monospace face unavailable:', e instanceof Error ? e.message : e); return ''; }
+}

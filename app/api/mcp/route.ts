@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { timingSafeEqual } from 'crypto';
 import { dispatchTool, toolCatalog } from '../../../lib/engineering/tools';
+import { planeEnabled, queryKeyAllowed } from '../../../lib/engineering/policy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,6 +82,7 @@ function authorized(req: NextRequest): boolean {
   const suppliedGrokKey = req.nextUrl.searchParams.get('key') || '';
 
   if (
+    queryKeyAllowed() &&
     grokKey &&
     suppliedGrokKey &&
     secureEqual(suppliedGrokKey, grokKey)
@@ -232,6 +234,7 @@ function inputSchemaFor(name: string) {
           head: { type: 'string' },
           base: { type: 'string' },
           body: { type: 'string' },
+          draft: { type: 'boolean' },
         },
         required: ['title', 'head'],
         additionalProperties: false,
@@ -281,14 +284,18 @@ function mcpTools() {
  *
  * No repository content, credentials, or GitHub operations are exposed here.
  */
+const notFound = () => new NextResponse('Not found', { status: 404 });
+
 export async function GET(req: NextRequest) {
+  if (!planeEnabled()) return notFound();
+  // No `authenticated` field: answering "is this key valid?" to anyone is an oracle.
+  void req;
   return NextResponse.json({
     service: 'LINGORA Engineering Gateway',
     protocol: 'MCP',
     transport: 'Streamable HTTP',
     version: '5.0.2',
     ready: true,
-    authenticated: authorized(req),
     authentication: {
       handshake: 'public',
       tools: 'protected',
@@ -297,6 +304,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!planeEnabled()) return notFound();
   let rpc: JsonRpcRequest;
 
   try {

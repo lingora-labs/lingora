@@ -1,5 +1,4 @@
 'use client'
-export { fmt } from './fmt'
 export {
   ss, sa, normSchema,
   Badge, SL, TableBlock, QuizBlock, SchemaBlock, TableArtifactBlock,

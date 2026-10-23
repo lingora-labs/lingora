@@ -7,13 +7,14 @@ require.extensions['.ts']=(mod,file)=>mod._compile(ts.transpileModule(fs.readFil
   compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,esModuleInterop:true}
 }).outputText,file)
 const {renderConversationExportHtml}=require('../server/tools/pdf/conversationExport.ts')
-const {tutorQuizFromText}=require('../server/core/native-artifact.ts')
+const {quizFromTutorText}=require('../server/core/native-artifact.ts')
+const tutorQuizFromText=(t)=>{const r=quizFromTutorText(t,'Quiz');return 'payload' in r?r.payload:null}
 const tick=String.fromCharCode(96)
 const input='**SER** y '+tick+'const x = "<etiqueta>"'+tick+'\n'+tick.repeat(3)+'js\nconst x = 1 < 2\n'+tick.repeat(3)
 const html=renderConversationExportHtml('Prueba',[{sender:'SARAH',text:input}])
 assert.match(html,/<strong>SER<\/strong>/,'D1 — bold rendered')
-assert.match(html,/<code>const x = &quot;&lt;etiqueta&gt;&quot;<\/code>/,'D1 — inline code escaped correctly')
-assert.match(html,/<pre><code>const x = 1 &lt; 2<\/code><\/pre>/,'D1 — fenced code rendered')
+assert.match(html,/<code dir="ltr">const x = &quot;&lt;etiqueta&gt;&quot;<\/code>/,'D1 — inline code escaped correctly')
+assert.match(html,/<pre class="ln-code" dir="ltr"><code class="language-js">const x = 1 &lt; 2<\/code><\/pre>/,'D1 — fenced code rendered')
 assert.ok(!html.includes(tick.repeat(3)),'D1 — fences not printed literally')
 const tb={type:'table_matrix',content:{
   title:'Colores semánticos',columns:[{label:'A'},{label:'B'},{label:'C'}],

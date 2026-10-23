@@ -1,5 +1,5 @@
 import { BACKEND_LANG, type Msg, type SS } from './beta-model'
-import { buildExportTurns } from './export-turns'
+import { buildExportTurns, EXPORT_PAYLOAD_LIMIT_BYTES } from './export-turns'
 import { CLEARABLE_FIELDS } from '../../lib/contracts'
 
 // DAE fix (AE-EXECUTE round, defect C) — the client half of the SAME shared,
@@ -47,14 +47,14 @@ export async function doExportPdfBackend(msgs: Msg[], ss: SS): Promise<PdfExport
   // 7.4.6: same builder as the chat chip. The header menu no longer has its own flat-transcript path.
   const built = buildExportTurns(msgs)
   if (!built.ok) return { ok: false, message: built.message }
-  const transcript = built.turns.filter(t => t.text.trim()).map(t => `[${t.sender}]: ${t.text.trim()}`).join('\n\n')
+  const bytes = new Blob([JSON.stringify(built.turns)]).size
+  if (bytes > EXPORT_PAYLOAD_LIMIT_BYTES) return { ok: false, message: `La conversación con sus materiales ocupa ${(bytes / 1e6).toFixed(1)} MB y supera los ${(EXPORT_PAYLOAD_LIMIT_BYTES / 1e6).toFixed(0)} MB que se pueden enviar para imprimir. No se exporta un historial incompleto.` }
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: 'Exportar conversación',
         uiAction: 'export_chat_pdf',
-        exportTranscript: transcript,
         exportTurns: built.turns,
         state: {
           ...trimStateForPayload(ss as unknown as Record<string, unknown>),

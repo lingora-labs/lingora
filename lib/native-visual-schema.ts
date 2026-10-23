@@ -1,85 +1,116 @@
-// LINGORA 7.4.4 — one instrumental contract advertised to the Tutor and verified by runtime.
-// JSON-schema shapes are descriptive; runtime validators remain final authority.
-// This module is PURE (no model calls, routing or user intent classification).
-export const VISUAL_LIMITS = {
-  flow: { nodesMin: 3, nodesMax: 32, edgesMin: 2, edgesMax: 64, labelMax: 180, edgeLabelMax: 30, titleMax: 160, subtitleMax: 80 },
-  infographic: { sectionsMin: 2, sectionsMax: 6, headingMax: 60, bodyMax: 420, statsMax: 4, statLabelMax: 60, statValueMax: 14, takeawayMax: 220, titleMax: 120 },
-  table: { columnsMin: 2, columnsMax: 16, rowsMin: 2, rowsMax: 80 },
-  // One quiz cap for the materializer, the text parser AND the touch-review handler (7.4.6: the handler kept a private 8).
-  quiz: { questionsMin: 2, questionsMax: 20 },
+// LINGORA 7.5 — the instrumental contract for native components, advertised to the Tutor
+// and verified by runtime. 7.5 removed every cognitive cap (how many sections, rows, columns,
+// questions, branches, characters a label may have). What remains are RESOURCE limits —
+// bytes the browser and the PDF engine can hold — and validity (references resolve, ids are
+// unique, numbers occur in the turn). A component over a resource limit is refused with its
+// reason, never trimmed. Layout adapts to the content (wrapping, wider canvases, scrolling,
+// pagination), never the other way round.
+// Pure module: no model calls, routing or intent classification.
+
+/** Resource limits only. Not pedagogical choices. */
+export const NATIVE_RESOURCE_LIMITS = {
+  /** Serialized size of one component's content. A 100-row bilingual table is ~20 KB. */
+  contentChars: 1_000_000,
+  /** One string (cell, label, section body). */
+  textChars: 20_000,
+  /** Items in one list (rows, nodes, questions…). Memory/DOM bound, three orders above any lesson. */
+  items: 5_000,
 } as const
 
-const colors = ['ok','warn','danger','info','neutral','highlight'] as const
-const label = (maximum: number) => ({ type: 'string', minLength: 1, maxLength: maximum })
+/** Validity minimums: below these the component is not a table / diagram / quiz at all. */
+export const VISUAL_MINIMUMS = {
+  flow: { nodes: 2, edges: 1 },
+  infographic: { sections: 1 },
+  table: { columns: 1, rows: 1 },
+  quiz: { questions: 1, options: 2 },
+  chart: { categories: 1, panels: 1 },
+} as const
+
+type Obj = Record<string, unknown>
+const isObj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
+
+/** Valid display text: non-empty, within the resource limit, not markup. */
+export const displayText = (v: unknown): v is string =>
+  typeof v === 'string' && v.trim().length > 0 && v.length <= NATIVE_RESOURCE_LIMITS.textChars && !/<\s*\/?\s*[a-z][^>]*>/i.test(v)
+
+/** Why a component exceeds a resource limit, or null. */
+export function resourceRefusal(content: unknown): string | null {
+  let size = 0
+  try { size = JSON.stringify(content ?? null).length } catch { return 'contenido no serializable' }
+  if (size > NATIVE_RESOURCE_LIMITS.contentChars) return `el contenido ocupa ${size} caracteres; el máximo técnico es ${NATIVE_RESOURCE_LIMITS.contentChars}`
+  const walk = (v: unknown): string | null => {
+    if (Array.isArray(v)) {
+      if (v.length > NATIVE_RESOURCE_LIMITS.items) return `una lista tiene ${v.length} elementos; el máximo técnico es ${NATIVE_RESOURCE_LIMITS.items}`
+      for (const x of v) { const r = walk(x); if (r) return r }
+    } else if (isObj(v)) {
+      for (const x of Object.values(v)) { const r = walk(x); if (r) return r }
+    } else if (typeof v === 'string' && v.length > NATIVE_RESOURCE_LIMITS.textChars) {
+      return `un texto tiene ${v.length} caracteres; el máximo técnico es ${NATIVE_RESOURCE_LIMITS.textChars}`
+    }
+    return null
+  }
+  return walk(content)
+}
+
+const colors = ['ok', 'warn', 'danger', 'info', 'neutral', 'highlight'] as const
+const label = { type: 'string', minLength: 1 }
 const tone = { type: 'string', enum: [...colors] }
 const flowNode = {
   type: 'object', additionalProperties: false,
   properties: {
-    id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,20}$' },
-    label: label(VISUAL_LIMITS.flow.labelMax),
-    kind: { type: 'string', enum: ['start','step','decision','end'] },
+    id: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,40}$' },
+    label,
+    kind: { type: 'string', enum: ['start', 'step', 'decision', 'end'] },
   },
-  required: ['id','label','kind'],
+  required: ['id', 'label', 'kind'],
 }
 const flowEdge = {
   type: 'object', additionalProperties: false,
-  properties: {
-    from: label(20), to: label(20), label: label(VISUAL_LIMITS.flow.edgeLabelMax),
-  },
-  required: ['from','to'],
+  properties: { from: label, to: label, label },
+  required: ['from', 'to'],
 }
 const infoSection = {
   type: 'object', additionalProperties: false,
-  properties: {
-    heading: label(VISUAL_LIMITS.infographic.headingMax),
-    body: label(VISUAL_LIMITS.infographic.bodyMax),
-    icon: label(8), tone,
-  },
-  required: ['heading','body'],
+  properties: { heading: label, body: label, icon: label, tone },
+  required: ['heading', 'body'],
 }
 const infoStat = {
   type: 'object', additionalProperties: false,
-  properties: {
-    value: label(VISUAL_LIMITS.infographic.statValueMax),
-    label: label(VISUAL_LIMITS.infographic.statLabelMax),
-    tone,
-  },
-  required: ['value','label'],
+  properties: { value: label, label, tone },
+  required: ['value', 'label'],
 }
 const tableCell = {
   type: 'object', additionalProperties: false,
-  properties: { text: label(1800), tone, icon: label(1800) },
+  properties: { text: label, tone, icon: label },
   required: ['text'],
 }
 const tableColumn = {
   type: 'object', additionalProperties: false,
-  properties: { key: label(1800), label: label(1800) },
-  required: ['key','label'],
+  properties: { key: label, label },
+  required: ['key', 'label'],
 }
 
 /**
- * Content is optional for file-only declarations; its fields are conditional
- * on artifact.type. Every array item is STRUCTURED here rather than described
- * in a paragraph. The same VISUAL_LIMITS drive server-side validation.
- * Do not make all fields required: non-visual native tools reuse this channel.
+ * Content is optional for file-only declarations; its fields are conditional on artifact.type.
+ * Shapes only — no counts or lengths: the Tutor decides how much the student needs.
  */
 export const NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA = {
   type: 'object',
-  description: 'For flowchart provide title, nodes and edges; every node uses kind=start|step|decision|end, one start and at least one end, decisions have 2-4 labelled outgoing edges. For infographic provide title and 2-6 substantive sections (heading+body), optional stats/takeaway; never invent numbers. For table_matrix provide title, columns and rows with colored cells. For chart provide categories and panels. Only include fields relevant to the chosen artifact type; the runtime refuses invalid data.',
+  description: 'Fields depend on the artifact type. flowchart: title, nodes (id, label, kind=start|step|decision|end) and edges (from, to, optional label). infographic: title, sections (heading, body), optional subtitle, stats (value, label) and takeaway; figures must come from your reply. table_matrix: title, columns, rows of cells (text, optional tone). chart: title, categories and panels (kind bar|line, title, values: one number per category). Include only the fields of the chosen type.',
   properties: {
-    title: label(160), subtitle: label(140),
-    nodes: { type: 'array', minItems: VISUAL_LIMITS.flow.nodesMin, maxItems: VISUAL_LIMITS.flow.nodesMax, items: flowNode },
-    edges: { type: 'array', minItems: VISUAL_LIMITS.flow.edgesMin, maxItems: VISUAL_LIMITS.flow.edgesMax, items: flowEdge },
-    sections: { type: 'array', minItems: VISUAL_LIMITS.infographic.sectionsMin, maxItems: VISUAL_LIMITS.infographic.sectionsMax, items: infoSection },
-    stats: { type: 'array', maxItems: VISUAL_LIMITS.infographic.statsMax, items: infoStat },
-    takeaway: label(VISUAL_LIMITS.infographic.takeawayMax),
-    columns: { type: 'array', minItems: VISUAL_LIMITS.table.columnsMin, maxItems: VISUAL_LIMITS.table.columnsMax, items: tableColumn },
-    rows: { type: 'array', minItems: VISUAL_LIMITS.table.rowsMin, maxItems: VISUAL_LIMITS.table.rowsMax, items: { type: 'array', items: tableCell } },
-    categories: { type: 'array', minItems: 2, maxItems: 24, items: label(60) },
-    panels: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'object', properties: {
-      kind: { type:'string', enum:['bar','line'] }, title: label(100), unit: label(12),
+    title: label, subtitle: label,
+    nodes: { type: 'array', items: flowNode },
+    edges: { type: 'array', items: flowEdge },
+    sections: { type: 'array', items: infoSection },
+    stats: { type: 'array', items: infoStat },
+    takeaway: label,
+    columns: { type: 'array', items: tableColumn },
+    rows: { type: 'array', items: { type: 'array', items: tableCell } },
+    categories: { type: 'array', items: label },
+    panels: { type: 'array', items: { type: 'object', properties: {
+      kind: { type: 'string', enum: ['bar', 'line'] }, title: label, unit: label,
       values: { type: 'array', items: { type: 'number' } },
-    }, required:['kind','title','values'], additionalProperties:false } },
+    }, required: ['kind', 'title', 'values'], additionalProperties: false } },
   },
   additionalProperties: true, // schema_pro/quiz retain their canonical native contracts
 } as const

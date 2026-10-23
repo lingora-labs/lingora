@@ -2,36 +2,7 @@
 // The font resolver works on characters actually present, not UI language.
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import { resolveDocumentFonts } from './fontResolver';
-
-function esc(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// Deterministic transcript rendering. Never invoke a summarizer or LLM here.
-export function transcriptPrintHtml(title: string, content: string): string {
-  const chunks = content.split(/\n(?=\[(?:Student|USER|SARAH|ALEX|NICK)\]:)/i);
-  const entries = chunks.map(chunk => {
-    const match = chunk.match(/^\[([^\]]+)\]:\s*/);
-    const speaker = match?.[1] ?? '';
-    const message = match ? chunk.slice(match[0].length) : chunk;
-    return '<section class="ln-turn">' +
-      (speaker ? '<h2 class="ln-speaker">' + esc(speaker) + '</h2>' : '') +
-      '<div class="ln-speech" dir="auto">' + esc(message) + '</div></section>';
-  }).join('\n');
-  return '<!DOCTYPE html><html lang="und"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
-    '<title>' + esc(title) + '</title><style>' +
-    'body{margin:0;color:#132b40;background:white;line-height:1.6}' +
-    '.ln-header{background:#102a40;color:white;padding:16px 22px;margin-bottom:20px}' +
-    '.ln-header strong{font-size:18pt;letter-spacing:.02em}' +
-    '.ln-header h1{font-size:16pt;margin:8px 0 0}' +
-    '.ln-turn{padding:12px 4px;border-bottom:1px solid #dde4e9;break-inside:auto}' +
-    '.ln-speaker{font-size:10pt;color:#08777d;margin:0 0 7px;font-weight:700}' +
-    '.ln-speech{font-size:11pt;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;unicode-bidi:plaintext}' +
-    '</style></head><body><header class="ln-header"><strong>LINGORA</strong><h1>' + esc(title) +
-    '</h1></header><main>' + entries + '</main></body></html>';
-}
+import { resolveDocumentFonts, resolveMonospaceFont } from './fontResolver';
 
 // The shared interactive page ships a strict CSP (default-src 'none'). The PDF
 // engine embeds its glyph faces as data: URIs, which that CSP blocks as a
@@ -45,12 +16,11 @@ function allowEmbeddedFonts(html: string): string {
   );
 }
 
-export async function renderDocumentPdf(
-  html: string,
-  options: { layout?: 'document' | 'lesson' } = {},
-): Promise<Uint8Array> {
+export async function renderDocumentPdf(html: string): Promise<Uint8Array> {
   const text = html.replace(/<[^>]*>/g, ' ');
   const resolved = await resolveDocumentFonts(text);
+  const codeText = [...html.matchAll(/<(code|pre|span class="ln-math"|div class="ln-math")[^>]*>([\s\S]*?)<\/(?:code|pre|span|div)>/g)].map(m => m[2].replace(/<[^>]*>/g, '')).join(' ');
+  const monoCss = codeText ? await resolveMonospaceFont(codeText) : '';
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
     browser = await puppeteer.launch({
@@ -62,26 +32,17 @@ export async function renderDocumentPdf(
     // CSS/data fonts are embedded before page load; Chromium needs no
     // external access and won't print while a font request is unfinished.
     const fontList = [...resolved.families].reverse().map(f => JSON.stringify(f)).join(',');
-    const documentCSS = options.layout === 'lesson'
-      ? '@page{size:A4;margin:0} .page{width:210mm;max-width:210mm}'
-      : '@page{size:A4;margin:15mm 14mm}';
+    const documentCSS = '@page{size:A4;margin:15mm 14mm}';
     const commonCSS =
-      '<style>' + resolved.css + '\n' + documentCSS +
+      '<style>' + resolved.css + '\n' + monoCss + '\n' + documentCSS +
       'body{font-family:' + fontList + ',sans-serif!important}' +
-      ':is(p,li,td,th,blockquote,h1,h2,h3,h4,.ln-speech){unicode-bidi:plaintext;text-align:start}' +
+      (monoCss ? 'code,pre,.ln-math{font-family:"Noto Sans Mono",' + fontList + ',monospace!important}' : '') +
+      // Elements the page gave an explicit direction keep it; only undirected text follows its content.
+      ':is(p,li,td,th,blockquote,h1,h2,h3,h4):not([dir]){unicode-bidi:plaintext;text-align:start}' +
       'table{max-width:100%;min-width:0!important;break-inside:auto}' +
       'th,td{overflow-wrap:anywhere;vertical-align:top}' +
       'tr{break-inside:avoid-page}' +
       'p,li,blockquote{orphans:3;widows:3}' +
-      // Compact print-only rhythm: do not create an almost-empty last page
-      // for decorative footers, an oversized chapter break, or web padding.
-      '.ln-footer{display:none!important}' +
-      '.ln-container{padding-top:14px!important;padding-bottom:0!important}' +
-      '.ln-chapter{margin-top:16px!important;margin-bottom:9px!important;break-after:avoid-page}' +
-      '.ln-h1,.ln-h2,.ln-h3,.ln-source-start,.ln-source-subhead{break-after:avoid-page}' +
-      '.ln-p,.ln-source-p{orphans:3;widows:3}' +
-      '.ln-source-start{margin-top:14px!important}' +
-      '.ln-next{margin-top:12px!important;padding-top:10px!important}' +
       '</style>';
     const source = allowEmbeddedFonts(html);
     const prepared = source.includes('</head>')
@@ -92,7 +53,7 @@ export async function renderDocumentPdf(
     // "unloaded" and would be miscounted as missing. Force-load every
     // embedded face, then verify that at least one really decoded.
     const fontReport = await page.evaluate(async () => {
-      document.querySelectorAll('p,li,td,th,blockquote,h1,h2,h3,h4,.ln-speech').forEach(el => {
+      document.querySelectorAll('p,li,td,th,blockquote,h1,h2,h3,h4').forEach(el => {
         if (!el.hasAttribute('dir')) el.setAttribute('dir', 'auto');
       });
       const faces = Array.from(document.fonts);

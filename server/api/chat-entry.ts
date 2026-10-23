@@ -300,7 +300,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       const declared = Array.isArray(body.retrySignals) ? body.retrySignals.slice(0, 3) : [];
       const signals = (parseClosedTutorTurn({ reply: 'retry', artifacts: declared })?.artifacts ?? [])
         .filter(sig => sig.type === 'emit_pdf');
-      if (!text || text.length > 50000 || !signals.length) {
+      if (!text || text.length > 400000 || !signals.length) {
         return NextResponse.json({
           message: 'No hay material disponible para repetir esta entrega.',
           retryOf: true, state, suggestedActions: [], artifactFailures: [{ subject: 'Reintento de entrega' }],
@@ -330,52 +330,41 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     // 7.1 — direct touch actions need no cognitive routing or extra model.
     // Their source is the actual visible tutor message, not a generated promise.
     if (plan.pedagogicalAction === 'export_artifact') {
+      // 7.5: "download" and "listen" act on the Tutor message the student is looking at, through the
+      // same canonical document and the same complete speech as every other route. No length cut.
       const sourceText = body.materialText?.trim() ?? '';
       const subject = body.uiAction === 'download_pdf' ? 'PDF del material' : 'Respuesta hablada';
-      const sourceLimit = body.uiAction === 'download_pdf' ? 50000 : 3000;
-      if (!sourceText || sourceText.length > sourceLimit) {
-        return NextResponse.json({
-          message: !sourceText
-            ? 'No hay material disponible para esta acción.'
-            : 'El material supera el límite de esta operación. Selecciona un fragmento más corto.',
-          state, suggestedActions: [], artifactFailures: [{ subject }],
-        }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
-      }
+      const { EXPORT_RESOURCE_LIMITS, validateExportTurns } = await import('../tools/pdf/conversationExport');
+      const refuse = (why: string) => NextResponse.json({
+        message: why, state, suggestedActions: [], artifactFailures: [{ subject: `${subject}: ${why}` }],
+      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+      if (!sourceText) return refuse('no hay material del Tutor en pantalla para esta acción');
+      if (sourceText.length > EXPORT_RESOURCE_LIMITS.charsPerTurn) return refuse(`el mensaje tiene ${sourceText.length} caracteres; el máximo técnico por documento es ${EXPORT_RESOURCE_LIMITS.charsPerTurn}`);
       try {
         if (body.uiAction === 'download_pdf') {
-          const { generatePDF } = await import('../tools/pdf-generator');
-          const result = await generatePDF({
-            title: 'LINGORA — Material de estudio', content: sourceText,
-            filename: `lingora-material-${Date.now()}`,
-          });
-          if (result.success && result.url) {
-            return NextResponse.json({
-              message: 'Material generado en PDF.',
-              state, suggestedActions: [],
-              artifact: { type: 'pdf', title: 'LINGORA — Material de estudio', url: result.url },
-            }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
-          }
-        } else {
-          const { generateSpeech } = await import('../tools/audio-toolkit');
-          const voice = ({ sarah: 'shimmer', alex: 'fable', nick: 'onyx' } as Record<string, string>)[
-            String(state.mentorProfile ?? 'alex').toLowerCase()
-          ] ?? 'fable';
-          const result = await generateSpeech(sourceText, { voice });
-          if (result.success && result.url) {
-            return NextResponse.json({
-              message: 'Audio preparado.',
-              state, suggestedActions: [],
-              artifact: { type: 'audio', dataUrl: result.url },
-            }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
-          }
+          const turn = body.materialTurn === undefined ? null : validateExportTurns([body.materialTurn])?.[0] ?? null;
+          if (body.materialTurn !== undefined && !turn) return refuse('el mensaje está incompleto o en curso; espera a que termine');
+          const { tutorHeadings } = await import('../../lib/content/markdown');
+          const title = tutorHeadings(sourceText)[0]?.text || 'Material de estudio';
+          const { deliverDocument } = await import('../core/artifact-side-effect');
+          const doc = await deliverDocument({ title, sections: [{ text: turn?.text ?? sourceText, artifacts: turn?.artifacts ?? [] }] },
+            { withHtml: true, filename: `lingora-material-${Date.now()}` });
+          if ('failure' in doc) return refuse(doc.failure);
+          return NextResponse.json({ message: 'Material generado en PDF.', state, suggestedActions: [], artifact: doc.artifact },
+            { headers: { ...NO_CACHE, ...CORS_HEADERS } });
         }
+        const { speakTutorText } = await import('../tools/audio-toolkit');
+        const { voiceFor } = await import('../core/artifact-side-effect');
+        const result = await speakTutorText(sourceText, { voice: voiceFor(state.mentorProfile ?? 'alex') });
+        if (result.success && result.url) {
+          return NextResponse.json({ message: 'Audio preparado.', state, suggestedActions: [], artifact: { type: 'audio', dataUrl: result.url } },
+            { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+        }
+        return refuse(result.message ?? 'no se pudo generar el audio');
       } catch (error) {
-        console.error('[7.1] explicit UI action failed', error instanceof Error ? error.message : error);
+        console.error('[7.5] explicit UI action failed', error instanceof Error ? error.message : error);
+        return refuse(error instanceof Error ? error.message.slice(0, 200) : 'error interno');
       }
-      return NextResponse.json({
-        message: 'No pude completar la operación solicitada.',
-        state, suggestedActions: [], artifactFailures: [{ subject }],
-      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
     }
     if (plan.pedagogicalAction === 'export_chat_pdf' && !body.exportTranscript?.trim() && !body.exportTurns) {
       return NextResponse.json({

@@ -13,10 +13,11 @@ export interface ChartPanel { kind: ChartKind; title: string; unit?: string; val
 export interface ChartContent { title: string; subtitle?: string; categories: string[]; panels: ChartPanel[] }
 export type ChartCheck = { ok: true; chart: ChartContent } | { ok: false; reason: string }
 
+import { displayText as text, VISUAL_MINIMUMS } from './native-visual-schema'
+import { wrapLines } from './svg-text'
+
 type Obj = Record<string, unknown>
 const obj = (v: unknown): v is Obj => Boolean(v && typeof v === 'object' && !Array.isArray(v))
-const text = (v: unknown, max = 160): v is string =>
-  typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/<\s*\/?\s*[a-z][^>]*>/i.test(v)
 
 const NUM = /-?\d+(?:[.,]\d+)?/g
 export const numbersIn = (s: string): number[] =>
@@ -32,8 +33,9 @@ export interface ChartSources {
 
 /**
  * Faithfulness contract, in order:
- *  1. structure: 2–24 unique categories, 1–4 panels, one finite value per
- *     category per panel (no missing, no extra, no NaN);
+ *  1. structure: unique categories, at least one panel, one finite value per
+ *     category per panel (no missing, no extra, no NaN). No count caps (7.5):
+ *     the canvas widens with the categories;
  *  2. traceability: every plotted value occurs as a number in the turn's text
  *     or tables (the chart can never invent magnitudes);
  *  3. association: when the text interleaves each category with its numbers
@@ -46,16 +48,16 @@ export interface ChartSources {
 export function validateChartContent(raw: unknown, src: ChartSources = {}): ChartCheck {
   if (!obj(raw) || !text(raw.title)) return { ok: false, reason: 'chart_title' }
   const cats = raw.categories
-  if (!Array.isArray(cats) || cats.length < 2 || cats.length > 24 || !cats.every(c => text(c, 60)))
+  if (!Array.isArray(cats) || cats.length < VISUAL_MINIMUMS.chart.categories || !cats.every(c => text(c)))
     return { ok: false, reason: 'chart_categories' }
   const categories = (cats as string[]).map(c => c.trim())
   if (new Set(categories.map(fold)).size !== categories.length) return { ok: false, reason: 'chart_duplicate_category' }
   const ps = raw.panels
-  if (!Array.isArray(ps) || ps.length < 1 || ps.length > 4) return { ok: false, reason: 'chart_panels' }
+  if (!Array.isArray(ps) || ps.length < VISUAL_MINIMUMS.chart.panels) return { ok: false, reason: 'chart_panels' }
   const panels: ChartPanel[] = []
   for (const [i, p] of ps.entries()) {
-    if (!obj(p) || (p.kind !== 'bar' && p.kind !== 'line') || !text(p.title, 100)) return { ok: false, reason: `chart_panel_shape:${i}` }
-    if (p.unit !== undefined && !text(p.unit, 12)) return { ok: false, reason: `chart_unit:${i}` }
+    if (!obj(p) || (p.kind !== 'bar' && p.kind !== 'line') || !text(p.title)) return { ok: false, reason: `chart_panel_shape:${i}` }
+    if (p.unit !== undefined && !text(p.unit)) return { ok: false, reason: `chart_unit:${i}` }
     const v = p.values
     if (!Array.isArray(v) || v.length !== categories.length) return { ok: false, reason: `chart_value_count:${i}:${Array.isArray(v) ? v.length : 'none'}/${categories.length}` }
     if (!v.every(n => typeof n === 'number' && Number.isFinite(n))) return { ok: false, reason: `chart_value_nan:${i}` }
@@ -97,7 +99,7 @@ export function validateChartContent(raw: unknown, src: ChartSources = {}): Char
       if (!match) return { ok: false, reason: `chart_table_values:${i}` }
     }
   }
-  return { ok: true, chart: { title: (raw.title as string).trim(), ...(text(raw.subtitle, 200) ? { subtitle: (raw.subtitle as string).trim() } : {}), categories, panels } }
+  return { ok: true, chart: { title: (raw.title as string).trim(), ...(text(raw.subtitle) ? { subtitle: (raw.subtitle as string).trim() } : {}), categories, panels } }
 }
 
 /**
@@ -140,15 +142,22 @@ export function niceMax(max: number): number {
 const fmt = (n: number, unit?: string) => `${Number.isInteger(n) ? n : Number(n.toFixed(2))}${unit === '%' ? '%' : ''}`
 
 /** Deterministic SVG. Same input, same bytes; every category and value drawn.
- *  Inline use is fluid (viewBox scaling, 440px floor inside a scrollable box, so no category is ever clipped);
- *  `fixed` gives explicit pixel size for file export. */
+ *  The canvas widens with the number of categories and category labels wrap, so nothing is clipped;
+ *  negative values are drawn below a zero line (7.4 clamped them to zero).
+ *  Inline use is fluid inside a scrollable box; `fixed` gives explicit pixel size for file export. */
 export function renderChartSvg(chart: ChartContent, opts: { fixed?: boolean } = {}): string {
-  const W = 520, PH = 270, TOP = 52, L = 56, R = 20, B = 52
-  const H = TOP + chart.panels.length * PH
   const n = chart.categories.length
+  const L = 56, R = 20, TOP = 52, MIN_STEP = 52
+  const W = Math.max(520, L + R + n * MIN_STEP)
   const plotW = W - L - R
+  const step = plotW / n
+  const catWrap = Math.max(6, Math.floor(step / 6.6))
+  const catLines = chart.categories.map(c => wrapLines(c, catWrap))
+  const B = 30 + Math.max(...catLines.map(l => l.length)) * 14
+  const PH = 220 + B
+  const H = TOP + chart.panels.length * PH
   const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${opts.fixed ? `width="${W}" height="${H}"` : `preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;min-width:440px;height:auto"`} role="img" aria-label="${esc(chart.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ${opts.fixed ? `width="${W}" height="${H}"` : `preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;min-width:${W > 520 ? Math.min(W, 1040) : 440}px;height:auto"`} role="img" aria-label="${esc(chart.title)}" font-family="system-ui,-apple-system,Segoe UI,Noto Sans,Noto Naskh Arabic,sans-serif">`,
     `<rect width="${W}" height="${H}" rx="14" fill="#ffffff"/>`,
     `<text x="${W / 2}" y="30" text-anchor="middle" font-size="18" font-weight="700" fill="#111827" style="unicode-bidi:plaintext">${esc(chart.title)}</text>`,
   ]
@@ -156,22 +165,23 @@ export function renderChartSvg(chart: ChartContent, opts: { fixed?: boolean } = 
     const y0 = TOP + i * PH
     const plotTop = y0 + 30, plotBottom = y0 + PH - B
     const plotH = plotBottom - plotTop
-    const top = niceMax(Math.max(...p.values, 0))
-    const ys = (v: number) => plotBottom - (Math.max(v, 0) / top) * plotH
-    const step = plotW / n
+    const minV = Math.min(...p.values, 0), hi = niceMax(Math.max(...p.values, 0)), lo = minV < 0 ? -niceMax(-minV) : 0
+    const span = hi - lo || 1
+    const ys = (v: number) => plotBottom - ((v - lo) / span) * plotH
+    const zeroY = ys(0)
     const cx = (k: number) => L + step * (k + 0.5)
     parts.push(`<text x="${W / 2}" y="${y0 + 14}" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937" style="unicode-bidi:plaintext">${esc(p.title)}</text>`)
     for (let t = 0; t <= 4; t++) {
-      const v = (top / 4) * t, y = ys(v)
+      const v = lo + (span / 4) * t, y = ys(v)
       parts.push(`<line x1="${L}" y1="${y.toFixed(1)}" x2="${W - R}" y2="${y.toFixed(1)}" stroke="#e5e7eb"/>`,
         `<text x="${L - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#4b5563">${esc(fmt(v, p.unit))}</text>`)
     }
     if (p.kind === 'bar') {
       const bw = Math.min(56, step * 0.62)
       p.values.forEach((v, k) => {
-        const y = ys(v)
-        parts.push(`<rect data-cat="${k}" x="${(cx(k) - bw / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${(plotBottom - y).toFixed(1)}" rx="3" fill="#4c8dff"/>`,
-          `<text x="${cx(k).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">${esc(fmt(v, p.unit))}</text>`)
+        const y = ys(v), top = Math.min(y, zeroY), h = Math.abs(zeroY - y)
+        parts.push(`<rect data-cat="${k}" x="${(cx(k) - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${v < 0 ? '#ef6b6b' : '#4c8dff'}"/>`,
+          `<text x="${cx(k).toFixed(1)}" y="${(v < 0 ? y + 14 : y - 6).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">${esc(fmt(v, p.unit))}</text>`)
       })
     } else {
       const pts = p.values.map((v, k) => `${cx(k).toFixed(1)},${ys(v).toFixed(1)}`)
@@ -180,9 +190,9 @@ export function renderChartSvg(chart: ChartContent, opts: { fixed?: boolean } = 
         `<circle data-cat="${k}" cx="${cx(k).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="4.5" fill="#f59e0b"/>`,
         `<text x="${cx(k).toFixed(1)}" y="${(ys(v) - 10).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">${esc(fmt(v, p.unit))}</text>`))
     }
-    parts.push(`<line x1="${L}" y1="${plotBottom}" x2="${W - R}" y2="${plotBottom}" stroke="#9ca3af"/>`)
-    chart.categories.forEach((c, k) => parts.push(
-      `<text x="${cx(k).toFixed(1)}" y="${plotBottom + 18}" text-anchor="middle" font-size="12" fill="#374151" style="unicode-bidi:plaintext">${esc(c)}</text>`))
+    parts.push(`<line x1="${L}" y1="${zeroY.toFixed(1)}" x2="${W - R}" y2="${zeroY.toFixed(1)}" stroke="#9ca3af"/>`)
+    catLines.forEach((lines, k) => parts.push(
+      `<text text-anchor="middle" font-size="12" fill="#374151" style="unicode-bidi:plaintext">${lines.map((ln, j) => `<tspan x="${cx(k).toFixed(1)}" y="${plotBottom + 18 + j * 14}">${esc(ln)}</tspan>`).join('')}</text>`))
   })
   parts.push('</svg>')
   return parts.join('')
