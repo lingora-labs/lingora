@@ -226,12 +226,21 @@ export function visibleText(html: string): string {
 }
 /** Words of the source that the rendering does not show. Empty = nothing lost. */
 export function missingWords(source: string, html: string): string[] {
-  const printed = new Set(fidelityTokens(visibleText(html)))
+  // Compare in sequence: repeated words and numerical associations must survive.
+  const printed = fidelityTokens(visibleText(html))
   const body = String(source ?? '').split('\n').filter((l) => !/^\s*(?:\x60{3,}|~{3,})\s*[\w+#.-]*\s*$/.test(l)).join('\n')
   // A Markdown link/image destination is syntax around the visible label; print CSS shows it, the HTML keeps it in href.
   // Ordered-list numbers are drawn by the list itself (<ol start>), not as text.
   const visibleSource = body.replace(/^(\s*(?:>\s*)*)\d{1,9}[.)](?=\s)/gm, '$1').replace(/^ {0,3}\[[^\]\n]+\]:\s*\S+.*$/gm, '').replace(/(!?\[[^\]\n]*\])\((?:[^()\s]|\([^()\s]*\))+(?:\s+"[^"]*")?\)/g, '$1')
-  return fidelityTokens(visibleSource).filter((t) => !printed.has(t))
+  const expected = fidelityTokens(visibleSource)
+  let cursor = 0
+  const missing: string[] = []
+  for (const token of expected) {
+    while (cursor < printed.length && printed[cursor] !== token) cursor++
+    if (cursor === printed.length) missing.push(token)
+    else cursor++
+  }
+  return missing
 }
 
 // ─── Surfaces: the same markup, three stylesheets ─────────────────────────────
