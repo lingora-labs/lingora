@@ -236,14 +236,14 @@ export interface PdfArtifact {
   url?: string;
   dataUrl?: string;
   description?: string;
-  // P19-D — DUAL DELIVERY. Same semantic document plan (DocumentContent),
-  // rendered a second time by renderArtifactHtml.ts. Not a separate
-  // artifact and not reconstructed from the PDF bytes — both surfaces read
-  // the same composeArtifactDocument.ts output. Optional and additive: a
-  // pdf artifact with no webUrl (e.g. the plain-text fallback path, which
-  // has no structured DocumentContent to render as HTML) still works
-  // exactly as before.
+  // 7.5 — the HTML surface of the SAME canonical document page (lib/content/document-page);
+  // present when the Tutor asked for pdf_html or the student downloaded a message.
   webUrl?: string;
+  composerStatus?: string;
+  renderValidated?: boolean;
+  pdfByteLength?: number;
+  pdfSha256?: string;
+  pageCount?: number;
 }
 
 export interface PdfAssignment {
@@ -565,6 +565,8 @@ export interface ChatRequest {
   uiAction?: 'export_chat_pdf' | 'download_pdf' | 'hear_audio' | 'create_visual_review' | 'retry_delivery';
   // Material currently visible to the student, supplied by an explicit UI click.
   materialText?: string;
+  // 7.5: that same message with its native artifacts, so "download" prints exactly what is on screen.
+  materialTurn?: unknown;
   // 7.4.1: the typed declarations of the failed turn; a retry re-materialises them, it never re-asks the Tutor.
   retrySignals?: unknown[];
   state: SessionState;

@@ -103,6 +103,8 @@ import {
   COMPLETE_TUTOR_TURN_TOOL,
   DELIVER_FROM_TEXT_TOOL,
   parseClosedTutorTurn,
+  diagnoseClosedTutorTurn,
+  dedupeSignals,
   parseTextDelivery,
   type ArtifactSignal,
   type TextDelivery,
@@ -174,7 +176,8 @@ type NormalizedMentorCall = {
   opening: boolean
 }
 
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; deliveryFailure?: string; rejectedSignals?: number }
+export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; deliveryFailure?: string; deliveryFailures?: string[]; rejectedSignals?: number; rejectedReasons?: string[]; usage?: ProviderUsage; servedModel?: string }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
@@ -332,9 +335,6 @@ export function buildMentorPrompt(params: {
   return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
 }
 
-function normalizeLegacyCall(message: string, state: LegacyMentorState = {}, systemDirective?: string): NormalizedMentorCall {
-  return { message, state, systemDirective, plan: undefined, action: undefined, priorContext: undefined, history: [], opening: !String(message ?? '').trim() }
-}
 function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall {
   const rawMessage = params.request?.message?.trim()
   // A blank opening turn is a real UI session-start event, not an audio file.
@@ -385,32 +385,6 @@ export function buildModelParams(model: string, tokens: number, temperature?: nu
   return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) }
 }
 
-export async function getMentorResponse(message: string, state?: LegacyMentorState, systemDirective?: string): Promise<string>
-export async function getMentorResponse(params: MentorRuntimeParams): Promise<string>
-export async function getMentorResponse(arg1: string | MentorRuntimeParams, arg2?: LegacyMentorState, arg3?: string): Promise<string> {
-  const normalized: NormalizedMentorCall = typeof arg1 === 'string' ? normalizeLegacyCall(arg1, arg2 ?? {}, arg3) : normalizeRuntimeCall(arg1)
-  const built = buildMentorPrompt({
-    message: normalized.message, state: normalized.state, systemDirective: normalized.systemDirective,
-    plan: normalized.plan, action: normalized.action, priorContext: normalized.priorContext, history: normalized.history, opening: normalized.opening,
-  })
-  const fit = fitHistory(normalized.history, built, [])
-  const system = built.system + fit.note
-  const { user, languageNote } = built
-  try {
-    const RUNTIME_MODEL = process.env.OPENAI_MAIN_MODEL || 'gpt-4o-mini'
-    const pack = resolveTurnContextPack(normalized.message, normalized.state, normalized.plan)
-    const completion = await openai.chat.completions.create({
-      ...buildModelParams(RUNTIME_MODEL, resolveOutputBudget(normalized.plan, pack), 0.7, 0.88),
-      messages: [{ role: 'system', content: system }, ...fit.history, { role: 'user', content: user }, { role: 'system', content: languageNote }],
-    })
-    return (completion.choices?.[0]?.message?.content ?? '').trim()
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    console.error('[MENTOR] Error:', msg)
-    return FALLBACKS[resolveInterfaceLanguage(normalized.state)] ?? FALLBACKS.en
-  }
-}
-
 /** 7.3: one Tutor, typed tools. A tool call by the Tutor is the authorization;
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
@@ -433,25 +407,29 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(model,budget,0.7,0.88),
-     stream:true,tools,tool_choice:wantsVisualReview?'none':'auto',
+     stream:true,stream_options:{include_usage:true},tools,tool_choice:wantsVisualReview?'none':'auto',
      messages:baseMessages,
    })
  }catch(e){
    const p=e&&typeof e==='object'?e as {status?:number;name?:string;code?:string|null;type?:string|null}:{}
    console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,code:p.code??null,type:p.type??null,class:p.name??'UnknownError'}))
  }
+ const box:{w?:MentorStream}={}
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
    let spoken=''
    let served=''
-   const fail=(reason:string)=>{wrapped.deliveryFailure=reason;console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
+   // 7.5: every failure is collected and shown to the student by the stream engine, not only logged.
+   const fail=(reason:string)=>{const w=box.w!;w.deliveryFailure??=reason;(w.deliveryFailures??=[]).push(reason);console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
+   const count=(u:any)=>{if(!u)return;const w=box.w!;const x=w.usage??={prompt:0,completion:0,cached:0,calls:0};x.prompt+=u.prompt_tokens??0;x.completion+=u.completion_tokens??0;x.cached+=u.prompt_tokens_details?.cached_tokens??0;x.calls+=1}
    const publishLanguage=(l:string)=>{wrapped.explanatoryLanguage=l}
    const publishRejected=(n:number)=>{wrapped.rejectedSignals=(wrapped.rejectedSignals??0)+n}
    const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
    if(!response){fail('provider_unavailable');yield fallback;return}
    try{
      for await(const chunk of response){
-       if(chunk.model)served=chunk.model
+       if(chunk.model){served=chunk.model;box.w!.servedModel=served}
+       if(chunk.usage)count(chunk.usage)
        const d=chunk.choices?.[0]?.delta
        if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
        for(const t of d?.tool_calls??[]){
@@ -465,7 +443,6 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
    if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,model,served}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
-   let closureSeen=false
    let declared:string|undefined
    let memoryCalled=false
    let memoryCount=0
@@ -474,27 +451,27 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      try{raw=JSON.parse(call.args||'{}')}catch{fail('invalid_tool_json');continue}
      if(call.name==='deliver_from_text'){
        const dl=parseTextDelivery(raw)
-       if(dl&&deliveries.length<2)deliveries.push(dl);else fail('invalid_delivery_call')
+       if(!dl)fail('invalid_delivery_call')
+       else if(!deliveries.some(x=>x.kind===dl.kind))deliveries.push(dl)
      }else if(call.name==='complete_tutor_turn'){
-       if(closureSeen){fail('multiple_closures');continue}
-       closureSeen=true
-       closed=parseClosedTutorTurn(raw)
+       // Several closures in one turn are merged (7.4 kept only the first and dropped the rest).
+       const prior=closed as {reply:string;artifacts:ArtifactSignal[]}|null
+       closed=parseClosedTutorTurn(raw,spoken)
        if(!closed&&raw&&typeof raw==='object'){
          const item=raw as Record<string,unknown>
-         const reply=typeof item.reply==='string'?item.reply:''
+         const reply=typeof item.reply==='string'&&item.reply.trim()?item.reply:spoken
          const pieces=Array.isArray(item.artifacts)?item.artifacts:[]
-         if(reply.trim()){
-           // 7.4.1: an invalid artifact declaration can never destroy the Tutor's own reply.
-           // Valid pieces are delivered; invalid ones are dropped and reported, never retried
-           // through a second model call.
-           const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply,artifacts:[part]})?.artifacts??[])
-           closed={reply,artifacts:valid}
-           const dropped=Math.max(0,pieces.length-valid.length)
-           if(dropped){publishRejected(dropped);fail('artifact_signal_rejected')}
-           else if(!Array.isArray(item.artifacts))fail('closure_artifacts_missing')
-         }
+         // 7.4.1: an invalid artifact declaration can never destroy the Tutor's own reply.
+         // Valid pieces are delivered; invalid ones are reported by name, never retried
+         // through a second model call.
+         const valid=pieces.flatMap(part=>parseClosedTutorTurn({reply:reply||' ',artifacts:[part]})?.artifacts??[])
+         const reasons=pieces.map(part=>diagnoseClosedTutorTurn({reply:'x',artifacts:[part]})).filter((r):r is string=>Boolean(r))
+         if(reply.trim()||valid.length)closed={reply,artifacts:valid}
+         if(reasons.length){publishRejected(reasons.length);box.w!.rejectedReasons=[...(box.w!.rejectedReasons??[]),...reasons];fail('artifact_signal_rejected')}
+         else if(!Array.isArray(item.artifacts))fail('closure_artifacts_missing')
        }
        if(!closed)fail('invalid_tool_contract')
+       if(prior)closed=closed?{reply:prior.reply||closed.reply,artifacts:dedupeSignals([...prior.artifacts,...closed.artifacts])}:prior
      }else if(call.name==='set_explanatory_language'){
        const lang=parseExplanatoryLanguage(raw)
        if(lang){declared=lang;publishLanguage(lang)}else fail('invalid_language_code')
@@ -515,11 +492,12 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      try{
        const more:AsyncIterable<any>=await openai.chat.completions.create({
          ...buildModelParams(model,budget,0.7,0.88),
-         stream:true,tools,tool_choice:'none',
+         stream:true,stream_options:{include_usage:true},tools,tool_choice:'none',
          messages:[...baseMessages,asst,...results],
        })
        if(spoken.trim())yield '\n\n'
        for await(const chunk of more){
+         if(chunk.usage)count(chunk.usage)
          const d=chunk.choices?.[0]?.delta
          if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
        }
@@ -528,12 +506,14 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      return
    }
    if(closed){
+     // The streamed text is the reply; `reply` only matters when the Tutor wrote nothing else.
+     // (7.4 dropped every artifact when the two differed: 'tool_reply_mismatch'.)
      const reply=(closed as {reply:string}).reply
-     if(!deliveries.length&&spoken.trim()&&spoken.trim()!==reply.trim()){fail('tool_reply_mismatch');return}
-     if(!spoken.trim()){spoken=reply;yield reply}
+     if(!spoken.trim()&&reply.trim()){spoken=reply;yield reply}
      signals.push(...(closed as {artifacts:ArtifactSignal[]}).artifacts)
    }else if(!spoken.trim()){fail('empty_response');yield fallback}
  })() as MentorStream
+ box.w=wrapped
  wrapped.artifactSignals=signals
  wrapped.textDeliveries=deliveries
  return wrapped

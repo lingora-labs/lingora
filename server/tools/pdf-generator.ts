@@ -1,18 +1,15 @@
 // =============================================================================
 // server/tools/pdf-generator.ts
-// LINGORA SEEK 3.9-c — PDF Generator Router (Integration Fix)
-// P9c-diag (10 sep 2026): self-validation round-trip. Immediately after
-// generation, attempt to re-parse the produced bytes with pdf-lib's own
-// PDFDocument.load(). Structural check only — does not certify visual render.
-// P9c chain-of-custody (10 sep 2026): SHA-256 of the exact bytes produced,
-// computed server-side before any base64/transport handling. Lets DAE verify
-// byte-for-byte integrity of whatever copy later reaches inspection, instead
-// of trusting the transport path. Purely additive — no rendering logic changed.
+// LINGORA 7.5 — the one PDF path: canonical document page (lib/content) → Chromium.
+// Every PDF LINGORA delivers (Tutor delivery, "download this material", the
+// conversation export) is the 'print' surface of renderDocumentPage(). No LLM
+// composer, no raw-transcript template, no second Markdown converter.
+// Self-validation: the produced bytes are re-parsed with pdf-lib, and their
+// SHA-256 is recorded before any transport, as before.
 // =============================================================================
 import { createHash } from 'crypto';
-import type { LessonContent } from './pdf/generateLessonPdf';
-import type { CourseContent }  from './pdf/generateCoursePdf';
 import type { ExportTurn } from './pdf/conversationExport';
+import type { DocumentPage } from '../../lib/content/document-page';
 
 let uploadToS3: ((buf: Buffer, key: string, mime: string) => Promise<string | null>) | null = null;
 try {
@@ -24,11 +21,13 @@ try {
 
 export interface GeneratePDFParams {
   title: string;
-  content: string;
   filename?: string;
-  lessonContent?: LessonContent;
-  courseContent?: CourseContent;
+  /** A canonical document (sections of Tutor text + artifacts). */
+  document?: DocumentPage;
+  /** The student's conversation, one section per turn. */
   conversationTurns?: ExportTurn[];
+  /** Already-rendered print page from renderDocumentPage(…, 'print'). */
+  html?: string;
 }
 
 export interface GeneratePDFResult {
@@ -41,15 +40,14 @@ export interface GeneratePDFResult {
   renderValidationError?: string;
   pdfByteLength?: number;
   pdfSha256?: string;
+  pageCount?: number;
 }
 
-async function validateRender(pdfBytes: Uint8Array): Promise<{ ok: boolean; error?: string }> {
+async function validateRender(pdfBytes: Uint8Array): Promise<{ ok: boolean; pages?: number; error?: string }> {
   try {
-    const { PDFDocument: PDFDocumentCheck } = await import('pdf-lib');
-    const reloaded = await PDFDocumentCheck.load(pdfBytes);
-    // Touch page count to force parsing of the page tree, not just the header.
-    void reloaded.getPageCount();
-    return { ok: true };
+    const { PDFDocument } = await import('pdf-lib');
+    const reloaded = await PDFDocument.load(pdfBytes);
+    return { ok: true, pages: reloaded.getPageCount() };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -57,71 +55,40 @@ async function validateRender(pdfBytes: Uint8Array): Promise<{ ok: boolean; erro
 
 export async function generatePDF(params: GeneratePDFParams): Promise<GeneratePDFResult> {
   try {
-    let pdfBytes: Uint8Array;
-
-    // One document pipeline for all languages, all product artifacts,
-    // lessons and verbatim conversation exports. Only HTML generation varies
-    // by document TYPE; PDF rendering never branches by writing system.
-    const { renderDocumentPdf, transcriptPrintHtml } = await import('./pdf/renderDocumentPdf');
+    const { renderDocumentPage } = await import('../../lib/content/document-page');
     let html: string;
-    if (params.lessonContent) {
-      const { renderLessonHtml } = await import('./pdf/generateLessonPdf');
-      html = renderLessonHtml(params.lessonContent);
-    } else if (params.courseContent) {
-      const { renderArtifactHtml } = await import('./web/renderArtifactHtml');
-      html = renderArtifactHtml(params.courseContent);
-    } else if (params.conversationTurns) {
+    if (params.html) html = params.html;
+    else if (params.document) html = renderDocumentPage(params.document, 'print');
+    else if (params.conversationTurns) {
       const { renderConversationExportHtml } = await import('./pdf/conversationExport');
       html = renderConversationExportHtml(params.title, params.conversationTurns);
     } else {
-      html = transcriptPrintHtml(params.title, params.content);
+      return { success: false, error: 'generation_failed', message: 'export_missing_artifact_content:document' };
     }
-    pdfBytes = await renderDocumentPdf(html, {
-      layout: params.lessonContent ? 'lesson' : 'document',
-    });
+    const { renderDocumentPdf } = await import('./pdf/renderDocumentPdf');
+    const pdfBytes = await renderDocumentPdf(html);
 
     const validation = await validateRender(pdfBytes);
     if (!validation.ok) {
       return { success: false, error: 'render_validation_failed', message: validation.error ?? 'PDF structural validation failed', renderValidated: false, renderValidationError: validation.error };
     }
-    const buffer  = Buffer.from(pdfBytes);
-    const sha256  = createHash('sha256').update(buffer).digest('hex');
-    const key     = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;
+    const buffer = Buffer.from(pdfBytes);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    const key = `pdfs/${params.filename ?? `lingora-${Date.now()}`}.pdf`;
+    const base = { renderValidated: true, pdfByteLength: pdfBytes.length, pdfSha256: sha256, pageCount: validation.pages };
 
     if (uploadToS3) {
       try {
         const s3Url = await uploadToS3(buffer, key, 'application/pdf');
-        if (s3Url) {
-          return {
-            success: true,
-            url: s3Url,
-            method: 's3',
-            renderValidated: validation.ok,
-            renderValidationError: validation.error,
-            pdfByteLength: pdfBytes.length,
-            pdfSha256: sha256,
-          };
-        }
+        if (s3Url) return { success: true, url: s3Url, method: 's3', ...base };
       } catch (s3Err) {
         console.warn('[pdf-generator] S3 upload failed, using data URL fallback:', s3Err);
       }
     }
-
-    const dataUrl = 'data:application/pdf;base64,' + buffer.toString('base64');
-    return {
-      success: true,
-      url: dataUrl,
-      method: 'dataurl',
-      renderValidated: validation.ok,
-      renderValidationError: validation.error,
-      pdfByteLength: pdfBytes.length,
-      pdfSha256: sha256,
-    };
-
+    return { success: true, url: 'data:application/pdf;base64,' + buffer.toString('base64'), method: 'dataurl', ...base };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[pdf-generator] generation failed:', msg);
     return { success: false, error: 'generation_failed', message: msg };
   }
 }
-

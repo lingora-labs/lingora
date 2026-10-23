@@ -21,12 +21,48 @@ import type { ArtifactFailure } from './artifact-side-effect'
 interface SSEDelta { delta: string }
 interface SSEDone {
   done: true
+  turnState?: 'complete' | 'complete_with_failures' | 'failed'
+  clientDeliveries?: string[]
   state: SessionState
   artifact?: ArtifactPayload
   artifacts?: ArtifactPayload[]
   artifactFailures?: ArtifactFailure[]
   artifactSignals?: ArtifactSignal[]
   suggestedActions?: SuggestedAction[]
+}
+
+const TUTOR_FAILURES: Record<string, string | null> = {
+  provider_unavailable: 'El Tutor no respondió: el proveedor del modelo no estaba disponible. Puedes reintentar.',
+  provider_stream_interrupted: 'La respuesta del Tutor se interrumpió durante la transmisión. Puedes reintentar.',
+  continuation_interrupted: 'El Tutor empezó a escribir el material pero la transmisión se cortó. Puedes reintentar.',
+  empty_response: 'El Tutor no devolvió texto en este turno. Puedes reintentar.',
+  invalid_tool_json: 'Una instrucción técnica del Tutor llegó incompleta y no se pudo ejecutar.',
+  invalid_delivery_call: 'El Tutor pidió una entrega con datos incompletos (tipo o título) y no se generó.',
+  invalid_tool_contract: 'El Tutor declaró materiales con un formato que el sistema no reconoce; no se generaron.',
+  closure_artifacts_missing: 'El Tutor cerró el turno sin la lista de materiales; no se generó ninguno.',
+  unknown_tool: 'El Tutor usó una herramienta que no existe; se ignoró.',
+  invalid_language_code: 'El Tutor intentó fijar un idioma de explicación no válido; no se guardó.',
+  invalid_memory_ops: 'El Tutor intentó guardar una nota de memoria con formato no válido; no se guardó.',
+  // Reported per declaration through rejectedReasons.
+  artifact_signal_rejected: null,
+}
+/** Student-facing sentence for a Tutor-turn technical failure, or null when reported elsewhere. */
+export function explainTutorFailure(code: string): string | null {
+  return code in TUTOR_FAILURES ? TUTOR_FAILURES[code] : `Fallo técnico del turno (${code}).`
+}
+const DECLARATION: Array<[RegExp, string]> = [
+  [/^invalid_type/, 'el tipo de material no existe'],
+  [/^invalid_trigger/, 'faltaba el motivo de la solicitud'],
+  [/^bad_subject/, 'faltaba el título del material'],
+  [/^pdf_contract/, 'un PDF solo se genera cuando el alumno lo pide, con formato pdf o pdf_html'],
+  [/^image_contract/, 'una imagen solo se genera cuando el alumno la pide, con formato image'],
+  [/^audio_contract/, 'el audio debe declararse con formato audio'],
+  [/^native_format/, 'un componente interactivo debe declararse con formato native'],
+  [/^native_missing_content/, 'el componente interactivo llegó sin contenido'],
+]
+export function explainRejectedDeclaration(code: string): string {
+  const hit = DECLARATION.find(([re]) => re.test(code))
+  return `Un material que el Tutor declaró no se generó: ${hit ? hit[1] : code}`
 }
 
 export function executePlanStream(
@@ -80,34 +116,20 @@ export function executePlanStream(
           artifactFailures = fulfilled.failures
         }
 
-        // Tactile quiz declared by the Tutor: the ONE Tutor authored its real
-        // questions and options as text; parse structure only, NEVER keys.
-        if (deliveries.some(d => d.kind === 'quiz')) {
-          const { tutorQuizFromText } = await import('./native-artifact')
-          const quiz = tutorQuizFromText(fullText)
-          if (quiz) artifacts.push(quiz)
-          else artifactFailures.push({ subject: 'Quiz táctil: faltan preguntas u opciones válidas' })
+        // Tactile quiz declared by the Tutor: its own numbered questions and options, read by the
+        // canonical reader. Never a key; on failure the student sees why.
+        const quizDelivery = deliveries.find(d => d.kind === 'quiz')
+        if (quizDelivery) {
+          const { quizFromTutorText } = await import('./native-artifact')
+          const quiz = quizFromTutorText(fullText, quizDelivery.title)
+          if ('payload' in quiz) artifacts.push(quiz.payload)
+          else artifactFailures.push({ subject: `Quiz táctil «${quizDelivery.title}»: ${quiz.reason}` })
         }
 
-        // The student's own conversation as PDF, declared by the Tutor and
-        // materialized from the real history (never re-authored by a model).
-        const convo = deliveries.find(d => d.kind === 'conversation_pdf')
-        if (convo) {
-          const turns = (request.conversationHistory ?? []).filter(t => typeof t.content === 'string' && t.content.trim())
-          if (!turns.length) artifactFailures.push({ subject: 'Exportación de conversación: no hay historial' })
-          else {
-            const transcript = turns.map(t => `[${t.role === 'user' ? 'Student' : 'Tutor'}]: ${t.content.trim()}`).join('\n\n')
-            const { generatePDF } = await import('../tools/pdf-generator')
-            const date = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' })
-            const result = await generatePDF({
-              title: `LINGORA — Historial íntegro de conversación — ${date}`,
-              content: transcript,
-              filename: `lingora-full-transcript-${Date.now()}`,
-            })
-            if (result.success && result.url) artifacts.push({ type: 'pdf_chat', url: result.url, messageCount: turns.length } as ArtifactPayload)
-            else artifactFailures.push({ subject: 'Exportación de conversación' })
-          }
-        }
+        // The student's own conversation as PDF: the client holds the whole conversation (with its
+        // artifacts), so it runs the same full export as the export button. 7.4 built a flat,
+        // token-windowed transcript here and titled it "Historial íntegro".
+        const clientDeliveries: string[] = deliveries.some(d => d.kind === 'conversation_pdf') ? ['conversation_pdf'] : []
 
         // Article 27 is explicit UI authorization. The SAME tutor's real
         // free-text lesson becomes an expandable native review via the existing
@@ -118,9 +140,13 @@ export function executePlanStream(
           if(review)artifacts.push(review)
           else artifactFailures.push({subject:'Esquema de refuerzo: falta contenido desarrollado'})
         }
-        if (stream.deliveryFailure) console.warn('[tutor-delivery-failure]', stream.deliveryFailure)
-        // 7.4.1: a declaration the Tutor made but the contract rejected is reported, never silently lost.
-        if (stream.rejectedSignals) artifactFailures.push({ subject: 'Un material que el Tutor pidió no tenía una estructura válida y no se generó' })
+        // 7.5: every technical failure of the turn reaches the student, by name (7.4 only logged most).
+        for (const reason of stream.rejectedReasons ?? []) artifactFailures.push({ subject: explainRejectedDeclaration(reason) })
+        for (const reason of new Set(stream.deliveryFailures ?? [])) {
+          const sentence = explainTutorFailure(reason)
+          if (sentence) artifactFailures.push({ subject: sentence })
+        }
+        if (stream.usage) console.info('[tutor-usage]', JSON.stringify({ model: stream.servedModel ?? null, ...stream.usage }))
 
         // P16 — VOICE CONVERSATION: if this turn started as spoken input,
         // the SAME text response Tutor Core just produced is also spoken by
@@ -135,20 +161,18 @@ export function executePlanStream(
         if (request.audioDataUrl && fullText.trim().length > 0
             && !artifacts.some((a) => (a as { type?: string }).type === 'audio')) {
           try {
-            const { generateSpeech } = await import('../tools/audio-toolkit')
-            const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' }
-            const mentorKey = String((state as unknown as { mentorProfile?: string }).mentorProfile ?? 'alex').toLowerCase()
-            const voice = MENTOR_VOICES[mentorKey] ?? 'fable'
-            const tts = await generateSpeech(fullText, { voice })
+            const { speakTutorText } = await import('../tools/audio-toolkit')
+            const { voiceFor } = await import('./artifact-side-effect')
+            const tts = await speakTutorText(fullText, { voice: voiceFor((state as unknown as { mentorProfile?: string }).mentorProfile ?? 'alex') })
             if (tts.success && tts.url) {
               artifacts.push({ type: 'audio', dataUrl: tts.url } as ArtifactPayload)
             } else {
               console.error('[P16] voice-turn TTS failed', tts.message)
-              artifactFailures.push({ subject: 'Respuesta hablada' })
+              artifactFailures.push({ subject: `Respuesta hablada: ${tts.message ?? 'no se generó el audio'}` })
             }
           } catch (e) {
             console.error('[P16] voice-turn TTS exception', e instanceof Error ? e.message : e)
-            artifactFailures.push({ subject: 'Respuesta hablada' })
+            artifactFailures.push({ subject: `Respuesta hablada: ${e instanceof Error ? e.message : 'no se generó el audio'}` })
           }
         }
 
@@ -232,6 +256,8 @@ export function executePlanStream(
           ...(artifacts.length ? { artifacts } : {}),
           ...(artifactFailures.length ? { artifactFailures } : {}),
           ...(signals.length ? { artifactSignals: signals } : {}),
+          ...(clientDeliveries.length ? { clientDeliveries } : {}),
+          turnState: artifactFailures.length ? 'complete_with_failures' : 'complete',
           // P18 (continuation) — ROOT GAP: this used to be
           // `artifact ? [export_chat_pdf] : undefined` — no artifact meant
           // NO suggested actions at all from the backend, and the frontend's
@@ -268,8 +294,8 @@ export function executePlanStream(
         // comment there for why toWireState() must run on top of
         // mergeStatePatch() rather than being skipped on this branch.
         emit({ delta: '\n\nNo se pudo completar la entrega solicitada. Puedes reintentar sin perder la conversación.' })
-        emit({ done: true, state: toWireState(fallbackState, fallbackPatch),
-          artifactFailures: [{ subject: 'Entrega no completada en este turno' }],
+        emit({ done: true, state: toWireState(fallbackState, fallbackPatch), turnState: 'failed',
+          artifactFailures: [{ subject: `Entrega no completada en este turno: ${err instanceof Error ? err.message.slice(0, 160) : 'error interno'}` }],
           suggestedActions: [{type:'retry_delivery',action:'retry_delivery',label:'Reintentar entrega',payload:{message:request.message}} as SuggestedAction] })
         controller.close()
       }

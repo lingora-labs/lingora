@@ -6,7 +6,8 @@ import {
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
 import { buildExportTurns } from './export-turns'
-import { VISUAL_LIMITS } from '@/lib/native-visual-schema'
+import { QUIZ_RESOURCE_LIMITS } from '@/lib/content/quiz'
+import { EXPORT_PAYLOAD_LIMIT_BYTES } from './export-turns'
 import { selectHistoryWindow } from '@/lib/tutor-memory'
 import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
@@ -49,6 +50,7 @@ export function useBetaPage() {
   const phaseRef = useRef<Phase>(phase)
   const activeModeRef = useRef<ActiveMode>(activeMode)
   const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
+  const pendingExportRef = useRef(false)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
   const mentorRef = useRef<MK>(mentor)
@@ -236,6 +238,7 @@ export function useBetaPage() {
               }
               if (parsed.done) {
                 sawCompleted = true
+                if (Array.isArray(parsed.clientDeliveries) && parsed.clientDeliveries.includes('conversation_pdf')) pendingExportRef.current = true
                 const previous = sessionRef.current
                 const nextSession: SS = parsed.state
                   ? { ...previous, ...parsed.state,
@@ -247,6 +250,7 @@ export function useBetaPage() {
                 const finalActions = safeActions.length > 0 ? safeActions : defaultActions
                 const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
                   ...m, text: accumulated, complete:true,
+                  turnState: typeof parsed.turnState === 'string' ? parsed.turnState : undefined,
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
                   artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
@@ -308,6 +312,7 @@ export function useBetaPage() {
         })
       }
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
+      if (Array.isArray(data.clientDeliveries) && data.clientDeliveries.includes('conversation_pdf')) pendingExportRef.current = true
       const text: string = data.reply ?? data.message ?? data.content ?? ''
       if (!text && !data.artifact) { addMsg({ sender:'ln', text:'No se recibió respuesta. Intenta de nuevo.' }); return }
       addMsg({ sender: mentorRef.current, text: text || 'Material listo:', artifact: data.artifact ?? null,
@@ -327,6 +332,23 @@ export function useBetaPage() {
       addMsg({ sender: mentorRef.current ?? 'ln', text: msg })
     } finally { setLoading(false) }
   }, [addMsg])
+  // ONE conversation export for the menu, the chat chip and a Tutor's conversation_pdf delivery:
+  // the whole conversation held here, with its artifacts, printed by the canonical document page.
+  const runConversationExport = useCallback((message: string) => {
+    const built = buildExportTurns(msgsRef.current)
+    if (!built.ok) { setPersistWarning(built.message); return }
+    const bytes = new Blob([JSON.stringify(built.turns)]).size
+    if (bytes > EXPORT_PAYLOAD_LIMIT_BYTES) {
+      setPersistWarning(`La conversación con sus materiales ocupa ${(bytes / 1e6).toFixed(1)} MB y supera los ${(EXPORT_PAYLOAD_LIMIT_BYTES / 1e6).toFixed(0)} MB que se pueden enviar para imprimir. No se exporta un historial incompleto.`)
+      return
+    }
+    void callAPI({ message, exportTurns: built.turns, uiAction: 'export_chat_pdf' })
+  }, [callAPI])
+  useEffect(() => {
+    if (loading || !pendingExportRef.current) return
+    pendingExportRef.current = false
+    runConversationExport('Exporta esta conversación a PDF')
+  }, [loading, runConversationExport])
   useEffect(() => {
     const handler = (e: Event) => {
       const a = (e as CustomEvent).detail as { action: string; type?: string; label: string }
@@ -371,26 +393,25 @@ export function useBetaPage() {
         addMsg({ sender: 'user', text: msg })
       }
       if (actionKey === 'export_chat_pdf') {
-        const built = buildExportTurns(msgs)
-        if (!built.ok) { setPersistWarning(built.message); return }
-        const turns = built.turns
-        const transcript = turns.filter(t => t.text.trim()).map(t => `[${t.sender}]: ${t.text.trim()}`).join('\n\n')
-        callAPI({ message: msg, exportTranscript: transcript, exportTurns:turns, uiAction: 'export_chat_pdf' })
+        runConversationExport(msg)
       } else if (actionKey === 'create_visual_review') {
         // Exact touch intent, not a PDF keyword and not a cognitive router.
         callAPI({ message: msg, uiAction: 'create_visual_review' })
       } else if (actionKey === 'download_pdf' || actionKey === 'hear_audio') {
         // Instrumental touch actions operate on the tutor content already on
         // screen. They do not inject an artificial student utterance.
+        // 7.5: the message itself, with its artifacts, so the PDF prints exactly what is on screen.
         const material = [...msgs].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln' && m.text?.trim())
-        callAPI({ message: msg, uiAction: actionKey, materialText: material?.text ?? '' })
+        const turn = material ? buildExportTurns([material]) : null
+        callAPI({ message: msg, uiAction: actionKey, materialText: material?.text ?? '',
+          ...(actionKey === 'download_pdf' && turn?.ok ? { materialTurn: turn.turns[0] } : {}) })
       } else {
         callAPI({ message: msg })
       }
     }
     window.addEventListener('lingora-suggested-action', handler)
     return () => window.removeEventListener('lingora-suggested-action', handler)
-  }, [loading, addMsg, callAPI, msgs])
+  }, [loading, addMsg, callAPI, msgs, runConversationExport])
   useEffect(() => {
     const handler = (e: Event) => {
       const step = (e as CustomEvent).detail?.step as string
@@ -449,12 +470,12 @@ export function useBetaPage() {
       // the quiz saying "Enviado a tu Tutor" while nothing had been sent.
       if (loading) return
       const value = (event as CustomEvent).detail?.responses
-      if (!Array.isArray(value) || value.length < VISUAL_LIMITS.quiz.questionsMin || value.length > VISUAL_LIMITS.quiz.questionsMax) return
+      if (!Array.isArray(value) || value.length < 1 || value.length > QUIZ_RESOURCE_LIMITS.questions) return
       const responses = value.map((r: unknown) => {
         if (!r || typeof r !== 'object') return null
         const item = r as {question?:unknown;options?:unknown;chosen?:unknown;verified?:unknown}
-        if (typeof item.question !== 'string' || item.question.length > 1800 ||
-            !Array.isArray(item.options) || item.options.length < 2 || item.options.length > 4 ||
+        if (typeof item.question !== 'string' || item.question.length > QUIZ_RESOURCE_LIMITS.chars ||
+            !Array.isArray(item.options) || item.options.length < 2 || item.options.length > QUIZ_RESOURCE_LIMITS.options ||
             item.options.some(o=>typeof o !== 'string') ||
             typeof item.chosen !== 'string' || !item.options.includes(item.chosen)) return null
         return {question:item.question,chosen:item.chosen,options:item.options as string[],verified:item.verified==='correct'||item.verified==='incorrect'?item.verified:undefined}

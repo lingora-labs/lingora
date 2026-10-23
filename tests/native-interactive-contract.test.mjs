@@ -23,7 +23,8 @@ function load(relative) {
 }
 
 const { parseClosedTutorTurn, COMPLETE_TUTOR_TURN_TOOL } = load('lib/artifact-signal.ts')
-const { materializeNativeArtifact, groundedMilestoneReview, tutorQuizFromText } = load('server/core/native-artifact.ts')
+const { materializeNativeArtifact, groundedMilestoneReview, quizFromTutorText } = load('server/core/native-artifact.ts')
+const tutorQuizFromText=(t)=>{const r=quizFromTutorText(t,'Quiz');return 'payload' in r?r.payload:null}
 const allowed = COMPLETE_TUTOR_TURN_TOOL.function.parameters.properties.artifacts.items.properties.type.enum
 for (const type of ['emit_pdf','emit_audio','table_matrix','schema_pro','quiz'])
   assert.ok(allowed.includes(type),'single closure must expose '+type)
@@ -60,7 +61,8 @@ for (const signal of [matrix,schema,quiz]) {
 }
 assert.equal(materializeNativeArtifact({...matrix,content:{...matrix.content,rows:[]}}),null)
 assert.equal(materializeNativeArtifact({...schema,content:{...schema.content,blocks:[]}}),null)
-assert.equal(materializeNativeArtifact({...quiz,content:{...quiz.content,questions:[{question:'?',options:['A','B'],correct:3,explanation:'No'}]}}),null)
+// 7.5: an impossible key is never scored — the Tutor's questions are delivered for Tutor review, not dropped.
+{const r=materializeNativeArtifact({...quiz,content:{...quiz.content,questions:[{question:'?',options:['A','B'],correct:3,explanation:'No'}]}});assert.equal(r?.content?.gradingMode,'tutor_review');assert.equal(r.content.questions[0].correct,-1)}
 assert.equal(materializeNativeArtifact({...matrix,content:{...matrix.content,title:'<script>alert(1)</script>'}}),null)
 assert.equal(parseClosedTutorTurn({reply:'Hi',artifacts:[{...matrix,format:'pdf'}]}),null)
 assert.equal(parseClosedTutorTurn({reply:'Hi',artifacts:[]})?.artifacts.length,0)

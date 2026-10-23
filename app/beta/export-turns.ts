@@ -6,6 +6,8 @@ import { resolveMsgArtifacts, type Artifact, type Msg } from './beta-model'
  * is a link, not printable content; every other artifact with content is SENT, never filtered out here,
  * so the server either prints it or refuses explicitly. Nothing is dropped silently on the client.
  */
+/** Vercel caps a request body at 4.5 MB; an export above this is refused visibly, not truncated. */
+export const EXPORT_PAYLOAD_LIMIT_BYTES = 4_000_000
 export const LINK_ONLY_ARTIFACT_TYPES: ReadonlyArray<Artifact['type']> = ['pdf', 'course_pdf', 'pdf_chat', 'pdf_assignment', 'audio']
 export type ExportTurnPayload = { sender: string; text: string; complete: boolean; artifacts: Array<{ type: string; content?: Record<string, unknown> }> }
 export function buildExportTurns(msgs: Msg[]): { ok: true; turns: ExportTurnPayload[] } | { ok: false; message: string } {
@@ -13,12 +15,18 @@ export function buildExportTurns(msgs: Msg[]): { ok: true; turns: ExportTurnPayl
   for (const m of msgs) {
     if (m.sender === 'ln') continue
     const sender = m.sender === 'user' ? 'Student' : String(m.sender).toUpperCase()
+    if (m.persistLoss) {
+      return { ok: false, message: `Esta sesión se recuperó reducida: el navegador no conservó un archivo de ${sender}. No se exporta un historial incompleto; descarga los archivos que aún tengas.` }
+    }
     if (m.complete === false) {
       return { ok: false, message: `La respuesta de ${sender} está en curso o quedó interrumpida. No se exporta un historial incompleto.` }
     }
     const artifacts = resolveMsgArtifacts(m)
       .filter(a => !LINK_ONLY_ARTIFACT_TYPES.includes(a.type))
-      .map(a => ({ type: a.type, content: a.content }))
+      // An illustration prints its own image (its content is the address and the prompt).
+      .map(a => a.type === 'illustration'
+        ? { type: a.type, content: { url: (a as { url?: string }).url ?? '', prompt: (a as { prompt?: string }).prompt ?? '' } }
+        : { type: a.type, content: a.content })
     turns.push({ sender, text: m.text || '', complete: true, artifacts })
   }
   const printable = turns.filter(t => t.text.trim().length > 0 || t.artifacts.length > 0)

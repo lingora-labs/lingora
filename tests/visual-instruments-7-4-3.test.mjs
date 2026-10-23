@@ -45,32 +45,35 @@ const lv=layoutLevels(ok.flow); assert.equal(lv.get('s'),0); assert.ok(lv.get('e
 // back edge (rev→d1) is drawn, not lost
 assert.ok(svg.includes('data-edge="rev&gt;d1"')||svg.includes('data-edge="rev>d1"'),'back edge drawn')
 
-// NEGATIVE: each structural defect is refused
+// NEGATIVE: what is not a well-formed graph is refused (7.5: integrity only)
 const bad=(mut,why)=>{const f=JSON.parse(JSON.stringify(flow));mut(f);assert.equal(validateFlowchartContent(f).ok,false,'must reject: '+why)}
-bad(f=>{f.nodes=f.nodes.filter(n=>n.kind!=='end');f.edges=f.edges.filter(e=>e.to!=='e')},'no end')
-bad(f=>{f.nodes[2].kind='start'},'two starts')
-bad(f=>{delete f.edges[1].label},'decision branch unlabelled')
-bad(f=>{f.edges[2].label='Sí'; f.edges[1].label='sí'},'duplicate decision labels')
-bad(f=>{f.edges=f.edges.filter(e=>!(e.from==='d1'&&e.to==='d2'))},'decision with one branch (and d2 unreachable)')
-bad(f=>{f.nodes.push({id:'x',label:'Huérfano',kind:'step'});f.edges.push({from:'x',to:'e'})},'unreachable node')
-bad(f=>{f.edges=f.edges.filter(e=>e.from!=='rev')},'dead end')
 bad(f=>{f.nodes[1].id='s'},'duplicate id')
 bad(f=>{f.edges[0].to='nope'},'edge to unknown node')
-bad(f=>{f.edges.push({from:'ser',to:'estar'})},'step with two outgoing edges')
 bad(f=>{f.nodes[2].label='<b>Uso SER</b>'},'markup in label')
 bad(f=>{f.edges[0].to='s'},'self loop')
-bad(f=>{f.edges.push({from:'e',to:'s'})},'end with outgoing / start with incoming')
-bad(f=>{f.nodes=f.nodes.slice(0,2)},'too few nodes')
+bad(f=>{f.edges.push({...f.edges[0]})},'duplicate edge')
+bad(f=>{f.nodes=f.nodes.slice(0,1);f.edges=[]},'a single node is not a diagram')
+bad(f=>{f.nodes[2].kind='banana'},'unknown node kind')
+// POSITIVE (7.5): the Tutor's diagram is drawn as authored — these were layout opinions disguised as rules in 7.4.3
+const good=(mut,why)=>{const f=JSON.parse(JSON.stringify(flow));mut(f);const r=validateFlowchartContent(f);assert.equal(r.ok,true,'must accept: '+why);const svg2=renderFlowchartSvg(r.flow);assert.equal((svg2.match(/data-node=/g)||[]).length,f.nodes.length,why+': every node drawn');assert.equal((svg2.match(/data-edge=/g)||[]).length,f.edges.length,why+': every edge drawn')}
+good(f=>{f.nodes=f.nodes.filter(n=>n.kind!=='end');f.edges=f.edges.filter(e=>e.to!=='e')},'no end node')
+good(f=>{f.nodes[2].kind='start'},'two entry points')
+good(f=>{delete f.edges[1].label},'unlabelled branch')
+good(f=>{f.edges=f.edges.filter(e=>!(e.from==='d1'&&e.to==='d2'))},'decision with one branch; d2 becomes an entry point')
+good(f=>{f.nodes.push({id:'x',label:'Huérfano',kind:'step'});f.edges.push({from:'x',to:'e'})},'node only reachable as an entry point')
+good(f=>{f.edges.push({from:'ser',to:'estar'})},'step with two outgoing edges')
+good(f=>{f.nodes[1].label='Explicación extensa '.repeat(20)},'long label, wrapped')
 const detailedFlow=JSON.parse(JSON.stringify(flow))
 detailedFlow.nodes[1].label='¿Es esta característica de la persona permanente o transitoria en el tiempo?'
 const detailed=validateFlowchartContent(detailedFlow)
 assert.equal(detailed.ok,true,'detailed Tutor decision remains legible with adaptive layout')
 assert.equal(detailed.flow.nodes[1].label,detailedFlow.nodes[1].label,'no Tutor wording is truncated')
-bad(f=>{f.nodes[1].label='Explicación extensa '.repeat(20)},'label exceeding the bounded visual contract')
-{ // too wide: 5 parallel branches in one level
-  const wide={title:'Ancho',nodes:[{id:'s',label:'Inicio',kind:'start'},{id:'d',label:'Elige',kind:'decision'},...[1,2,3,4,5].map(i=>({id:'a'+i,label:'Opción '+i,kind:'step'})),{id:'e',label:'Fin',kind:'end'}],
-    edges:[{from:'s',to:'d'},...[1,2,3,4,5].map(i=>({from:'d',to:'a'+i,label:'L'+i})),...[1,2,3,4,5].map(i=>({from:'a'+i,to:'e'}))]}
-  assert.equal(validateFlowchartContent(wide).ok,false,'a decision with 5 branches is refused (max 4)')
+{ // wide: 6 labelled outcomes from the start (the real Sol flow6 shape, refused by 7.4.3)
+  const wide={title:'Ancho',nodes:[{id:'s',label:'¿Qué quieres expresar?',kind:'start'},...[1,2,3,4,5,6].map(i=>({id:'a'+i,label:'Opción '+i,kind:'end'}))],
+    edges:[1,2,3,4,5,6].map(i=>({from:'s',to:'a'+i,label:'Una acción terminada en un periodo de tiempo ya cerrado → caso '+i}))}
+  const r=validateFlowchartContent(wide); assert.equal(r.ok,true,'six labelled branches accepted')
+  const ws=renderFlowchartSvg(r.flow)
+  for(const e of wide.edges) for(const w of e.label.split(/\s+/)) assert.ok(ws.includes(w),'long edge label drawn in full: '+w)
 }
 // Arabic / CJK labels keep every character and isolate direction
 {const f=JSON.parse(JSON.stringify(flow));f.title='هل أستخدم ser أم estar؟';f.nodes[0].label='ابدأ هنا';f.nodes[2].label='我用 SER 表示特征';const r=validateFlowchartContent(f);assert.ok(r.ok);const s=renderFlowchartSvg(r.flow);assert.ok(s.includes('هل أستخدم')&&s.includes('ابدأ هنا')&&s.includes('我用'));assert.ok(s.includes('unicode-bidi:plaintext'))}
@@ -95,13 +98,15 @@ assert.ok(isvg.includes('min-width:440px')&&/ width="520" height="\d+"/.test(ren
 // NEGATIVE
 const ib=(mut,src,why)=>{const f=JSON.parse(JSON.stringify(info));mut(f);assert.equal(validateInfographicContent(f,src??{text:turn}).ok,false,'must reject: '+why)}
 ib(f=>{f.stats[0].value='95%'},undefined,'invented headline figure')
-ib(f=>{f.sections=f.sections.slice(0,1)},undefined,'single section')
+ib(f=>{f.sections=[]},undefined,'no sections')
 ib(f=>{f.sections[0].body='<script>x</script> texto'},undefined,'markup')
 ib(f=>{f.sections[0].tone='rainbow'},undefined,'unknown tone')
-ib(f=>{f.stats.push(...f.stats,...f.stats)},undefined,'too many figures')
 ib(f=>{f.sections[1].icon='<img src=x>'},undefined,'icon markup')
 ib(f=>{delete f.title},undefined,'no title')
-ib(f=>{f.stats[0].label='una etiqueta demasiado larga que no cabe en la tarjeta de cifra principal sin cortarse'},undefined,'stat label that would be truncated')
+// 7.5: one section, many figures and long labels are the Tutor's choice; they are drawn in full.
+{const f=JSON.parse(JSON.stringify(info));f.sections=f.sections.slice(0,1);assert.ok(validateInfographicContent(f,{text:turn}).ok,'single section accepted')}
+{const f=JSON.parse(JSON.stringify(info));f.stats.push(...info.stats,...info.stats);const r=validateInfographicContent(f,{text:turn});assert.ok(r.ok,'nine figures accepted');assert.equal((renderInfographicSvg(r.info).match(/data-stat=/g)||[]).length,9,'every figure drawn')}
+{const f=JSON.parse(JSON.stringify(info));f.stats[0].label='una etiqueta demasiado larga que no cabe en una línea de la tarjeta de cifra principal';const r=validateInfographicContent(f,{text:turn});assert.ok(r.ok);const g=renderInfographicSvg(r.info);for(const w of f.stats[0].label.split(' '))assert.ok(g.includes(w),'stat label wrapped, not cut: '+w)}
 assert.ok(validateInfographicContent({...info,stats:[]},{text:''}).ok,'infographic without figures needs no numeric source')
 // same-turn table also traces a figure
 assert.ok(validateInfographicContent({...info,stats:[{value:'420',label:'usuarios en mayo'}]},{text:'',tables:[{rows:[['Mayo','420']]}]}).ok)
@@ -115,7 +120,7 @@ for(const t of ['flowchart','infographic']){assert.ok(NATIVE_TYPES.includes(t),t
 assert.ok(/flowchart/.test(ARTIFACT_CHANNEL_INSTRUCTION)&&/infographic/.test(ARTIFACT_CHANNEL_INSTRUCTION),'Tutor is told the instruments exist')
 const mf=materializeNativeArtifact({type:'flowchart',trigger:'pedagogical_completion',subject:'ser/estar',format:'native',content:flow},{text:''});assert.equal(mf?.type,'flowchart')
 const mi=materializeNativeArtifact({type:'infographic',trigger:'pedagogical_completion',subject:'ser/estar',format:'native',content:info},{text:turn,tables:[]});assert.equal(mi?.type,'infographic')
-const wrongFlow=JSON.parse(JSON.stringify(flow));delete wrongFlow.edges[1].label
+const wrongFlow=JSON.parse(JSON.stringify(flow));wrongFlow.edges[1].to='nope'
 assert.equal(materializeNativeArtifact({type:'flowchart',trigger:'pedagogical_completion',subject:'x y',format:'native',content:wrongFlow}),null,'invalid flow is refused, never drawn')
 assert.equal(materializeNativeArtifact({type:'infographic',trigger:'pedagogical_completion',subject:'x y',format:'native',content:{...info,stats:[{value:'99%',label:'inventado'}]}},{text:turn}),null,'invented figure refused')
 
@@ -129,4 +134,4 @@ assert.ok(/overflowX:\s*'auto'/.test(ui),'scroll instead of clipping')
 for(const n of ['chart','flowchart','infographic']) assert.ok(ui.includes(`kind="${n}"`),'download buttons for '+n)
 // the image model is never the path
 assert.ok(!/emit_image/.test(fs.readFileSync(new URL('../lib/flowchart-contract.ts',import.meta.url),'utf8')))
-console.log('PASS 7.4.3 — RTD visual parity: flowchart (decisions, loops, structural refusals, no overlap, lossless wrap) and infographic (traceable figures, refusals), typed end to end, deterministic, mobile-safe')
+console.log('PASS 7.4.3/7.5 — RTD visual parity: flowchart (decisions, loops, integrity refusals, no caps, no overlap, lossless wrap) and infographic (traceable figures, refusals), typed end to end, deterministic, mobile-safe')

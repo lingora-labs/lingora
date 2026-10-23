@@ -67,6 +67,6 @@ assert.ok(quizComponent.includes('requiresReview || reported.current'),'unverifi
 const artifactSource = fs.readFileSync(fileURLToPath(new URL('../server/core/native-artifact.ts',import.meta.url)), 'utf8')
 // quiz shape safeguard, 7.4 form: the materializer validates every key and degrades to a real tactile Tutor review
 assert.ok(artifactSource.includes('validateQuizAnswerKey'))
-assert.ok(artifactSource.includes("gradingMode:'tutor_review'"))
-assert.ok(artifactSource.includes('cannot be certified by one answer-key'))
+assert.ok(artifactSource.includes("gradingMode: 'tutor_review'"))
+assert.ok(artifactSource.includes('cannot be scored by one key'))
 console.log('PASS — exact selection disclosure, structured feedback queue, and quiz shape safeguard')

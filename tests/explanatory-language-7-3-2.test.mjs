@@ -51,7 +51,7 @@ const mentor=fs.readFileSync(root+'server/mentors/mentor-engine.ts','utf8')
 assert.match(mentor,/tool_choice:wantsVisualReview\?'none':'auto'/)
 assert.ok(!/withRecentScriptLanguage/.test(mentor))
 assert.match(mentor,/role:'system',content:languageNote\}/,'language note must sit adjacent to the user turn in the stream path')
-assert.match(mentor,/role: 'system', content: languageNote/)
+assert.match(mentor,/role:\s*'system',\s*content:\s*languageNote/)
 const stream=fs.readFileSync(root+'server/core/execution-engine-stream.ts','utf8')
 assert.ok(stream.includes('patch.explanatoryLanguage = stream.explanatoryLanguage'))
 console.log('PASS 7.3.2 — explanatory language: Tutor-declared, any code, persisted, no detector')
@@ -90,7 +90,7 @@ console.log('PASS 7.3.3 — streamed Tutor opening + OTROS')
 
 // 7.3.3e: model parameters for the validated tutor contract (functional, runs the real function).
 {
-  const src = mentor.slice(mentor.indexOf('export function buildModelParams'), mentor.indexOf('export async function getMentorResponse'))
+  const src = mentor.slice(mentor.indexOf('export function buildModelParams'), mentor.indexOf('/** 7.3: one Tutor, typed tools.'))
   const js = ts.transpileModule(src.replace('export function', 'function'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText
   const buildModelParams = new Function(js + '\nreturn buildModelParams')()
   for (const m of ['gpt-5.6-sol', 'gpt-5.4', 'gpt-5.4-mini']) {

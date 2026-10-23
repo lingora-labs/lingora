@@ -5,6 +5,7 @@ import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, MODE_UI_CO
 import { Bubble, Typing } from './beta-chat-ui'
 import { doExportTxt, doExportPdfBackend } from './beta-io'
 import { useBetaPage } from './use-beta-page'
+import { CHAT_CSS } from '../../lib/content/markdown'
 
 export default function BetaPageView() {
   const [exportStatus, setExportStatus] = React.useState<string | null>(null)
@@ -33,6 +34,8 @@ export default function BetaPageView() {
         .artifact-in { animation: artifactIn .4s cubic-bezier(.22,1,.36,1) both }
         ::-webkit-scrollbar { width:5px } ::-webkit-scrollbar-thumb { background:var(--border); border-radius:999px }
         textarea:focus, button:focus, input:focus, select:focus { outline:none }
+        ${CHAT_CSS}
+        .ln-user .ln-md strong, .ln-user .ln-md a, .ln-user .ln-md h1, .ln-user .ln-md h2, .ln-user .ln-md h3, .ln-user .ln-md h4 { color:inherit }
       `}</style>
       {phase === 'mode' && (
         <div dir={lang==='ar'?'rtl':'ltr'} style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
