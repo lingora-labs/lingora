@@ -109,6 +109,7 @@ const EXPLAIN: Record<string, string> = {
   export_unsupported_artifact_type: 'contiene un tipo de material que aún no se puede imprimir',
   export_missing_artifact_content: 'un material llegó sin contenido',
   export_content_loss: 'el documento habría perdido texto',
+  export_external_image_not_embedded: 'una ilustración externa no puede imprimirse de forma fiel y segura',
 }
 /** Turns a refusal code into the sentence the student sees. Null for non-document errors. */
 export function explainDocumentRefusal(message?: string): string | null {
