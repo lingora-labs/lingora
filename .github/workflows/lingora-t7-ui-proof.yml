@@ -39,6 +39,10 @@ jobs:
           exit 1
       - name: Export from browser through real menu — no LLM
         run: node tests/qa-export-ui-e2e.mjs
+      - name: Install PDF verification utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
       - name: Verify actual exported PDF text and visual page
         shell: bash
         run: |
