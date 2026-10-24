@@ -75,6 +75,7 @@ try {
   const cdp = await page.createCDPSession()
   await cdp.send('Page.setDownloadBehavior',{behavior:'allow',downloadPath:out})
   page.on('console',msg=>{if(msg.type()==='error')errors.push('console: '+msg.text())})
+  page.on('response',res=>{if(res.url().includes('/api/chat')&&requests.length) requests[requests.length-1].status=res.status()})
   page.on('pageerror',err=>errors.push('pageerror: '+err.message))
   page.on('request',req=>{
     if(req.url().includes('/api/chat')){
@@ -105,6 +106,7 @@ try {
   writeFileSync(out+'/05-browser-errors.json',JSON.stringify(errors,null,2))
   assert.equal(requests.length,1,'Exactly one /api/chat call (no Willy invocation)')
   assert.equal(requests[0].uiAction,'export_chat_pdf')
+  assert.equal(requests[0].status,200,'Export must return HTTP 200')
   assert.equal(requests[0].turns,4)
   assert.ok(status.includes('PDF verificado') || status.includes('PDF descargado'),
     'PDF archive status unexpected: '+status.slice(-400))
