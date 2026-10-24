@@ -1,0 +1,68 @@
+name: LINGORA 7.5 Export UI Proof (No AI)
+on:
+  push:
+    branches: [ae/7-5-t7-export-e2e-evidence]
+    paths: ['ops/run-t7-export-e2e.flag']
+permissions:
+  contents: read
+jobs:
+  export-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: sk-test-not-used
+      LINGORA_E2E_PORT: "3100"
+      LINGORA_SOURCE_SHA: 0fcb602d8a64b0e2eedc2c12a1aa1dca3ceb238b
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tested product source is unchanged
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 0fcb602d8a64b0e2eedc2c12a1aa1dca3ceb238b
+          git diff --exit-code FETCH_HEAD HEAD -- app server lib package.json package-lock.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install exact project dependencies
+        run: npm ci
+      - name: Launch app locally with no usable LLM key
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev -- -p 3100 > /tmp/lingora-t7-next.log 2>&1 &
+          echo $! > /tmp/lingora-t7-next.pid
+          for i in $(seq 1 80); do
+            if curl -sf http://127.0.0.1:3100/beta -o /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/lingora-t7-next.log
+          exit 1
+      - name: Export from browser through real menu — no LLM
+        run: node tests/qa-export-ui-e2e.mjs
+      - name: Verify actual exported PDF text and visual page
+        shell: bash
+        run: |
+          set -euo pipefail
+          PDF=$(find t7-evidence -maxdepth 1 -name 'lingora-session-*.pdf' -print -quit)
+          test -n "$PDF"
+          pdfinfo "$PDF" | head -18
+          pdftotext -layout "$PDF" t7-evidence/exported.txt
+          grep -q 'LINGORA-T7-START-70931' t7-evidence/exported.txt
+          grep -q 'LINGORA-T7-END-70931' t7-evidence/exported.txt
+          grep -q 'Enero' t7-evidence/exported.txt
+          grep -q 'Febrero' t7-evidence/exported.txt
+          pdftoppm -f 1 -l 1 -png -scale-to 1100 -singlefile "$PDF" t7-evidence/exported-page-1
+          sha256sum "$PDF" > t7-evidence/pdf.sha256
+      - name: Attach real PDF, UI screenshots and request evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LINGORA-7-5-T7-UI-PROOF
+          path: t7-evidence/
+          retention-days: 14
+      - name: Explain failure without claiming a P1 prematurely
+        if: failure()
+        run: |
+          tail -100 /tmp/lingora-t7-next.log || true
+          cat t7-evidence/RESULT.json || true
