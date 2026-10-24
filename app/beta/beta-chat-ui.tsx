@@ -54,7 +54,7 @@ export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: st
       </div>
       {!isUser && (msg.suggestedActions?.length ?? 0) > 0 && (
         <SuggestedActionBar actions={msg.suggestedActions!}
-          onAction={(a) => window.dispatchEvent(new CustomEvent('lingora-suggested-action', { detail: a }))} />
+          onAction={(a) => window.dispatchEvent(new CustomEvent('lingora-suggested-action', { detail: { ...a, sourceMsgId: msg.id } }))} />
       )}
     </>
   )

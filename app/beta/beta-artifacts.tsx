@@ -7,6 +7,7 @@ import { renderFlowchartSvg, validateFlowchartContent } from '../../lib/flowchar
 import { renderInfographicSvg, validateInfographicContent } from '../../lib/infographic-contract'
 import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock } from './beta-schema'
 import { renderTutorMarkdown } from '../../lib/content/markdown'
+import { fetchVerifiedPdf, pdfFileName, type PdfExpectation } from '../../lib/pdf-download'
 
 /** 7.5: a component that cannot be drawn says so; it never disappears (7.4 returned null). */
 export function ArtifactUnavailable({ type, reason }: { type: string; reason: string }) {
@@ -67,6 +68,33 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
   )
 }
 
+// 7.5 — «Descargar PDF» saves a file only after its bytes were recovered and checked (header, trailer,
+// length and SHA-256 recorded at render). Otherwise it says why, visibly. No data: navigation, no print.
+function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: string; label: string; title?: string; expected: PdfExpectation; pageCount?: number }) {
+  const [st, setSt] = React.useState<{ k: 'idle' | 'checking' | 'done' | 'error'; text?: string }>({ k: 'idle' })
+  const run = async () => {
+    if (st.k === 'checking') return
+    setSt({ k: 'checking', text: 'Comprobando el PDF…' })
+    const r = await fetchVerifiedPdf(url, expected)
+    if (!r.ok) { setSt({ k: 'error', text: `No se pudo descargar el PDF: ${r.reason}.` }); return }
+    const name = pdfFileName(title)
+    const blobUrl = URL.createObjectURL(new Blob([r.bytes as unknown as BlobPart], { type: 'application/pdf' }))
+    const el = document.createElement('a'); el.href = blobUrl; el.download = name
+    document.body.appendChild(el); el.click(); el.remove()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000)
+    const pages = typeof pageCount === 'number' ? `${pageCount} ${pageCount === 1 ? 'página' : 'páginas'}, ` : ''
+    setSt({ k: 'done', text: `PDF comprobado (${pages}${Math.max(1, Math.round(r.byteLength / 1024))} KB) y entregado al navegador como ${name}.` })
+  }
+  return (
+    <span style={{ display:'inline-flex', flexDirection:'column', gap:4 }}>
+      <button type="button" data-testid="pdf-download" onClick={() => { void run() }} disabled={st.k === 'checking'}
+        style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700, cursor: st.k === 'checking' ? 'wait' : 'pointer', fontFamily:'inherit' }}>{label}</button>
+      {st.text && <span data-testid="pdf-download-status" data-state={st.k} role={st.k === 'error' ? 'alert' : 'status'}
+        style={{ fontSize:12, color: st.k === 'error' ? 'var(--danger,#f87171)' : 'var(--silver)', fontWeight: st.k === 'error' ? 700 : 400, maxWidth:360 }}>{st.text}</span>}
+    </span>
+  )
+}
+
 // 7.4.2/7.4.3 — native SVG instruments (chart, flowchart, infographic): drawn deterministically from the
 // Tutor's validated content. Fluid inside a horizontally scrollable box, so nothing is ever clipped.
 function SvgInstrumentBlock({ svg, fileSvg, kind, file }: { svg: string; fileSvg: string; kind: string; file: string }) {
@@ -120,7 +148,7 @@ function InfographicBlock({ content }: { content: Record<string, unknown> }) {
 }
 
 export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: string }) {
-  if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} />
+  if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} instanceId={instanceId} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
   if (a.type === 'chart') return <ChartBlock content={(a.content ?? a) as Record<string, unknown>} />
@@ -146,7 +174,7 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
           <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
           <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{title}</span>
         </div>
-        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} instanceId={instanceId} /></div>
+        <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} instanceId={instanceId} title={title} /></div>
       </div>
     )
   }
@@ -164,7 +192,9 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     return (
       <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:6 }}>
         {webUrl && <HtmlVersionActions webUrl={webUrl} />}
-        <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, textDecoration:'none', background:'rgba(245,200,66,.1)', border:'1px solid rgba(245,200,66,.22)', color:'var(--gold)', fontSize:13, fontWeight:700 }}>{label}</a>
+        <PdfDownloadButton url={a.url} label={label} title={(a as { title?: string }).title}
+          expected={{ byteLength: (a as { pdfByteLength?: number }).pdfByteLength, sha256: (a as { pdfSha256?: string }).pdfSha256 }}
+          pageCount={(a as { pageCount?: number }).pageCount} />
       </div>
     )
   }

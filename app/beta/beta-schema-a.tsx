@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TableRow, QuizQ, Sub, Norm } from './beta-model'
 import { validateQuizAnswerKey, verifiedKeyFor, quizFingerprint } from '../../lib/quiz-answer-key'
+import { QUIZ_ACTIVATE_EVENT } from './quiz-actions'
 
 export const ss = (v: unknown): string => typeof v === 'string' ? v : ''
 export const sa = (v: unknown): string[] => Array.isArray(v) ? v.map(ss).filter(Boolean) : []
@@ -44,7 +45,7 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
   return <TableArtifactBlock content={content} />
 }
 
-export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean }; instanceId?: string }) {
+export function QuizBlock({ quiz, reviewMode = false, initial, instanceId, title = 'Simulacro' }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean }; instanceId?: string; title?: string }) {
   const [ans, setAns] = useState<Record<number, number|null>>(() => {
     const out: Record<number, number|null> = {}
     ;(initial?.answers ?? []).forEach((v, i) => { if (typeof v === 'number') out[i] = v })
@@ -61,6 +62,24 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
   const verified = useMemo(() => quiz.map(q => verifiedKeyFor(q.question, q.options)), [quiz])
   const requiresReview = reviewMode || !validity.ok || verified.some(v => v === null)
   const fingerprint = useMemo(() => quizFingerprint(quiz), [quiz])
+  // 7.5: «Empezar quiz» activates THIS component in place. No message, no request, no second quiz.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [active, setActive] = useState(false)
+  useEffect(() => {
+    if (!instanceId) return
+    const onActivate = (e: Event) => {
+      if ((e as CustomEvent).detail?.instanceId !== instanceId) return
+      setActive(true)
+      const root = rootRef.current
+      if (!root) return
+      root.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+      const first = root.querySelector<HTMLButtonElement>('button[data-testid^="quiz-opt-"]:not([disabled])')
+      first?.focus({ preventScroll: true })
+    }
+    window.addEventListener(QUIZ_ACTIVATE_EVENT, onActivate)
+    return () => window.removeEventListener(QUIZ_ACTIVATE_EVENT, onActivate)
+  }, [instanceId])
+  const identity = instanceId ? { instanceId, key: fingerprint, title } : undefined
   const allAnswered = quiz.length > 0 && quiz.every((_, i) => ans[i] !== undefined && ans[i] !== null)
   const checkable = verified.filter(v => v !== null).length
   const rightCount = quiz.reduce((n, _, i) => n + (verified[i] !== null && ans[i] === verified[i] ? 1 : 0), 0)
@@ -83,11 +102,13 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
       expected:q.options[verified[i] as number], correct: ans[i] === verified[i],
       explanation:q.correct === verified[i] ? (q.explanation ?? '') : '',
     }))
-    window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses}}))
+    window.dispatchEvent(new CustomEvent('lingora-quiz-completed', {detail:{responses, quiz: identity}}))
   }, [ans, quiz, requiresReview, verified])
   if (!quiz.length) return null
   return (
-    <div style={{ display:'flex', flexDirection:'column', gap:12 }} data-testid="quiz-block">
+    <div ref={rootRef} style={{ display:'flex', flexDirection:'column', gap:12, ...(active ? { outline:'2px solid var(--teal)', outlineOffset:6, borderRadius:12 } : {}) }}
+      data-testid="quiz-block" data-instance={instanceId} data-quiz-key={fingerprint} data-active={active ? 'true' : undefined}>
+      {active && <div role="status" data-testid="quiz-active" style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>Quiz abierto: responde aquí.</div>}
       {quiz.map((q, qi) => {
         const sel = ans[qi] ?? null; const done = sel !== null
         const key = verified[qi]; const hasKey = key !== null
@@ -140,7 +161,7 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
               onClick={() => {
                 // 7.4.6: claim "sent" only if the page accepted the request.
                 const request = new CustomEvent('lingora-quiz-review-request', {
-                  detail:{accepted:false,responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number],...(verified[i]!==null?{verified:ans[i]===verified[i]?'correct':'incorrect'}:{})}))}
+                  detail:{accepted:false,quiz:identity,responses:quiz.map((q,i)=>({question:q.question,options:q.options,chosen:q.options[ans[i] as number],...(verified[i]!==null?{verified:ans[i]===verified[i]?'correct':'incorrect'}:{})}))}
                 })
                 window.dispatchEvent(request)
                 if (request.detail.accepted) { setSendRefused(false); setSent(true) } else setSendRefused(true)
@@ -157,7 +178,7 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
         </div>
       )}
       {(sent || (!requiresReview && allAnswered)) && (
-        <button type="button" data-testid="quiz-continue" onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-continue'))}
+        <button type="button" data-testid="quiz-continue" onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-continue', { detail: { quiz: identity } }))}
           style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--border)',color:'var(--silver)',background:'transparent',cursor:'pointer'}}>
           Seguir aprendiendo con mi Tutor
         </button>
@@ -166,7 +187,7 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId }: { q
   )
 }
 
-export function SchemaBlock({ content }: { content: Record<string, unknown> }) {
+export function SchemaBlock({ content, instanceId }: { content: Record<string, unknown>; instanceId?: string }) {
   const s = useMemo(() => normSchema(content), [content])
   const exportTxt = () => {
     const lines = ['LINGORA Schema', s.title, '', s.objective, '', s.keyConcepts.length ? 'Conceptos: ' + s.keyConcepts.join(', ') : '', '', ...s.tableRows.map(r => `${r.left}: ${r.right}`), '', ...s.subtopics.map(sub => `${sub.title}\n${sub.content}${sub.keyTakeaway ? '\n80/20: ' + sub.keyTakeaway : ''}`), '', ...s.examples, '', s.summary ? '80/20: ' + s.summary : '', '', '--- SIMULACRO ---', ...s.quiz.map((q,i) => `${i+1}. ${q.question}\n${q.options.map((o,oi) => `  ${'ABCD'[oi]}) ${o}${oi===q.correct?' ✓':''}`).join('\n')}`)].filter(Boolean)
@@ -227,7 +248,7 @@ export function SchemaBlock({ content }: { content: Record<string, unknown> }) {
             <div style={{ fontSize:14, lineHeight:1.6, color:'#fff' }}>🧠 {s.summary}</div>
           </div>
         )}
-        {s.quiz.length > 0 && <div><SL>Simulacro interactivo</SL><QuizBlock quiz={s.quiz} /></div>}
+        {s.quiz.length > 0 && <div><SL>Simulacro interactivo</SL><QuizBlock quiz={s.quiz} instanceId={instanceId} title={s.title || 'Simulacro'} /></div>}
         <div style={{ paddingTop:4, borderTop:'1px solid rgba(255,255,255,.05)' }}>
           <button onClick={exportTxt} style={{ background:'none', border:'none', color:'var(--teal)', fontWeight:700, fontSize:13, cursor:'pointer', padding:0 }}>↓ Exportar esquema (.txt)</button>
         </div>

@@ -4,13 +4,14 @@
 import assert from 'node:assert/strict'
 import Module from 'node:module'
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-only'
+process.env.OPENAI_MAIN_MODEL = 'gpt-5.6-sol'
 let queue = []
 class FakeOpenAI { chat = { completions: { create: async () => { assert.ok(queue.length, 'unexpected completion'); return fake(queue.shift()) } } } }
 const originalLoad = Module._load
 Module._load = function (name, ...rest) { if (name === 'openai') return FakeOpenAI; return originalLoad.call(this, name, ...rest) }
 async function* fake({ text = '', calls = [] }) {
-  if (text) yield { choices: [{ delta: { content: text } }] }
-  for (const [index, c] of calls.entries()) yield { choices: [{ delta: { tool_calls: [{ index, id: 'call_' + index, function: { name: c.name, arguments: JSON.stringify(c.args) } }] } }] }
+  if (text) yield { model: 'gpt-5.6-sol', choices: [{ delta: { content: text } }] }
+  for (const [index, c] of calls.entries()) yield { model: 'gpt-5.6-sol', choices: [{ delta: { tool_calls: [{ index, id: 'call_' + index, function: { name: c.name, arguments: JSON.stringify(c.args) } }] } }] }
 }
 const { load } = await import('./_ts-loader.mjs')
 const { executePlanStream } = load('server/core/execution-engine-stream.ts')

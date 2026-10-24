@@ -19,6 +19,7 @@
 //   6. Provider failure logs only class / status / code, and still answers; SDK retry options are not overridden.
 //   7. No source content (history, student message, Tutor text) ever reaches the logs.
 import assert from 'node:assert/strict'
+process.env.OPENAI_MAIN_MODEL='gpt-5.6-sol'
 import fs from 'node:fs'
 import path from 'node:path'
 import Module,{createRequire} from 'node:module'
@@ -51,11 +52,12 @@ const state={...DEFAULT_SESSION_STATE,mentorProfile:'Sarah',interfaceLanguage:'e
 const params={request:{message,conversationHistory:[{role:'user',content:'PRIVATE_HISTORY'},{role:'assistant',content:'Contexto anterior'}]},state}
 const FALLBACK='No pude procesar tu mensaje. Intenta de nuevo.'
 function entries(raw){return raw?.envelope??[{name:'complete_tutor_turn',args:typeof raw==='string'?raw:JSON.stringify(raw)}]}
+// 7.5: the provider reports the served model on every chunk (the product verifies it before publishing).
 async function* stream(raw){for(const [index,c]of entries(raw).entries()){
  // Multiple chunks exercise the actual streaming prefix and buffering behavior.
  const mid=Math.floor(c.args.length/2)
- yield {choices:[{delta:{tool_calls:[{index,function:{name:c.name,arguments:c.args.slice(0,mid)}}]}}]}
- yield {choices:[{delta:{tool_calls:[{index,function:{arguments:c.args.slice(mid)}}]}}]}
+ yield {model:'gpt-5.6-sol',choices:[{delta:{tool_calls:[{index,function:{name:c.name,arguments:c.args.slice(0,mid)}}]}}]}
+ yield {model:'gpt-5.6-sol',choices:[{delta:{tool_calls:[{index,function:{arguments:c.args.slice(mid)}}]}}]}
 }}
 function completion(raw){return {choices:[{message:{tool_calls:entries(raw).map(c=>({type:'function',function:{name:c.name,arguments:c.args}}))}}]}}
 const warn=console.warn, originalInfo=console.info, originalError=console.error

@@ -50,8 +50,11 @@ const TUTOR_FAILURES: Record<string, string | null> = {
   invalid_language_code: 'El Tutor intentó fijar un idioma de explicación no válido; no se guardó.',
   invalid_memory_ops: 'El Tutor intentó guardar una nota de memoria con formato no válido; no se guardó.',
   invalid_learning_fact: 'El Tutor intentó registrar un hecho del alumno con formato no válido; no se guardó.',
-  // The exact visible sentence is emitted by mentor-engine; do not duplicate it as an artifact failure.
+  // Model identity failures: the exact visible sentence is emitted by mentor-engine and the turn ends as failed.
   model_mismatch: null,
+  model_config_invalid: null,
+  model_unreported: null,
+  model_rejected: null,
   // Reported per declaration through rejectedReasons.
   artifact_signal_rejected: null,
 }
@@ -86,7 +89,7 @@ export function executePlanStream(
         controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
       }
       try {
-        const { getMentorResponseStream } = await import('../mentors/mentor-engine')
+        const { getMentorResponseStream, MODEL_FAILURES } = await import('../mentors/mentor-engine')
         const stream = await getMentorResponseStream({
           request,
           state,
@@ -106,6 +109,14 @@ export function executePlanStream(
           // the Tutor's text. What the Tutor wrote is what is streamed,
           // persisted and delivered (7.4.2: no post-processing of the reply).
           emit({ delta })
+        }
+        // 7.5: an unproven model identity ends the turn here. Nothing is materialized, no fact or offer is
+        // recorded, progress is not credited: a rejected turn is not a turn. The visible sentence was the delta.
+        if (stream.deliveryFailure && MODEL_FAILURES.has(stream.deliveryFailure)) {
+          console.warn('[tutor-model]', JSON.stringify({ failure: stream.deliveryFailure, servedModel: stream.servedModel ?? null }))
+          emit({ done: true, servedModel: stream.servedModel, state: toWireState(state, {}), turnState: 'failed', suggestedActions: [] })
+          controller.close()
+          return
         }
         // 7.3: the Tutor's own typed calls are the authorization. The runtime
         // validates technically; it never reads the student's words.
@@ -287,7 +298,7 @@ export function executePlanStream(
           ...(clientDeliveries.length ? { clientDeliveries } : {}),
           ...(learning.accepted.length ? { learningFacts: learning.accepted } : {}),
           ...(learning.rejected.length ? { learningFactRejections: learning.rejected } : {}),
-          turnState: stream.deliveryFailure === 'model_mismatch' ? 'failed' : artifactFailures.length ? 'complete_with_failures' : 'complete',
+          turnState: artifactFailures.length ? 'complete_with_failures' : 'complete',
           // P18 (continuation) — ROOT GAP: this used to be
           // `artifact ? [export_chat_pdf] : undefined` — no artifact meant
           // NO suggested actions at all from the backend, and the frontend's

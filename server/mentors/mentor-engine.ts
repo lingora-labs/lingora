@@ -185,13 +185,49 @@ export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactS
 
 export const PRODUCT_MODEL = 'gpt-5.6-sol'
 
-function configuredModelMismatch(): string | null {
-  const configured = process.env.OPENAI_MAIN_MODEL
-  return configured && configured !== PRODUCT_MODEL ? configured : null
+/** 7.5 — the product model is a verified identity, not a decorative variable.
+ *  Configuration: OPENAI_MAIN_MODEL must be exactly PRODUCT_MODEL, or the turn is refused before any provider call.
+ *  Serving: the model the provider REPORTS must be exactly PRODUCT_MODEL before any pedagogical content is published. */
+export type ModelFailure = 'model_config_invalid' | 'model_mismatch' | 'model_unreported' | 'model_rejected'
+export const MODEL_FAILURES: ReadonlySet<string> = new Set<ModelFailure>(['model_config_invalid', 'model_mismatch', 'model_unreported', 'model_rejected'])
+
+export function modelConfigurationError(configured: string | undefined = process.env.OPENAI_MAIN_MODEL): string | null {
+  return configured === PRODUCT_MODEL ? null : (configured?.trim() ? configured : 'sin definir')
 }
 
-function incorrectModelMessage(served: string): string {
-  return `Modelo incorrecto: se sirvió ${served}, el producto es ${PRODUCT_MODEL}.`
+export function modelFailureMessage(failure: ModelFailure, detail = ''): string {
+  if (failure === 'model_config_invalid') return `Error de configuración: OPENAI_MAIN_MODEL=${detail}; el producto es ${PRODUCT_MODEL}. El turno no se envió al proveedor.`
+  if (failure === 'model_mismatch') return `Modelo incorrecto: se sirvió ${detail}, el producto es ${PRODUCT_MODEL}.`
+  if (failure === 'model_unreported') return `El proveedor no informó el modelo servido; el producto es ${PRODUCT_MODEL}. El turno se rechaza.`
+  return `El proveedor rechazó el modelo ${PRODUCT_MODEL}; el turno no se ejecutó.`
+}
+
+/** Holds every provider chunk until the provider reports the served model, and releases them only when it is
+ *  exactly PRODUCT_MODEL. A different or missing identity ends the stream with gate.failure set and nothing released. */
+export async function* gateByServedModel(src: AsyncIterable<any>, gate: { served: string; failure?: 'model_mismatch' | 'model_unreported' }): AsyncGenerator<any> {
+  const held: any[] = []
+  let verified = false
+  for await (const chunk of src) {
+    const reported = typeof chunk?.model === 'string' && chunk.model ? chunk.model : ''
+    if (reported) {
+      gate.served = reported
+      if (reported !== PRODUCT_MODEL) { gate.failure = 'model_mismatch'; return }
+      if (!verified) { verified = true; for (const h of held) yield h; held.length = 0 }
+    }
+    if (verified) yield chunk
+    else held.push(chunk)
+  }
+  if (!verified) gate.failure = 'model_unreported'
+}
+
+function rejectedTurn(failure: ModelFailure, detail: string, served?: string): MentorStream {
+  const rejected = (async function* () { yield modelFailureMessage(failure, detail) })() as MentorStream
+  rejected.artifactSignals = []
+  rejected.textDeliveries = []
+  rejected.deliveryFailure = failure
+  rejected.deliveryFailures = [failure]
+  if (served) rejected.servedModel = served
+  return rejected
 }
 
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
@@ -414,7 +450,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // Only a clicked Article 27 review (a direct uiAction) is a pure formatting effect.
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
- const mismatchedModel=configuredModelMismatch()
+ const configError=modelConfigurationError()
  const model=PRODUCT_MODEL
  const budget=resolveOutputBudget(n.plan,pack)
  // The opening greeting settles no language: that tool exists only once the student has written.
@@ -422,15 +458,9 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const fit=fitHistory(n.history,built,tools)
  const baseMessages:any[]=[{role:'system',content:built.system+fit.note},...fit.history,{role:'user',content:user},{role:'system',content:languageNote}]
  let response:AsyncIterable<any>|undefined
- if(mismatchedModel){
-   const rejected=(async function*(){yield incorrectModelMessage(mismatchedModel)})() as MentorStream
-   rejected.artifactSignals=[]
-   rejected.textDeliveries=[]
-   rejected.deliveryFailure='model_mismatch'
-   rejected.deliveryFailures=['model_mismatch']
-   rejected.servedModel=mismatchedModel
-   return rejected
- }
+ // Wrong or missing configuration: refused before the provider is called (nothing was served, so no servedModel).
+ if(configError)return rejectedTurn('model_config_invalid',configError)
+ let providerRejectedModel=false
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(model,budget,0.7,0.88),
@@ -439,8 +469,11 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    })
  }catch(e){
    const p=e&&typeof e==='object'?e as {status?:number;name?:string;code?:string|null;type?:string|null}:{}
-   console.error('[tutor-provider]',JSON.stringify({reason:'provider_unavailable',status:p.status??null,code:p.code??null,type:p.type??null,class:p.name??'UnknownError'}))
+   // The provider refusing the product model is not "unavailable": the run stops, no fallback model is tried.
+   providerRejectedModel=p.status===404||(typeof p.code==='string'&&/model/i.test(p.code))
+   console.error('[tutor-provider]',JSON.stringify({reason:providerRejectedModel?'model_rejected':'provider_unavailable',status:p.status??null,code:p.code??null,type:p.type??null,class:p.name??'UnknownError'}))
  }
+ if(!response&&providerRejectedModel)return rejectedTurn('model_rejected','')
  const box:{w?:MentorStream}={}
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
@@ -454,9 +487,10 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
    const publishFacts=(f:LearningFactDeclaration[])=>{wrapped.learningFacts=[...(wrapped.learningFacts??[]),...f]}
    if(!response){fail('provider_unavailable');yield fallback;return}
+   const gate:{served:string;failure?:'model_mismatch'|'model_unreported'}={served:''}
    try{
-     for await(const chunk of response){
-       if(chunk.model){served=chunk.model;box.w!.servedModel=served}
+     for await(const chunk of gateByServedModel(response,gate)){
+       served=gate.served;box.w!.servedModel=served
        if(chunk.usage)count(chunk.usage)
        const d=chunk.choices?.[0]?.delta
        if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
@@ -469,6 +503,8 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        }
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
+   // Identity not proven: nothing the provider produced is published, no tool call is executed.
+   if(gate.failure){if(gate.served)box.w!.servedModel=gate.served;fail(gate.failure);yield modelFailureMessage(gate.failure,gate.served);return}
    if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,model,served}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let declared:string|undefined
@@ -528,12 +564,14 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
          stream:true,stream_options:{include_usage:true},tools,tool_choice:'none',
          messages:[...baseMessages,asst,...results],
        })
-       if(spoken.trim())yield '\n\n'
-       for await(const chunk of more){
+       const gate2:{served:string;failure?:'model_mismatch'|'model_unreported'}={served:''}
+       let separated=false
+       for await(const chunk of gateByServedModel(more,gate2)){
          if(chunk.usage)count(chunk.usage)
          const d=chunk.choices?.[0]?.delta
-         if(typeof d?.content==='string'&&d.content){spoken+=d.content;yield d.content}
+         if(typeof d?.content==='string'&&d.content){if(!separated&&spoken.trim()){separated=true;yield '\n\n'}spoken+=d.content;yield d.content}
        }
+       if(gate2.failure){box.w!.servedModel=gate2.served||box.w!.servedModel;fail(gate2.failure);yield (spoken.trim()?'\n\n':'')+modelFailureMessage(gate2.failure,gate2.served);return}
      }catch{fail('continuation_interrupted')}
      if(!spoken.trim()){fail('empty_response');yield fallback}
      return

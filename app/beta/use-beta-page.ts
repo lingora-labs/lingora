@@ -18,6 +18,8 @@ import { isTextSource, sha256Hex } from '@/lib/space/sha256'
 import { sanitizeAcceptedFacts } from '@/lib/learning-facts'
 import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
+import { PDF_REQUEST_TIMEOUT_MS, explainPdfRequestFailure, fetchVerifiedPdf } from '../../lib/pdf-download'
+import { QUIZ_ACTIVATE_EVENT, buildQuizReviewMessage, findQuizInstance, normalizeQuizIdentity, quizIdentityLine, type QuizIdentity } from './quiz-actions'
 import { readLegacySession, clearLegacySession, spaceStore, strippedArtifact } from './beta-session'
 
 const actionOf = (x: SuggestedAction): string => (x as unknown as { action?: string }).action ?? x.type ?? ''
@@ -75,6 +77,7 @@ export function useBetaPage() {
   const phaseRef = useRef<Phase>(phase)
   const activeModeRef = useRef<ActiveMode>(activeMode)
   const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
+  const pendingQuizIdentityRef = useRef<QuizIdentity | null>(null)
   const pendingExportRef = useRef(false)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
@@ -257,6 +260,12 @@ export function useBetaPage() {
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
     lastCallFailedRef.current = false
     setLoading(true)
+    // 7.5: «Descargar PDF» has a deadline and a visible outcome; it never waits silently.
+    const pdfRequest = payload.uiAction === 'download_pdf'
+    const pdfAbort = pdfRequest ? new AbortController() : null
+    const pdfTimer = pdfAbort ? setTimeout(() => pdfAbort.abort(), PDF_REQUEST_TIMEOUT_MS) : null
+    const pdfFailure = (cause: string) => addMsg({ sender: mentorRef.current ?? 'ln', text: `No se pudo entregar el PDF: ${cause}.`,
+      artifact: null, artifactFailures: [{ subject: `PDF del material: ${cause}` }] })
     try {
       // BASE-MODEL-PARITY — recent real turns (not a code-derived summary),
       // capped to keep the request bounded. 'ln' bubbles are system/UI
@@ -276,6 +285,7 @@ export function useBetaPage() {
       const conversationHistory = turn.conversationHistory
       const res = await fetch('/api/chat', {
         method: 'POST',
+        ...(pdfAbort ? { signal: pdfAbort.signal } : {}),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
@@ -368,7 +378,7 @@ export function useBetaPage() {
         return
       }
       if (!res.ok) {
-        if (res.status === 413) {
+        if (res.status === 413 && !pdfRequest) {
           const langNow = langRef.current ?? 'en'
           addMsg({ sender: mentorRef.current ?? 'ln', text: langNow === 'es' || langNow === 'no' ? 'La sesión acumuló demasiados materiales. Continúa con normalidad.' : 'Session accumulated too much material. Continue normally.' })
           setSession(prev => { const trimmed = { ...prev }; delete (trimmed as Record<string, unknown>)['artifactRegistry']; sessionRef.current = trimmed; return trimmed })
@@ -377,6 +387,13 @@ export function useBetaPage() {
         throw new Error('HTTP_ERROR_' + res.status)
       }
       const data = await res.json()
+      if (pdfRequest && data.artifact?.type === 'pdf') {
+        // Success is announced only after the bytes the student will save were recovered and checked.
+        const check = await fetchVerifiedPdf(data.artifact.url, { byteLength: data.artifact.pdfByteLength, sha256: data.artifact.pdfSha256 })
+        if (!check.ok) { pdfFailure(check.reason); return }
+        const pages = typeof data.artifact.pageCount === 'number' ? `${data.artifact.pageCount} ${data.artifact.pageCount === 1 ? 'página' : 'páginas'}, ` : ''
+        data.message = `PDF comprobado: ${pages}${Math.max(1, Math.round(check.byteLength / 1024))} KB. Pulsa «Descargar PDF» para guardarlo.`
+      }
       // 7.4.1: a delivery retry updates the message that failed, in place. No new bubble, no new Tutor turn.
       if (opts?.retryTargetId && data.retryOf) {
         const patched: Msg[] = applyDeliveryRetry(msgsRef.current, opts.retryTargetId, data)
@@ -409,13 +426,14 @@ export function useBetaPage() {
         : ([{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
     } catch (e) {
       lastCallFailedRef.current = true
+      if (pdfRequest) { pdfFailure(explainPdfRequestFailure(e)); return }
       const m = e instanceof Error ? e.message : String(e)
       const langNow = langRef.current ?? 'en'
       let msg = langNow === 'es' ? 'Ocurrió un error inesperado. El tutor sigue activo.' : 'An unexpected error occurred. The tutor is still active.'
       if (m.includes('429')) msg = 'El servicio está temporalmente ocupado.'
       else if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')) msg = 'No se pudo conectar con el servidor.'
       addMsg({ sender: mentorRef.current ?? 'ln', text: msg })
-    } finally { setLoading(false) }
+    } finally { if (pdfTimer) clearTimeout(pdfTimer); setLoading(false) }
   }, [addMsg, saveActive, absorbTurn])
   // ONE conversation export for the menu, the chat chip and a Tutor's conversation_pdf delivery:
   // the whole conversation held here, with its artifacts, printed by the canonical document page.
@@ -431,11 +449,19 @@ export function useBetaPage() {
   }, [loading, runConversationExport])
   useEffect(() => {
     const handler = (e: Event) => {
-      const a = (e as CustomEvent).detail as { action: string; type?: string; label: string }
-      if (!a || loading) return
+      const a = (e as CustomEvent).detail as { action: string; type?: string; label: string; sourceMsgId?: string }
+      if (!a) return
+      if ((a.action ?? a.type) === 'start_quiz') {
+        // 7.5: open the quiz already on screen. No student message, no request, the same component.
+        const instanceId = findQuizInstance(msgsRef.current, a.sourceMsgId)
+        if (instanceId) window.dispatchEvent(new CustomEvent(QUIZ_ACTIVATE_EVENT, { detail: { instanceId } }))
+        else addMsg({ sender: 'ln', text: 'No hay ningún quiz en pantalla para empezar. Si quieres uno nuevo, pídeselo a tu Tutor.' })
+        return
+      }
+      if (loading) return
       const actionMessages: Record<string, string> = {
         show_schema: 'Hazme un esquema completo de este tema', show_table: 'Hazme una tabla comparativa de este tema',
-        show_matrix: 'Hazme una matriz de análisis', start_quiz: 'Hazme un simulacro de este tema',
+        show_matrix: 'Hazme una matriz de análisis',
         retry_quiz: 'Dame otro simulacro más difícil', retry_module: 'Repite este módulo',
         practice_examples: 'Dame 3 ejemplos guiados para practicar', pronunciation_drill: 'Quiero practicar la pronunciación',
         request_pronunciation: 'Evalúa mi pronunciación', deepen_topic: 'Profundiza más en este tema',
@@ -481,7 +507,10 @@ export function useBetaPage() {
         // Instrumental touch actions operate on the tutor content already on
         // screen. They do not inject an artificial student utterance.
         // 7.5: the message itself, with its artifacts, so the PDF prints exactly what is on screen.
-        const material = [...msgs].reverse().find(m => m.sender !== 'user' && m.sender !== 'ln' && m.text?.trim())
+        // 7.5: the material is the message whose button was pressed; the latest Tutor message only as fallback.
+        const isMaterial = (m: Msg) => m.sender !== 'user' && m.sender !== 'ln' && Boolean(m.text?.trim())
+        const material = (a.sourceMsgId ? msgs.find(m => m.id === a.sourceMsgId && isMaterial(m)) : undefined)
+          ?? [...msgs].reverse().find(isMaterial)
         const turn = material ? buildExportTurns([material]) : null
         callAPI({ message: msg, uiAction: actionKey, materialText: material?.text ?? '',
           ...(actionKey === 'download_pdf' && turn?.ok ? { materialTurn: turn.turns[0] } : {}) })
@@ -509,13 +538,15 @@ export function useBetaPage() {
     const evidence = pendingQuizFeedbackRef.current
     if (!evidence) return
     pendingQuizFeedbackRef.current = null // exactly once, before async fetch
+    const quiz = pendingQuizIdentityRef.current
+    pendingQuizIdentityRef.current = null
     const details = evidence.responses.map((r,i) =>
       String(i+1) + '. ' + r.question +
       ' | elegí ' + JSON.stringify(r.chosen) +
       ' | correcta ' + JSON.stringify(r.expected) +
       ' | resultado ' + (r.correct ? 'acierto' : 'error'),
     ).join('\n')
-    const message = 'He completado el quiz: ' + evidence.correctCount +
+    const message = 'He completado el ' + (quiz ? quizIdentityLine(quiz) : 'quiz') + ': ' + evidence.correctCount +
       '/' + evidence.total + '. Mis selecciones:\n' + details +
       '\nEvalúa los errores registrados y guía el siguiente paso.'
     addMsg({sender:'user', text:message})
@@ -535,6 +566,7 @@ export function useBetaPage() {
       setSession(next)
       if (mode === 'structured') {
         pendingQuizFeedbackRef.current = evidence
+        pendingQuizIdentityRef.current = normalizeQuizIdentity((e as CustomEvent).detail?.quiz)
         flushStructuredQuizFeedback()
       }
     }
@@ -558,12 +590,13 @@ export function useBetaPage() {
             !Array.isArray(item.options) || item.options.length < 2 || item.options.length > QUIZ_RESOURCE_LIMITS.options ||
             item.options.some(o=>typeof o !== 'string') ||
             typeof item.chosen !== 'string' || !item.options.includes(item.chosen)) return null
-        return {question:item.question,chosen:item.chosen,options:item.options as string[],verified:item.verified==='correct'||item.verified==='incorrect'?item.verified:undefined}
+        return {question:item.question,chosen:item.chosen,options:item.options as string[],verified:item.verified==='correct'||item.verified==='incorrect'?item.verified as 'correct'|'incorrect':undefined}
       })
       if (responses.some(r=>r===null)) return
-      const message = 'He respondido a este quiz táctil. Mis respuestas, sin calificación automática:\n' +
-        responses.map((r,i)=>String(i+1)+'. '+r!.question+'\nOpciones: '+r!.options.join(' | ')+'\nElegí: '+r!.chosen+(r!.verified?'\nComprobación automática con clave independiente: '+(r!.verified==='correct'?'acierto':'error'):'')).join('\n') +
-        '\nRevisa pedagógicamente cada elección e indica las soluciones justificadas; no inventes una puntuación verificada ni generes PDF.'
+      // 7.5: the review is about ONE identified quiz; a request without identity is not sent.
+      const quiz = normalizeQuizIdentity((event as CustomEvent).detail?.quiz)
+      if (!quiz) return
+      const message = buildQuizReviewMessage(quiz, responses.filter((r): r is NonNullable<typeof r> => r !== null))
       const next = {...sessionRef.current,tutorPhase:'feedback' as const}
       sessionRef.current=next
       setSession(next)
@@ -606,9 +639,10 @@ export function useBetaPage() {
   }, [])
   // "Seguir aprendiendo": the Tutor continues the lesson from the student's results; no artifact is requested.
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
       if (loading) return
-      const message = 'Quiero seguir aprendiendo a partir de este quiz. Continúa tú la lección con el siguiente paso adaptado a mis aciertos y errores; no generes documentos ni otro quiz salvo que yo lo pida.'
+      const quiz = normalizeQuizIdentity((e as CustomEvent).detail?.quiz)
+      const message = 'Quiero seguir aprendiendo a partir del ' + (quiz ? quizIdentityLine(quiz) : 'último quiz') + '. Continúa tú la lección con el siguiente paso adaptado a mis aciertos y errores; no generes documentos ni otro quiz salvo que yo lo pida.'
       addMsg({ sender: 'user', text: message })
       void callAPI({ message })
     }
