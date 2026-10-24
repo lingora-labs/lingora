@@ -25,6 +25,7 @@ import { executePlan }    from '../core/execution-engine';
 import { executePlanStream } from '../core/execution-engine-stream';
 import { orchestrateTutorFirst } from '../core/tutor-first-orchestrator';
 import { sanitizeMemory, sanitizeMemorySeq } from '../../lib/tutor-memory';
+import { sanitizeSpaceContext } from '../space/context';
 
 // 7.1 — all conversational tutor turns share one tool-capable streaming path.
 // Explicit runtime-only UI operations remain blocking and use executePlan.
@@ -84,6 +85,8 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
   try {
     const body = await parseRequest(req);
     if (!body) return errorResponse(400, 'Invalid request body', callerState);
+    // One clock per request: the plan (and its immersion facts) is a pure function of this input.
+    const requestNow = Date.now();
 
     const { message, state: rawState, files, audioDataUrl, audioMimeType } = body;
 
@@ -120,7 +123,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     // is instrumental (UI operations, diagnostics, structural invariants); the
     // mentor alone interprets intent and supplies pedagogical content.
     const preflightPlan=orchestrateTutorFirst({
-      message:message ?? '',state,interfaceLanguage:state.interfaceLanguage ?? 'en',
+      message:message ?? '',state,interfaceLanguage:state.interfaceLanguage ?? 'en',now:requestNow,
     });
 
 
@@ -191,7 +194,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
         const uiAction=tc.label === 'export_chat_pdf' ? 'export_chat_pdf' as const : undefined
         const testPlan=orchestrateTutorFirst({
           message:tc.msg,state,uiAction,
-          interfaceLanguage:state.interfaceLanguage ?? 'en',
+          interfaceLanguage:state.interfaceLanguage ?? 'en',now:requestNow,
         })
         return {
           testCase:tc.label,input:tc.msg,
@@ -323,7 +326,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     }
     const plan=orchestrateTutorFirst({
       message:normalizedMessage,state,
-      interfaceLanguage:state.interfaceLanguage ?? 'en',
+      interfaceLanguage:state.interfaceLanguage ?? 'en',now:requestNow,
       uiAction:body.uiAction,
     });
 
@@ -384,6 +387,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       exportTurns: body.exportTurns,
       uiAction: body.uiAction,
       conversationHistory: body.conversationHistory,
+      spaceContext: sanitizeSpaceContext(body.spaceContext),
     };
 
     // 7.4: ONE Tutor engine, two transports. Tutor turns always run through the tool-capable engine

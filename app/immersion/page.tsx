@@ -1,6 +1,8 @@
 'use client'
 import { useEffect, useState, type FormEvent } from 'react'
 import Link from 'next/link'
+import { spaceStore } from '../beta/beta-session'
+import { isRefusal, recordInterest } from '@/lib/space/model'
 
 export default function ImmersionPage() {
   const [email,setEmail]=useState('')
@@ -17,6 +19,15 @@ export default function ImmersionPage() {
     return ()=>{active=false}
   },[])
   const [notice,setNotice]=useState('')
+  // 7.5: with the server channel closed (DAE privacy gate), interest is recorded in the student's own Space.
+  const [localNote,setLocalNote]=useState('')
+  const [localStatus,setLocalStatus]=useState<{ok:boolean;text:string}|null>(null)
+  async function saveLocal(e:FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    const out=await spaceStore.mutate(sp=>{const r=recordInterest(sp,sp.activeConversationId||null,localNote);return isRefusal(r)?{refusal:r.message}:{space:r,result:true}})
+    if(!out.ok){setLocalStatus({ok:false,text:out.message});return}
+    setLocalNote('');setLocalStatus({ok:true,text:'Guardado en tu espacio de este navegador. Tu tutor lo tendrá en cuenta. LINGORA no lo recibe todavía; no es una reserva.'})
+  }
   const [success,setSuccess]=useState(false)
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -39,8 +50,17 @@ export default function ImmersionPage() {
     <h1 style={{fontSize:'clamp(30px,6vw,46px)',lineHeight:1.15,marginTop:30}}>Del español que aprendes al español que vives.</h1>
     <p>Las experiencias de inmersión cultural pueden ser un siguiente paso cuando encajan con tus objetivos. Cuéntanos qué te gustaría vivir y qué español necesitas usar.</p>
     <p style={{color:'#b1c8e9'}}>Esta página registra interés. No publica precios, plazas ni fechas no confirmadas, y no formaliza una reserva.</p>
-    {available===false&&<p role="status" style={{color:'#ffd19b'}}>La recepción de solicitudes no está habilitada en este entorno. No se tomarán datos ni se confirmarán reservas.</p>}
-    <form onSubmit={submit} style={{display:'grid',gap:16,marginTop:30}}>
+    {available===false&&<>
+      <p role="status" style={{color:'#ffd19b'}}>El envío de solicitudes a LINGORA no está habilitado en este entorno: no se toma tu correo ni se confirma ninguna reserva. Puedes guardar tu interés en tu espacio, en este navegador.</p>
+      <form onSubmit={saveLocal} style={{display:'grid',gap:12,marginTop:20}}>
+        <label style={{display:'grid',gap:5}}>¿Qué te gustaría vivir en español? (opcional)
+          <textarea rows={4} maxLength={2000} value={localNote} onChange={e=>setLocalNote(e.target.value)} dir="auto" style={{...field,resize:'vertical'}}/>
+        </label>
+        <button type="submit" style={{background:'#e8b76e',color:'#101b2c',border:0,borderRadius:10,padding:14,font:'inherit',fontWeight:700,cursor:'pointer'}}>Guardar mi interés en mi espacio</button>
+        {localStatus&&<p role="status" style={{color:localStatus.ok?'#9ee1b6':'#ffd19b',margin:0}}>{localStatus.text}</p>}
+      </form>
+    </>}
+    {available!==false&&<form onSubmit={submit} style={{display:'grid',gap:16,marginTop:30}}>
       <label style={{display:'grid',gap:5}}>Tu correo
         <input required type="email" autoComplete="email" maxLength={255} value={email} onChange={e=>setEmail(e.target.value)} style={field}/>
       </label>
@@ -53,9 +73,9 @@ export default function ImmersionPage() {
       </label>
       <input name="website" autoComplete="off" tabIndex={-1} aria-hidden="true" style={{position:'absolute',left:'-9999px'}}/>
       <button type="submit" disabled={pending||success||available!==true} style={{background:pending||success?'#46556d':'#e8b76e',color:'#101b2c',border:0,borderRadius:10,padding:14,font:'inherit',fontWeight:700,cursor:'pointer'}}>
-        {pending?'Enviando…':success?'Solicitud recibida':available===null?'Comprobando disponibilidad…':available===false?'Solicitudes no disponibles':'Enviar interés'}
+        {pending?'Enviando…':success?'Solicitud recibida':available===null?'Comprobando disponibilidad…':'Enviar interés'}
       </button>
       {notice&&<p role="status" style={{color:success?'#9ee1b6':'#ffd19b',margin:0}}>{notice}</p>}
-    </form>
+    </form>}
   </main>
 }

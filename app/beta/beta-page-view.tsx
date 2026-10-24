@@ -5,11 +5,14 @@ import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, MODE_UI_CO
 import { Bubble, Typing } from './beta-chat-ui'
 import { doExportTxt, doExportPdfBackend } from './beta-io'
 import { useBetaPage } from './use-beta-page'
+import { SpacePanel } from './beta-space-panel'
 import { CHAT_CSS } from '../../lib/content/markdown'
 
 export default function BetaPageView() {
   const [exportStatus, setExportStatus] = React.useState<string | null>(null)
+  const [showSpace, setShowSpace] = React.useState(false)
   const {
+    space, spaceNotice, spaceActions, newConversation, openConversation, deleteConversation, deleteSpace, activeConversationId,
     phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
@@ -37,6 +40,20 @@ export default function BetaPageView() {
         ${CHAT_CSS}
         .ln-user .ln-md strong, .ln-user .ln-md a, .ln-user .ln-md h1, .ln-user .ln-md h2, .ln-user .ln-md h3, .ln-user .ln-md h4 { color:inherit }
       `}</style>
+      {showSpace && space && (
+        <SpacePanel space={space} activeConversationId={activeConversationId} notice={spaceNotice} busy={loading} actions={spaceActions}
+          onClose={() => setShowSpace(false)}
+          onNewConversation={() => { void newConversation(); setShowSpace(false) }}
+          onOpenConversation={id => { void openConversation(id); setShowSpace(false) }}
+          onDeleteConversation={id => { void deleteConversation(id) }}
+          onDeleteSpace={() => { void deleteSpace(); setShowSpace(false) }} />
+      )}
+      {phase !== 'chat' && space && (
+        <button type="button" onClick={() => setShowSpace(true)}
+          style={{ position:'fixed', top:8, right:8, zIndex:60, fontSize:11, minHeight:36, padding:'6px 12px', borderRadius:999, border:'1px solid var(--border)', background:'rgba(8,17,32,.86)', color:'var(--silver)', cursor:'pointer' }}>
+          Espacio · {space.conversations.length}
+        </button>
+      )}
       {phase === 'mode' && (
         <div dir={lang==='ar'?'rtl':'ltr'} style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'32px 20px', gap:24 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -154,7 +171,7 @@ export default function BetaPageView() {
       )}
       {phase === 'chat' && (
         <div style={{ display:'flex', flexDirection:'column', height:'100dvh', maxWidth:760, margin:'0 auto' }}>
-          <div style={{ padding:'13px 18px', background:'rgba(8,17,32,.86)', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ padding:'13px 18px', background:'rgba(8,17,32,.86)', borderBottom:'1px solid var(--border)', display:'flex', flexWrap:'wrap', alignItems:'center', gap:12 }}>
             <div style={{ width:42, height:42, borderRadius:'50%', background:mm.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{mm.emoji}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:800, fontSize:15, color:'#fff' }}>{mm.name} <span style={{ fontSize:10, color:mm.color }}>{mm.code}</span></div>
@@ -187,11 +204,12 @@ export default function BetaPageView() {
                 </div>
               )}
             </div>
-            <button onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
-            <span title="Los documentos se conservan en este navegador mediante IndexedDB. Reset los elimina. No se sincronizan entre dispositivos." style={{ fontSize:10, color:'var(--dim)' }}>Local</span>
-            {(exportStatus || persistWarning) && (
+            <button onClick={() => setShowSpace(true)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid rgba(0,201,167,.4)', background:'none', color:'var(--teal)', cursor:'pointer' }}>Espacio</button>
+            <button title="Vacía solo esta conversación. Tu espacio (fuentes, memoria, otras conversaciones) se conserva." onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
+            <span title="Tu espacio y sus conversaciones se conservan en este navegador (IndexedDB). No se sincronizan entre dispositivos." style={{ fontSize:10, color:'var(--dim)' }}>Local</span>
+            {(exportStatus || persistWarning || (spaceNotice && !showSpace)) && (
               <div role="status" aria-live="polite" style={{ fontSize:10, maxWidth:260, color:'var(--teal)' }}>
-                {exportStatus || persistWarning}
+                {exportStatus || persistWarning || spaceNotice}
               </div>
             )}
           </div>

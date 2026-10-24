@@ -7,6 +7,7 @@
 // carries facts (language, level, continuity, script) — the Tutor decides.
 // =============================================================================
 import type { CEFRLevel } from './contracts';
+import { buildCommercialContext, formatCommercialFacts, type CommercialContext } from './commercial-context';
 
 export type DomainProficiency = 'novice' | 'practitioner' | 'expert' | 'unknown';
 export type PedagogicalGoal = 'teach' | 'practice' | 'assess' | 'converse' | 'review';
@@ -29,6 +30,8 @@ export interface ContextPack {
   // 7.3.2: the language the Tutor itself declared for its explanations (any
   // language code), carried by the session. Null until the Tutor declares one.
   explanatoryLanguage: string | null;
+  // 7.5: immersion facts (level, goal, recorded interest, whether frequency allows an invitation). Information, not an order.
+  commercial: CommercialContext | null;
 }
 
 export type LevelConfirmed = boolean;
@@ -55,6 +58,9 @@ export function buildContextPack(input: {
   turnCount?: number;
   activeMode?: string;
   explanatoryLanguage?: string;
+  /** 7.5: session facts for the immersion context; omitted => no commercial facts in this pack. */
+  commercialState?: Parameters<typeof buildCommercialContext>[0];
+  now?: number;
 }): ContextPack {
   const domain = input.lastConcept?.trim() || null;
   return {
@@ -70,6 +76,7 @@ export function buildContextPack(input: {
     activeFlowType: input.activeMode === 'pdf_course' || input.activeMode === 'structured' ? 'course' : null,
     turnCount: input.turnCount ?? 0,
     explanatoryLanguage: input.explanatoryLanguage?.trim() || null,
+    commercial: input.commercialState ? buildCommercialContext(input.commercialState, input.now) : null,
   };
 }
 
@@ -113,6 +120,7 @@ export function formatContextPack(pack: ContextPack, opts: { opening?: boolean }
     `turnCount: ${pack.turnCount}`,
     `explanatoryLanguage: ${pack.explanatoryLanguage ?? 'not declared yet'}`,
     'languageProficiency is CEFR for the target language. domainProficiency is independent of CEFR. Do not reduce domain teaching to the language level.',
+    ...formatCommercialFacts(pack.commercial),
   ];
   return lines.join('\n');
 }

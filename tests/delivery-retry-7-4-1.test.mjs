@@ -55,7 +55,7 @@ const handler=hook.slice(hook.indexOf("if (actionKey === 'retry_delivery') {"),h
 assert.ok(handler.length>300);assert.ok(!/addMsg\(/.test(handler),'a retry adds no bubble')
 assert.match(handler,/retryTargetId: target\.id/);assert.match(handler,/rewindToLastUser: true/)
 assert.match(hook,/applyDeliveryRetry\(msgsRef\.current, opts\.retryTargetId, data\)/,'result is applied in place')
-assert.match(hook,/lastIndexOf\('user'\)/,'the re-ask path stops the history before the student message it repeats')
+assert.match(hook,/rewindToLastUser: opts\?\.rewindToLastUser/);assert.match(fs.readFileSync(root+'lib/space/retrieve.ts','utf8'),/lastIndexOf\('user'\)/,'the re-ask path stops the history before the student message it repeats')
 const contracts=fs.readFileSync(root+'lib/contracts.ts','utf8')
 assert.match(contracts,/'retry_delivery';\n?\s*\/\/ Material currently visible/);assert.match(contracts,/retrySignals\?: unknown\[\]/)
 console.log('PASS 7.4.1 — delivery retry: in place, idempotent, no new bubble, no new Tutor turn, no model call')

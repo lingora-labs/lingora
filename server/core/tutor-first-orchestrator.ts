@@ -20,6 +20,8 @@ export interface RuntimePlanInput {
   state: SessionState
   interfaceLanguage: string
   uiAction?: RuntimeOperation
+  /** Clock of the request, supplied by the adapter so the plan is a pure function of its input. */
+  now?: number
 }
 
 function assertExecutionPlan(plan:ExecutionPlan):ExecutionPlan {
@@ -40,7 +42,7 @@ function assertExecutionPlan(plan:ExecutionPlan):ExecutionPlan {
 }
 
 export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
-  const {message,state,interfaceLanguage,uiAction}=input
+  const {message,state,interfaceLanguage,uiAction,now}=input
   if(uiAction && !['export_chat_pdf','download_pdf','hear_audio','create_visual_review'].includes(uiAction)) {
     throw new Error('orchestration invariant: unauthorized UI operation')
   }
@@ -77,7 +79,7 @@ export function orchestrateTutorFirst(input:RuntimePlanInput):ExecutionPlan {
   // All normal conversations are SINGLE-TUTOR — no distributed
   // intent router, commercial brain, model-derived arbitration or
   // hidden mode switch. The Tutor reads the intent; nothing here does.
-  const plan=buildTutorFirstPlan(message,state,interfaceLanguage)
+  const plan=buildTutorFirstPlan(message,state,interfaceLanguage,now)
   // A stale document request from an earlier build never gates anything now:
   // the Tutor decides, so any pending contract is simply cleared.
   if(state.pendingDocumentRequest)plan.clearDocumentContract=true

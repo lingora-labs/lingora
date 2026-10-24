@@ -25,15 +25,16 @@ console.log('PASS — Tutor First 7.2 static source contracts')
 
 // The SSE closure must commit its complete artifact snapshot before UI completion.
 const pageSource=read('app/beta/use-beta-page.ts')
-assert.ok(pageSource.includes('const result = await saveBetaSession({'))
-assert.ok(pageSource.indexOf('const result = await saveBetaSession({') < pageSource.indexOf('msgsRef.current = completedMsgs'))
-assert.ok(pageSource.includes('msgs: completedMsgs'))
+// 7.5: the commit goes to the active conversation of the Space.
+const commit='const result = await saveActive(conversationRef.current, completedMsgs, nextSession, phaseRef.current)'
+assert.ok(pageSource.includes(commit))
+assert.ok(pageSource.indexOf(commit) < pageSource.indexOf('msgsRef.current = completedMsgs'))
 
 // Regression: SSE/exports cannot reuse the initial onboarding/interact closure.
 const beta=read('app/beta/use-beta-page.ts')
 assert.match(beta,/const phaseRef = useRef<Phase>\(phase\)/)
 assert.match(beta,/const activeModeRef = useRef<ActiveMode>\(activeMode\)/)
-assert.match(beta,/phase: phaseRef\.current === 'chat' \? 'chat' : 'onboarding'/)
+assert.match(beta,/saveActive\(conversationRef\.current, [a-zA-Z]+, [a-zA-Z.]+, phaseRef\.current\)/,'saves read the phase from the ref, never a first-render closure')
 assert.match(beta,/activeMode: activeModeRef\.current/)
 assert.match(beta,/phaseRef\.current = 'chat'; setPhase\('chat'\)/)
 assert.match(beta,/activeModeRef\.current = mode; setActiveMode\(mode\)/)

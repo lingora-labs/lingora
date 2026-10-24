@@ -489,6 +489,8 @@ export interface SessionState {
   // Tutor-owned immersion invitations, persisted with ordinary session state.
   sessionId?: string;
   commercialOffers?: CommercialOffer[];
+  // 7.5: interest the student recorded in their Space (transported from the browser each turn; a fact, never inferred).
+  immersionInterest?: Array<{ at: string; note: string }>;
 
   // SEEK 4.1c2 — sovereign document contract
   pendingDocumentRequest?: PendingDocumentRequest;
@@ -598,6 +600,9 @@ export interface ChatRequest {
   // summary standing in for it. Additive and optional — omitting it
   // preserves prior behavior exactly.
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  // 7.5: what the student's Space contributes to this turn (instructions + retrieved passages with provenance).
+  // Selected in the browser from the Space only; never another conversation's messages.
+  spaceContext?: import('./space/retrieve').SpaceContextPayload | null;
   // 7.4: transport only. `false` asks for one JSON document instead of SSE; the engine is the same.
   stream?: boolean;
 }
@@ -729,7 +734,8 @@ export interface ExecutionPlan {
   pedagogicalAction: PedagogicalAction;
   artifacts: ArtifactType[];
   mentor?: MentorDirective;
-  commercial?: CommercialTrigger;
+  // 7.5: the immersion FACTS of this turn (same object the ContextPack renders). Never a trigger or a message.
+  commercial?: import('./commercial-context').CommercialContext;
   skipPhaseAdvance: boolean;
   reason: string;
   executionOrder: ExecutionStep[];

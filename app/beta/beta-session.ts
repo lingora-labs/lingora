@@ -1,17 +1,17 @@
-// LINGORA 7.1 — complete same-browser continuity, including real PDF/HTML.
-// IndexedDB stores the full structured-clone snapshot, not a truncated
-// localStorage string. It requires no account, S3 credentials or new backend.
+// LINGORA 7.5 — the beta page stores its conversations in the student's Space
+// (lib/space/store.ts, IndexedDB `lingora-space-v1`). This module is the adapter:
+// - spaceStore: the Space store bound to the beta message/session types;
+// - the 7.1–7.4 single-session store (`lingora-beta-v1` / localStorage) is READ ONLY,
+//   once, to migrate that session into the first conversation, then cleared.
 // Browser data clearing, private mode and storage eviction can remove files.
 import type { ActiveMode, Lang, MK, Msg, SS, TK } from './beta-model'
+import { createSpaceStore, indexedDbBackend } from '../../lib/space/store'
 
 export const BETA_SESSION_KEY = 'lingora-beta-session-v1'
 const DB_NAME = 'lingora-beta-v1'
 const DB_STORE = 'sessions'
 const DB_RECORD = 'current'
-// 7.5: no message-count cap (7.4 kept only the last 80 messages). The only limit is the size the
-// browser store can hold; above it the session is saved reduced and says so.
-const MAX_SNAPSHOT_CHARS = 60_000_000
-const LOCAL_LIMIT = 3_000_000
+// Above this size an embedded file is dropped from a reduced save (and the message says so).
 const LOCAL_LINK_LIMIT = 180_000
 
 export type BetaSessionSnapshot = {
@@ -78,17 +78,8 @@ async function transact<T>(mode: IDBTransactionMode, callback: (store: IDBObject
   } finally { db.close() }
 }
 
-// Session writes and resets have a single ordering authority. A late-running
-// save cannot reappear after Reset and resurrect a private old conversation.
-let writeQueue: Promise<void> = Promise.resolve()
-function serialized<T>(operation: () => Promise<T>): Promise<T> {
-  const next = writeQueue.then(operation, operation)
-  writeQueue = next.then(() => undefined, () => undefined)
-  return next
-}
-
-export async function readBetaSession(): Promise<BetaSessionSnapshot | null> {
-  await writeQueue
+/** Legacy (7.1–7.4) single session, for migration only. */
+export async function readLegacySession(): Promise<BetaSessionSnapshot | null> {
   try {
     const stored = validated(await transact('readonly', store => store.get(DB_RECORD)))
     if (stored) return stored
@@ -103,7 +94,7 @@ export async function readBetaSession(): Promise<BetaSessionSnapshot | null> {
   } catch { return null }
 }
 
-function strippedArtifact(message: Msg): Msg {
+export function strippedArtifact(message: Msg): Msg {
   const strip = (a: NonNullable<Msg['artifact']>) => {
     const oversized = Object.values(a).some(v => typeof v === 'string' && v.startsWith('data:')
       && v.length > LOCAL_LINK_LIMIT)
@@ -123,62 +114,11 @@ function strippedArtifact(message: Msg): Msg {
   }
 }
 
-function localFallback(snapshot: BetaSessionSnapshot): 'reduced' | 'failed' {
-  try {
-    const session = { ...snapshot.session } as SS & { artifactRegistry?: unknown }
-    delete session.artifactRegistry
-    const reduced: BetaSessionSnapshot = {
-      ...snapshot, session, reduced: true,
-      msgs: snapshot.msgs.map(strippedArtifact),
-    }
-    const encoded = JSON.stringify(reduced)
-    if (encoded.length > LOCAL_LIMIT) return 'failed'
-    localStorage.setItem(BETA_SESSION_KEY, encoded)
-    return 'reduced'
-  } catch { return 'failed' }
+
+/** Removes the legacy single-session copies once they live in the Space. */
+export async function clearLegacySession(): Promise<void> {
+  try { await transact('readwrite', store => store.delete(DB_RECORD)) } catch {}
+  try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
 }
 
-export function saveBetaSession(
-  input: Omit<BetaSessionSnapshot, 'version' | 'reduced'>,
-): Promise<'saved' | 'reduced' | 'failed'> {
-  return serialized(async () => {
-    const session = { ...input.session } as SS & { artifactRegistry?: unknown }
-    delete session.artifactRegistry
-    const snapshot: BetaSessionSnapshot = {
-      ...input, version: 1, session, msgs: input.msgs, reduced: false,
-    }
-    // Do not silently crop real artifacts to satisfy a storage limit.
-    // Failure must be visible to the student, while preserving a text
-    // fallback where possible.
-    let chars = 0
-    try { chars = JSON.stringify(snapshot).length } catch { return 'failed' }
-    if (chars > MAX_SNAPSHOT_CHARS) return localFallback(snapshot)
-    try {
-      await transact('readwrite', store => store.put(snapshot, DB_RECORD))
-      // Prevent old localStorage snapshots from resurfacing after an IDB
-      // eviction or partial upgrade.
-      try { localStorage.removeItem(BETA_SESSION_KEY) } catch {}
-      return snapshot.reduced ? 'reduced' : 'saved'
-    } catch (err) {
-      console.warn('[LINGORA] IndexedDB write unavailable', err)
-      return localFallback(snapshot)
-    }
-  })
-}
-
-export function clearBetaSession(): Promise<boolean> {
-  return serialized(async () => {
-    let idbCleared = false
-    let localCleared = false
-    try {
-      await transact('readwrite', store => store.delete(DB_RECORD))
-      idbCleared = true
-    } catch (err) { console.warn('[LINGORA] IndexedDB clear unavailable', err) }
-    try {
-      localStorage.removeItem(BETA_SESSION_KEY)
-      localCleared = true
-    } catch (err) { console.warn('[LINGORA] localStorage clear unavailable', err) }
-    // Reset is only confirmed if both existing storage routes completed.
-    return idbCleared && localCleared
-  })
-}
+export const spaceStore = createSpaceStore<Msg, SS>(indexedDbBackend(), { reduceMessage: strippedArtifact })

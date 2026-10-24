@@ -16,6 +16,27 @@ function allowEmbeddedFonts(html: string): string {
   );
 }
 
+/** The exact print document Chromium receives: the page plus the print stylesheet. Pure (QA renders it too). */
+export function preparePrintHtml(html: string, fonts: { fontCss: string; fontList: string; monoCss: string }): string {
+  const { fontCss, fontList, monoCss } = fonts;
+  const documentCSS = '@page{size:A4;margin:15mm 14mm}';
+  const commonCSS =
+    '<style>' + fontCss + '\n' + monoCss + '\n' + documentCSS +
+    'body{font-family:' + fontList + ',sans-serif!important}' +
+    (monoCss ? 'code,pre,.ln-math{font-family:"Noto Sans Mono",' + fontList + ',monospace!important}' : '') +
+    // Elements the page gave an explicit direction keep it; only undirected text follows its content.
+    ':is(p,li,td,th,blockquote,h1,h2,h3,h4):not([dir]){unicode-bidi:plaintext;text-align:start}' +
+    'table{max-width:100%;min-width:0!important;break-inside:auto}' +
+    'th,td{overflow-wrap:anywhere;vertical-align:top}' +
+    'tr{break-inside:avoid-page}' +
+    'p,li,blockquote{orphans:3;widows:3}' +
+    '</style>';
+  const source = allowEmbeddedFonts(html);
+  return source.includes('</head>')
+    ? source.replace('</head>', () => commonCSS + '</head>')
+    : '<!DOCTYPE html><html><head>' + commonCSS + '</head><body>' + source + '</body></html>';
+}
+
 export async function renderDocumentPdf(html: string): Promise<Uint8Array> {
   const text = html.replace(/<[^>]*>/g, ' ');
   const resolved = await resolveDocumentFonts(text);
@@ -32,22 +53,7 @@ export async function renderDocumentPdf(html: string): Promise<Uint8Array> {
     // CSS/data fonts are embedded before page load; Chromium needs no
     // external access and won't print while a font request is unfinished.
     const fontList = [...resolved.families].reverse().map(f => JSON.stringify(f)).join(',');
-    const documentCSS = '@page{size:A4;margin:15mm 14mm}';
-    const commonCSS =
-      '<style>' + resolved.css + '\n' + monoCss + '\n' + documentCSS +
-      'body{font-family:' + fontList + ',sans-serif!important}' +
-      (monoCss ? 'code,pre,.ln-math{font-family:"Noto Sans Mono",' + fontList + ',monospace!important}' : '') +
-      // Elements the page gave an explicit direction keep it; only undirected text follows its content.
-      ':is(p,li,td,th,blockquote,h1,h2,h3,h4):not([dir]){unicode-bidi:plaintext;text-align:start}' +
-      'table{max-width:100%;min-width:0!important;break-inside:auto}' +
-      'th,td{overflow-wrap:anywhere;vertical-align:top}' +
-      'tr{break-inside:avoid-page}' +
-      'p,li,blockquote{orphans:3;widows:3}' +
-      '</style>';
-    const source = allowEmbeddedFonts(html);
-    const prepared = source.includes('</head>')
-      ? source.replace('</head>', () => commonCSS + '</head>')
-      : '<!DOCTYPE html><html><head>' + commonCSS + '</head><body>' + source + '</body></html>';
+    const prepared = preparePrintHtml(html, { fontCss: resolved.css, fontList, monoCss });
     await page.setContent(prepared, { waitUntil: 'load', timeout: 30000 });
     // Embedded faces are lazy: a face nobody has requested yet stays
     // "unloaded" and would be miscounted as missing. Force-load every

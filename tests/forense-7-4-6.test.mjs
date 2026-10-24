@@ -50,5 +50,5 @@ assert.ok(!/value\.length > 8/.test(page),'review handler has no private 8-quest
 assert.ok(page.includes('QUIZ_RESOURCE_LIMITS.questions'),'one shared resource limit (no cognitive cap)')
 assert.ok(page.includes('detail.accepted = true') && quiz.includes('request.detail.accepted'),'"Enviado" only after acceptance')
 assert.ok(quiz.includes('quiz-send-refused'),'refusal is visible')
-assert.ok(io.includes('buildExportTurns') && io.includes('exportTurns: built.turns'),'header export is structured')
+assert.ok(io.includes('prepareConversationExport') && io.includes('exportTurns: built.turns') && src('app/beta/export-turns.ts').includes('const built = buildExportTurns(msgs)'),'header export is structured (7.5: one preparation for menu, chip and Tutor delivery)')
 console.log('PASS 7.4.6 forensic regressions (fence, loss gate, explicit refusal, single export builder, quiz review cap/handshake)')

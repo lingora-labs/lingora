@@ -22,6 +22,7 @@ export function buildTutorFirstPlan(
   message: string,
   state: SessionState,
   interfaceLanguage: string,
+  now: number = Date.now(),
 ): ExecutionPlan {
   // Onboarding's synthesized greeting is not the student's first REAL turn.
   // A short hello in Free mode is still the pedagogical opening: the tutor
@@ -38,6 +39,9 @@ export function buildTutorFirstPlan(
     turnCount: state.tokens ?? 0,
     activeMode: state.activeMode,
     explanatoryLanguage: (state as SessionState & { explanatoryLanguage?: string }).explanatoryLanguage,
+    // 7.5: immersion is context (facts in the pack), not a separate engine or an appended message.
+    commercialState: state,
+    now,
   });
 
   return {
@@ -59,7 +63,7 @@ export function buildTutorFirstPlan(
       cognitiveStructure: true,
       activeTopic: state.lastConcept?.trim() || state.currentLessonTopic?.trim() || undefined,
     },
-    commercial: undefined,
+    commercial: contextPack.commercial ?? undefined,
     skipPhaseAdvance: true,
     reason: freeOpeningGreeting
         ? '7.1 first learner hello in Free mode — tutor owns first-turn microaction after synthesized onboarding greeting.'

@@ -5,19 +5,43 @@ import {
   type MK, type TK, type Lang, type Phase, type ActiveMode, type Msg, type SS, type SuggestedAction, type Artifact, resolveMsgArtifacts, applyDeliveryRetry
 } from './beta-model'
 import { trimStateForPayload } from './beta-io'
-import { buildExportTurns } from './export-turns'
+import { buildExportTurns, prepareConversationExport } from './export-turns'
 import { QUIZ_RESOURCE_LIMITS } from '@/lib/content/quiz'
-import { EXPORT_PAYLOAD_LIMIT_BYTES } from './export-turns'
-import { selectHistoryWindow } from '@/lib/tutor-memory'
+import { buildConversationRequest } from '@/lib/space/retrieve'
+import {
+  addConfirmedFact, addSource, confirmFact, conversationTitle, isRefusal, mergeOffers, mirrorInferredMemory,
+  recordInterest, removeFact, removeSource, setInstructions, touchConversation, createConversation, createSpace,
+  type Conversation, type Refusal, type Space,
+} from '@/lib/space/model'
+import { createSpaceStore, memoryBackend } from '@/lib/space/store'
+import { isTextSource, sha256Hex } from '@/lib/space/sha256'
 import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
-import { readBetaSession, saveBetaSession, clearBetaSession } from './beta-session'
+import { readLegacySession, clearLegacySession, spaceStore, strippedArtifact } from './beta-session'
 
 const actionOf = (x: SuggestedAction): string => (x as unknown as { action?: string }).action ?? x.type ?? ''
+const LANGS: Lang[] = ['es','en','no','fr','de','it','pt','ar','ja','zh']
+const MENTORS: MK[] = ['sarah','alex','nick']
+const TOPICS: TK[] = ['conversation','structured','cervantes','business','travel','course','leveltest']
+const MODES: ActiveMode[] = ['interact','structured','pdf_course','free']
+const freshSession = (lang: Lang, mentor: MK, topic: TK): SS => ({
+  lang, mentor, topic, level: 'A0', tokens: 0, samples: [],
+  sessionId: 's'+Math.random().toString(36).slice(2),
+  commercialOffers: [], lastTask: null, lastArtifact: null,
+})
+type ConvMeta = { id: string; spaceId: string; createdAt: string }
+type UiPhase = Conversation['ui']['phase']
+const SOURCE_FILE_BYTES = 8_000_000
 export function useBetaPage() {
   const [phase, setPhase] = useState<Phase>('onboarding')
   const [hydrated, setHydrated] = useState(false)
   const [persistWarning, setPersistWarning] = useState<string | null>(null)
+  // 7.5: the student's Space (instructions, sources, memory, conversations). The page shows ONE conversation.
+  const [space, setSpace] = useState<Space | null>(null)
+  const [spaceNotice, setSpaceNotice] = useState<string | null>(null)
+  const spaceRef = useRef<Space | null>(null)
+  const storeRef = useRef(spaceStore)
+  const conversationRef = useRef<ConvMeta | null>(null)
   const [splashMsg, setSplashMsg] = useState('')
   const [splashRev, setSplashRev] = useState(false)
   const [lang, setLang] = useState<Lang>('en')
@@ -72,52 +96,115 @@ export function useBetaPage() {
   // msgsRef is the single canonical store: every writer updates it first and then mirrors it into state.
   // (A passive effect copying state -> ref could overwrite a newer ref with a stale render.)
   useEffect(() => { msgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
+  const uiPhaseOf = (p: Phase): UiPhase => (p === 'chat' ? 'chat' : p === 'mode' ? 'mode' : 'onboarding')
+  /** Shows one conversation of the Space. Cancels any pending save of the previous one. */
+  const applyConversation = useCallback((c: Conversation<Msg, SS>) => {
+    resetGenerationRef.current += 1
+    conversationRef.current = { id: c.id, spaceId: c.spaceId, createdAt: c.createdAt }
+    const l = (LANGS as string[]).includes(c.ui.lang) ? c.ui.lang as Lang : langRef.current
+    const m = (MENTORS as string[]).includes(c.ui.mentor) ? c.ui.mentor as MK : mentorRef.current
+    const t = (TOPICS as string[]).includes(c.ui.topic) ? c.ui.topic as TK : topicRef.current
+    const mode = (MODES as string[]).includes(c.ui.activeMode) ? c.ui.activeMode as ActiveMode : 'interact'
+    setLang(l); langRef.current = l
+    setMentor(m); mentorRef.current = m
+    setTopic(t); topicRef.current = t
+    activeModeRef.current = mode; setActiveMode(mode)
+    setSession(c.session); sessionRef.current = c.session
+    setMsgs(c.msgs); msgsRef.current = c.msgs
+    pendingQuizFeedbackRef.current = null; pendingExportRef.current = false
+    const phaseNow: Phase = c.ui.phase === 'chat' ? 'chat' : c.ui.phase === 'mode' ? 'mode' : 'onboarding'
+    phaseRef.current = phaseNow; setPhase(phaseNow)
+    setInput('')
+    setPersistWarning(c.reduced ? 'Se recuperó una conversación reducida. Comprueba si están todos tus archivos.' : null)
+  }, [])
+  const seedFor = useCallback((phaseNow: UiPhase) => ({
+    session: freshSession(langRef.current, mentorRef.current, topicRef.current),
+    ui: { phase: phaseNow, lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current, activeMode: 'interact' },
+  }), [])
+  const recordOf = useCallback((meta: ConvMeta, msgsNow: Msg[], sessionNow: SS, phaseNow: Phase): Conversation<Msg, SS> => ({
+    id: meta.id, spaceId: meta.spaceId, createdAt: meta.createdAt, updatedAt: new Date().toISOString(),
+    msgs: msgsNow, session: sessionNow,
+    ui: { phase: uiPhaseOf(phaseNow), lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current, activeMode: activeModeRef.current },
+  }), [])
+  /** Read-modify-write of the Space. A refusal is shown to the student, never swallowed. */
+  const updateSpace = useCallback(async (fn: (s: Space) => Space | Refusal): Promise<boolean> => {
+    const out = await storeRef.current.mutate(sp => { const r = fn(sp); return isRefusal(r) ? { refusal: r.message } : { space: r, result: true } })
+    if (!out.ok) { setSpaceNotice(out.message); return false }
+    if (out.space !== spaceRef.current) { spaceRef.current = out.space; setSpace(out.space) }
+    return true
+  }, [])
+  /** Saves the active conversation; keeps its title in the Space index in step with its first line. */
+  const saveActive = useCallback(async (meta: ConvMeta | null, msgsNow: Msg[], sessionNow: SS, phaseNow: Phase) => {
+    if (!meta) return 'failed' as const
+    const result = await storeRef.current.saveConversation(recordOf(meta, msgsNow, sessionNow, phaseNow))
+    const ref = spaceRef.current?.conversations.find(c => c.id === meta.id)
+    const title = conversationTitle(msgsNow, '')
+    if (ref && title && ref.title !== title) void updateSpace(sp => touchConversation(sp, meta.id, title))
+    return result
+  }, [recordOf, updateSpace])
+  /** What a finished turn leaves in the Space: the offer record and the Tutor's notes as INFERRED memory. */
+  const absorbTurn = useCallback((next: SS) => {
+    const id = conversationRef.current?.id
+    if (!id) return
+    void updateSpace(sp => mirrorInferredMemory(mergeOffers(sp, next.commercialOffers), id, next.tutorMemory))
+  }, [updateSpace])
   useEffect(() => {
-    // Restore full artifact URLs from IndexedDB before enabling autosave.
-    // Earlier localStorage sessions migrate transparently, without
-    // claiming that URLs previously discarded can be reconstructed.
+    // 7.5: open (or create) the Space. A 7.1–7.4 single session migrates once into the first conversation.
     let mounted = true
-    void readBetaSession().then(saved => {
+    const legacySeed = async () => {
+      const legacy = await readLegacySession()
+      return legacy ? {
+        session: legacy.session, msgs: legacy.msgs, reduced: legacy.reduced,
+        ui: { phase: legacy.phase as UiPhase, lang: legacy.lang, mentor: legacy.mentor, topic: legacy.topic, activeMode: legacy.activeMode },
+      } : null
+    }
+    const fresh = () => seedFor('onboarding')
+    const opened = storeRef.current.open(legacySeed, fresh).catch(async err => {
+      // No IndexedDB (private mode, blocked storage): the Space lives in memory for this visit and says so.
+      console.warn('[LINGORA] Space storage unavailable', err)
+      storeRef.current = createSpaceStore<Msg, SS>(memoryBackend(), { reduceMessage: strippedArtifact })
+      if (mounted) setSpaceNotice('Este navegador no permite guardar tu espacio: todo se perderá al cerrar la página.')
+      return storeRef.current.open(async () => null, fresh)
+    })
+    void opened.then(({ space: sp, conversation, migrated }) => {
       if (!mounted) return
-      if (saved) {
-        setLang(saved.lang); langRef.current = saved.lang
-        setMentor(saved.mentor); mentorRef.current = saved.mentor
-        setTopic(saved.topic); topicRef.current = saved.topic
-        activeModeRef.current = saved.activeMode; setActiveMode(saved.activeMode)
-        setSession(saved.session); sessionRef.current = saved.session
-        setMsgs(saved.msgs); msgsRef.current = saved.msgs
-        phaseRef.current = saved.phase; setPhase(saved.phase)
-        if (saved.reduced) setPersistWarning('Se recuperó una sesión reducida. Comprueba si están todos tus archivos.')
-      } else {
+      if (migrated) void clearLegacySession()
+      spaceRef.current = sp; setSpace(sp)
+      if (!migrated && conversation.msgs.length === 0 && conversation.ui.phase === 'onboarding') {
         try {
           const raw = localStorage.getItem('lng1010')
           if (raw) {
             const p = JSON.parse(raw) as Partial<SS>
-            const languages = ['es','en','no','fr','de','it','pt','ar','ja','zh']
-            if (p.lang && languages.includes(p.lang)) { setLang(p.lang); langRef.current = p.lang }
-            if (p.mentor && ['sarah','alex','nick'].includes(p.mentor)) { setMentor(p.mentor); mentorRef.current = p.mentor }
-            if (p.topic && ['conversation','structured','cervantes','business','travel','course','leveltest'].includes(p.topic)) { setTopic(p.topic); topicRef.current = p.topic }
+            if (p.lang && LANGS.includes(p.lang)) conversation.ui.lang = p.lang
+            if (p.mentor && MENTORS.includes(p.mentor)) conversation.ui.mentor = p.mentor
+            if (p.topic && TOPICS.includes(p.topic)) conversation.ui.topic = p.topic
           }
         } catch {}
       }
+      applyConversation(conversation)
       setHydrated(true)
     }).catch(err => {
       console.warn('[LINGORA] beta hydration failed', err)
-      if (mounted) { setPersistWarning('No se pudo recuperar el almacenamiento de esta sesión.'); setHydrated(true) }
+      if (!mounted) return
+      // Last resort: an unsaved Space in memory, so the page still works.
+      const conv = createConversation<Msg, SS>('', fresh().session, fresh().ui)
+      const sp = createSpace(conv.id)
+      spaceRef.current = sp; setSpace(sp)
+      applyConversation({ ...conv, spaceId: sp.id })
+      setPersistWarning('No se pudo recuperar el almacenamiento de esta sesión.')
+      setHydrated(true)
     })
     return () => { mounted = false }
-  }, [])
+  }, [applyConversation, seedFor])
   useEffect(() => {
     if (!hydrated) return
-    const snapshot = {
-      phase: (phase === 'chat' ? 'chat' : 'onboarding') as 'chat' | 'onboarding',
-      lang, mentor, topic, activeMode, session, msgs,
-    }
+    // The conversation is captured NOW: a switch before the timer fires cannot write these messages elsewhere.
+    const meta = conversationRef.current
     let cancelled = false
     const generation = resetGenerationRef.current
     const write = () => {
       if (generation !== resetGenerationRef.current || resetInProgressRef.current) return
-      void saveBetaSession(snapshot).then(result => {
+      void saveActive(meta, msgs, session, phase).then(result => {
         if (cancelled) return
         if (result === 'failed') setPersistWarning('No se pudo guardar la sesión. Descarga los documentos antes de salir.')
         else if (result === 'reduced') setPersistWarning('La sesión se guardó parcialmente. Algunos archivos podrían no recuperarse.')
@@ -135,7 +222,7 @@ export function useBetaPage() {
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', onHide)
     }
-  }, [hydrated, phase, lang, mentor, topic, activeMode, session, msgs, loading])
+  }, [hydrated, phase, lang, mentor, topic, activeMode, session, msgs, loading, saveActive])
   const addMsg = useCallback((m: Omit<Msg,'id'>) => {
     // 7.4.1: the ref is the canonical snapshot (callAPI and the quiz-progress handler rebuild state from it).
     // Updating only React state left a window in which a concurrent rebuild silently dropped the new message
@@ -157,15 +244,10 @@ export function useBetaPage() {
     const nextMsgs = [...msgsRef.current, archive]
     msgsRef.current = nextMsgs
     setMsgs(nextMsgs)
-    const status = await saveBetaSession({
-      phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
-      lang: langRef.current, mentor: mentorRef.current,
-      topic: topicRef.current, activeMode: activeModeRef.current,
-      session: sessionRef.current, msgs: nextMsgs,
-    })
+    const status = await saveActive(conversationRef.current, nextMsgs, sessionRef.current, phaseRef.current)
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
-  }, [])
+  }, [saveActive])
   const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean }) => {
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
     lastCallFailedRef.current = false
@@ -180,17 +262,20 @@ export function useBetaPage() {
       // Tutor's typed memory (state.tutorMemory) covers whatever the budget can no longer hold.
       // 7.4.1: re-asking after a turn that never produced material must not show the student's words to the
       // Tutor twice: the history stops before the last student message, which `message` repeats.
-      const lastUser = msgsRef.current.map(m => m.sender).lastIndexOf('user')
-      const historySource = opts?.rewindToLastUser && lastUser >= 0 ? msgsRef.current.slice(0, lastUser) : msgsRef.current
-      const conversationHistory = selectHistoryWindow(historySource
-        .filter(m => m.sender !== 'ln' && (m.text || '').trim().length > 0)
-        .map(m => ({ role: (m.sender === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }))).kept
+      // 7.5: the active conversation's own history, plus what the Space contributes (instructions, passages
+      // and confirmed memory with provenance, offer frequency, recorded interest). No other conversation is read.
+      const sp = spaceRef.current
+      const meta = conversationRef.current
+      const turn = buildConversationRequest(sp ?? createSpace('none'), { id: meta?.id ?? 'none', msgs: msgsRef.current },
+        typeof payload.message === 'string' ? payload.message : '', { rewindToLastUser: opts?.rewindToLastUser })
+      const conversationHistory = turn.conversationHistory
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
           conversationHistory,
+          ...(sp ? { spaceContext: turn.spaceContext } : {}),
           state: {
             ...trimStateForPayload(sessionRef.current as unknown as Record<string, unknown>),
             mentor: mentorRef.current,
@@ -206,6 +291,7 @@ export function useBetaPage() {
             currentExercise: sessionRef.current.currentExercise,
             expectedResponseMode: sessionRef.current.expectedResponseMode,
             _exerciseAttemptCount: sessionRef.current._exerciseAttemptCount,
+            ...(sp ? { commercialOffers: turn.commercialOffers, immersionInterest: turn.immersionInterest } : {}),
           }
         }),
       })
@@ -259,12 +345,8 @@ export function useBetaPage() {
                 // COMMIT BEFORE DISPLAY: an immediate refresh cannot observe a
                 // completed turn until its exact artifacts are durable in IndexedDB.
                 // The existing serialized save path owns both success and failure.
-                const result = await saveBetaSession({
-                  phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
-                  lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
-                  activeMode: activeModeRef.current,
-                  session: nextSession, msgs: completedMsgs,
-                })
+                const result = await saveActive(conversationRef.current, completedMsgs, nextSession, phaseRef.current)
+                absorbTurn(nextSession)
                 sessionRef.current = nextSession
                 setSession(nextSession)
                 msgsRef.current = completedMsgs
@@ -292,11 +374,7 @@ export function useBetaPage() {
       // 7.4.1: a delivery retry updates the message that failed, in place. No new bubble, no new Tutor turn.
       if (opts?.retryTargetId && data.retryOf) {
         const patched: Msg[] = applyDeliveryRetry(msgsRef.current, opts.retryTargetId, data)
-        const result = await saveBetaSession({
-          phase: phaseRef.current === 'chat' ? 'chat' : 'onboarding',
-          lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
-          activeMode: activeModeRef.current, session: sessionRef.current, msgs: patched,
-        })
+        const result = await saveActive(conversationRef.current, patched, sessionRef.current, phaseRef.current)
         msgsRef.current = patched
         setMsgs(patched)
         if (result === 'failed') setPersistWarning('No se pudieron conservar estos archivos. Descárgalos antes de recargar.')
@@ -310,6 +388,7 @@ export function useBetaPage() {
           sessionRef.current = n
           return n
         })
+        absorbTurn({ ...sessionRef.current, ...data.state })
       }
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       if (Array.isArray(data.clientDeliveries) && data.clientDeliveries.includes('conversation_pdf')) pendingExportRef.current = true
@@ -331,17 +410,12 @@ export function useBetaPage() {
       else if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')) msg = 'No se pudo conectar con el servidor.'
       addMsg({ sender: mentorRef.current ?? 'ln', text: msg })
     } finally { setLoading(false) }
-  }, [addMsg])
+  }, [addMsg, saveActive, absorbTurn])
   // ONE conversation export for the menu, the chat chip and a Tutor's conversation_pdf delivery:
   // the whole conversation held here, with its artifacts, printed by the canonical document page.
   const runConversationExport = useCallback((message: string) => {
-    const built = buildExportTurns(msgsRef.current)
+    const built = prepareConversationExport(msgsRef.current)
     if (!built.ok) { setPersistWarning(built.message); return }
-    const bytes = new Blob([JSON.stringify(built.turns)]).size
-    if (bytes > EXPORT_PAYLOAD_LIMIT_BYTES) {
-      setPersistWarning(`La conversación con sus materiales ocupa ${(bytes / 1e6).toFixed(1)} MB y supera los ${(EXPORT_PAYLOAD_LIMIT_BYTES / 1e6).toFixed(0)} MB que se pueden enviar para imprimir. No se exporta un historial incompleto.`)
-      return
-    }
     void callAPI({ message, exportTurns: built.turns, uiAction: 'export_chat_pdf' })
   }, [callAPI])
   useEffect(() => {
@@ -616,33 +690,97 @@ export function useBetaPage() {
       setMsgs(fallback)
     })()
   }, [callAPI])
+  // Reset empties the ACTIVE conversation only. The Space (instructions, sources, confirmed memory,
+  // other conversations) stays; «Borrar espacio» is a separate, explicit action.
   const resetChat = useCallback(async () => {
     if (resetInProgressRef.current) return
+    const meta = conversationRef.current
+    if (!meta) return
     resetInProgressRef.current = true
     // Invalidate prior debounced writes before clearing the serialized queue.
     resetGenerationRef.current += 1
     pendingQuizFeedbackRef.current = null
-    setPersistWarning('Eliminando los materiales locales…')
-    const cleared = await clearBetaSession()
+    setPersistWarning('Vaciando esta conversación…')
+    const seed = seedFor('onboarding')
+    const cleared = await storeRef.current.resetConversation(recordOf(meta, msgsRef.current, sessionRef.current, phaseRef.current), seed)
     if (!cleared) {
       setPersistWarning('Reset no confirmado: el almacenamiento local no pudo limpiarse.')
       resetInProgressRef.current = false
       return
     }
-    const freshSession: SS = {
-      lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current,
-      level: 'A0', tokens: 0, samples: [],
-      sessionId: 's'+Math.random().toString(36).slice(2),
-      commercialOffers: [], lastTask: null, lastArtifact: null,
-    }
-    sessionRef.current = freshSession
+    // The emptied conversation keeps neither a title from its old content nor the Tutor's inferences from it.
+    const index = (spaceRef.current?.conversations.findIndex(c => c.id === meta.id) ?? 0) + 1
+    await updateSpace(sp => mirrorInferredMemory(touchConversation(sp, meta.id, 'Conversación ' + index), meta.id, []))
+    sessionRef.current = seed.session
     setMsgs([]); msgsRef.current = []
     setInput(''); setPersistWarning(null)
-    setSession(freshSession)
+    setSession(seed.session)
     activeModeRef.current = 'interact'; setActiveMode('interact')
     phaseRef.current = 'onboarding'; setPhase('onboarding')
     resetInProgressRef.current = false
-  }, [])
+  }, [seedFor, recordOf, updateSpace])
+  /** Flushes the visible conversation before showing another one. */
+  const flushActive = useCallback(async () => {
+    resetGenerationRef.current += 1
+    return saveActive(conversationRef.current, msgsRef.current, sessionRef.current, phaseRef.current)
+  }, [saveActive])
+  const newConversation = useCallback(async () => {
+    const sp = spaceRef.current
+    if (loading || !sp) return
+    await flushActive()
+    // Same Space, same language/mentor/topic; empty thread; the student chooses the mode and the Tutor greets.
+    const out = await storeRef.current.newConversation(spaceRef.current ?? sp, seedFor('mode'))
+    spaceRef.current = out.space; setSpace(out.space)
+    applyConversation(out.conversation)
+  }, [loading, flushActive, seedFor, applyConversation])
+  const openConversation = useCallback(async (id: string) => {
+    const sp = spaceRef.current
+    if (loading || !sp || id === conversationRef.current?.id) return
+    await flushActive()
+    const out = await storeRef.current.switchConversation(spaceRef.current ?? sp, id)
+    if (!out) { setSpaceNotice('Esa conversación ya no está en este navegador.'); return }
+    spaceRef.current = out.space; setSpace(out.space)
+    applyConversation(out.conversation)
+  }, [loading, flushActive, applyConversation])
+  const deleteConversation = useCallback(async (id: string) => {
+    const sp = spaceRef.current
+    if (loading || !sp) return
+    await flushActive()
+    const out = await storeRef.current.deleteConversation(spaceRef.current ?? sp, id, seedFor('onboarding'))
+    spaceRef.current = out.space; setSpace(out.space)
+    if (out.conversation.id !== conversationRef.current?.id || id === conversationRef.current?.id) applyConversation(out.conversation)
+  }, [loading, flushActive, seedFor, applyConversation])
+  const deleteSpace = useCallback(async () => {
+    const sp = spaceRef.current
+    if (loading || !sp) return
+    resetGenerationRef.current += 1
+    const done = await storeRef.current.deleteSpace(sp)
+    if (!done) { setSpaceNotice('No se pudo borrar el espacio de este navegador.'); return }
+    const out = await storeRef.current.open(async () => null, () => seedFor('onboarding'))
+    spaceRef.current = out.space; setSpace(out.space)
+    applyConversation(out.conversation)
+    setSpaceNotice('Espacio borrado: conversaciones, fuentes, memoria e interés eliminados de este navegador.')
+  }, [loading, seedFor, applyConversation])
+  const spaceActions = useMemo(() => ({
+    setInstructions: (text: string) => updateSpace(sp => setInstructions(sp, text)),
+    addSourceFile: async (file: File) => {
+      if (!isTextSource(file.name, file.type)) { setSpaceNotice(`«${file.name}»: el espacio admite por ahora fuentes de texto (.txt, .md, .csv, .json, .html, .srt). No se añadió.`); return false }
+      if (file.size > SOURCE_FILE_BYTES) { setSpaceNotice(`«${file.name}» ocupa ${(file.size / 1e6).toFixed(1)} MB; el máximo por fuente es ${SOURCE_FILE_BYTES / 1e6} MB. No se añadió.`); return false }
+      try {
+        const text = await file.text()
+        const sha256 = await sha256Hex(text)
+        const ok = await updateSpace(sp => addSource(sp, { name: file.name, mime: file.type || 'text/plain', text, sha256 }))
+        if (ok) setSpaceNotice(`Fuente «${file.name}» añadida (SHA-256 ${sha256.slice(0, 12)}…).`)
+        return ok
+      } catch (e) { setSpaceNotice(`«${file.name}» no se pudo leer: ${e instanceof Error ? e.message : String(e)}`); return false }
+    },
+    removeSource: (id: string) => updateSpace(sp => removeSource(sp, id)),
+    addFact: (key: string, value: string) => updateSpace(sp => addConfirmedFact(sp, key, value)),
+    confirmFact: (id: string) => updateSpace(sp => confirmFact(sp, id)),
+    removeFact: (id: string) => updateSpace(sp => removeFact(sp, id)),
+    recordInterest: (note: string) => updateSpace(sp => recordInterest(sp, conversationRef.current?.id ?? null, note)),
+    clearNotice: () => setSpaceNotice(null),
+  }), [updateSpace])
   const toggleRec = useCallback(async () => {
     if (recording) { mrRef.current?.stop(); setRecording(false); return }
     if (pendingAudioUrl) { URL.revokeObjectURL(pendingAudioUrl); setPendingAudioUrl(null) }
@@ -667,6 +805,8 @@ export function useBetaPage() {
     r.readAsDataURL(file); e.target.value = ''
   }, [])
   return {
+    space, spaceNotice, spaceActions, newConversation, openConversation, deleteConversation, deleteSpace,
+    activeConversationId: conversationRef.current?.id ?? null,
     phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,

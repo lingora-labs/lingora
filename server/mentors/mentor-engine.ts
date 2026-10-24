@@ -97,7 +97,8 @@ import { buildContextPack, formatContextPack, formatLanguageTurnNote, type Conte
 import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage } from '@/lib/explanatory-language'
 import { UPDATE_STUDENT_MEMORY_TOOL, parseMemoryOps, formatMemoryBlock, selectHistoryWindow, planHistoryBudget, formatContextNote, type TutorMemoryOp } from '@/lib/tutor-memory'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
-import { commercialContextForTurn } from '@/server/core/commercial-context'
+import { formatSpaceContext } from '@/server/space/context'
+import type { SpaceContextPayload } from '@/lib/space/retrieve'
 import {
   ARTIFACT_CHANNEL_INSTRUCTION,
   COMPLETE_TUTOR_TURN_TOOL,
@@ -174,6 +175,8 @@ type NormalizedMentorCall = {
   // True only when the student has written nothing yet (session-open turn): a
   // structural fact about the request, not a reading of anyone's words.
   opening: boolean
+  // 7.5: what the student's Space contributes to this turn (validated in chat-entry).
+  spaceContext: SpaceContextPayload | null
 }
 
 export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number }
@@ -241,6 +244,7 @@ function resolveTurnContextPack(message: string, state: LegacyMentorState, plan?
     turnCount: state.tokens ?? 0,
     activeMode: state.activeMode,
     explanatoryLanguage: state.explanatoryLanguage,
+    commercialState: state as Parameters<typeof buildContextPack>[0]['commercialState'],
   })
 }
 function buildContext(state: LegacyMentorState, opening: boolean): string {
@@ -304,6 +308,7 @@ export function buildMentorPrompt(params: {
   plan?: ExecutionPlan
   history?: Array<{ role: string; content: string }>
   opening?: boolean
+  spaceContext?: SpaceContextPayload | null
 }): { system: string; user: string; languageNote: string } {
   const state = params.state ?? {}
   const profile = getMentorProfile(resolveMentorName(state))
@@ -331,7 +336,7 @@ export function buildMentorPrompt(params: {
     : opening
       ? '[SESSION LOCALE: targetLanguage=es. This is the opening greeting; its language format is given in the language note.]\n\n'
       : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
-  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), formatMemoryBlock(state.tutorMemory), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), commercialContextForTurn(params.message, state)].filter(Boolean).join('')
+  const system = [localeEnvelope, profile.system, ARTIFACT_CHANNEL_INSTRUCTION, executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening), formatMemoryBlock(state.tutorMemory), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), formatSpaceContext(params.spaceContext)].filter(Boolean).join('')
   return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
 }
 
@@ -345,7 +350,7 @@ function normalizeRuntimeCall(params: MentorRuntimeParams): NormalizedMentorCall
     : []
   // 7.4: the thread is carried whole here; fitHistory() trims it against the INTEGRAL budget
   // (system + tools + memory + current turn + reply) once the prompt and tools are known.
-  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history: valid, opening: !rawMessage }
+  return { message, state: params.state ?? {}, systemDirective: undefined, plan: params.plan, action: params.action, priorContext: params.priorContext, history: valid, opening: !rawMessage, spaceContext: params.request?.spaceContext ?? null }
 }
 
 /** 7.4: the history gets exactly what the rest of the request leaves in the context window. Nothing is
@@ -389,7 +394,7 @@ export function buildModelParams(model: string, tokens: number, temperature?: nu
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
  const n=normalizeRuntimeCall(params)
- const built=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history,opening:n.opening})
+ const built=buildMentorPrompt({message:n.message,state:n.state,systemDirective:n.systemDirective,plan:n.plan,action:n.action,priorContext:n.priorContext,history:n.history,opening:n.opening,spaceContext:n.spaceContext})
  const {user,languageNote}=built
  const signals:ArtifactSignal[]=[]
  const deliveries:TextDelivery[]=[]
