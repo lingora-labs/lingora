@@ -1,0 +1,46 @@
+name: LINGORA 7.5 Congelado Exact Import
+on:
+  push:
+    branches:
+      - ops/7-5-congelado-transport
+    paths:
+      - ops/l75c/go.flag
+permissions:
+  contents: write
+jobs:
+  import-exact-congelado-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify parts and bundle, import exact commit without rewriting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ops/l75c
+          cat > parts.sha256 <<'EOF'
+          653c26dcac169023602667e5abcb1051e03242e4b1201684d90c2379a0f8e289  part-00.b64
+          bb6ad23a0fb964c946edceb5b4a11e3d4fe16aaef89bdcc30f1d8dc00310ba48  part-01.b64
+          f66a223a6c076d1dcc019e5d4933e2cd2ab9c4a44ad9471f6cd98b45876cc002  part-02.b64
+          eb298e6b0b6144ae99ea3a1a5b7354e74d138eaaf15fcaa3817ab14f414700e0  part-03.b64
+          7ce73c0dd0d78651c34797809503a3c70eecaacf03bb5c6d657f4c8050f27c5a  part-04.b64
+          c5b44883e5f31a0a63b1aa06e9904cdb441950550159a68f9fbf057f1d3ef02c  part-05.b64
+          54ca8d309fb82bd38ef2df474d6848eef644b41e9a46183852dd2055f5f5ccde  part-06.b64
+          e66af9d3749d113ad33ea2819709fb9360dc9458cced2fbefbe94714c114be0e  part-07.b64
+          EOF
+          sed -i 's/^ *//' parts.sha256
+          sha256sum -c parts.sha256
+          cat part-0*.b64 | base64 -d > /tmp/l75c.bundle
+          cd "$GITHUB_WORKSPACE"
+          echo 'fcd9036853891feaf494a71cdcf6cf95d22fffae843fbbf9a204ef32bc123ee0  /tmp/l75c.bundle' | sha256sum -c -
+          git cat-file -e '0fcb602d8a64b0e2eedc2c12a1aa1dca3ceb238b^{commit}'
+          git bundle verify /tmp/l75c.bundle
+          git fetch /tmp/l75c.bundle HEAD
+          sha=$(git rev-parse FETCH_HEAD)
+          test "$sha" = 'ca6ddac00d9020f5551db8d804263fbd8c293c38'
+          test "$(git rev-parse "$sha^")" = '0fcb602d8a64b0e2eedc2c12a1aa1dca3ceb238b'
+          git -c http.version=HTTP/1.1 push origin "$sha:refs/heads/release/7.5-congelado"
+          echo "Imported SHA $sha without rewriting into branch release/7.5-congelado"
