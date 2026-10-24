@@ -23,9 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
       - name: Install exact project dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
       - name: Launch app locally with no usable LLM key
         shell: bash
         run: |
