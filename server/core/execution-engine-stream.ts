@@ -13,6 +13,8 @@ import {
 } from '../../lib/contracts'
 import { mergeStatePatch, documentContractStatePatch, toWireState } from './state-manager'
 import { recordedImmersionOfferPatch } from './commercial-context'
+import { validateLearningFacts, type AcceptedLearningFact, type LearningFactRejection } from '../../lib/learning-facts'
+import { mentionsImmersionChannel } from '../../lib/commercial-context'
 import { buildContextualActions } from './suggested-actions'
 import type { ArtifactSignal } from '../../lib/artifact-signal'
 import { creditLearningProgress } from '../../lib/progress-tokens'
@@ -29,6 +31,9 @@ interface SSEDone {
   artifactFailures?: ArtifactFailure[]
   artifactSignals?: ArtifactSignal[]
   suggestedActions?: SuggestedAction[]
+  // 7.5: student facts the Tutor declared and the runtime accepted on provenance; the browser stores them in the Space.
+  learningFacts?: AcceptedLearningFact[]
+  learningFactRejections?: LearningFactRejection[]
 }
 
 const TUTOR_FAILURES: Record<string, string | null> = {
@@ -43,6 +48,7 @@ const TUTOR_FAILURES: Record<string, string | null> = {
   unknown_tool: 'El Tutor usó una herramienta que no existe; se ignoró.',
   invalid_language_code: 'El Tutor intentó fijar un idioma de explicación no válido; no se guardó.',
   invalid_memory_ops: 'El Tutor intentó guardar una nota de memoria con formato no válido; no se guardó.',
+  invalid_learning_fact: 'El Tutor intentó registrar un hecho del alumno con formato no válido; no se guardó.',
   // Reported per declaration through rejectedReasons.
   artifact_signal_rejected: null,
 }
@@ -193,6 +199,24 @@ export function executePlanStream(
           if (applied.rejected.length || applied.evicted) console.warn('[tutor-memory]', JSON.stringify({ rejectedIds: applied.rejected, evicted: applied.evicted, total: applied.entries.length }))
         }
         Object.assign(patch, recordedImmersionOfferPatch(state, fullText))
+        // 7.5 (contract @202f6171): facts the Tutor declared this turn. Provenance only: the student's own words
+        // must contain the evidence; a decline needs an identifiable invitation in this conversation. They join the
+        // Space after this turn, so they never make this same turn eligible for an invitation.
+        let learning: { accepted: AcceptedLearningFact[]; rejected: LearningFactRejection[] } = { accepted: [], rejected: [] }
+        if (stream.learningFacts?.length) {
+          const history = Array.isArray(request.conversationHistory) ? request.conversationHistory : []
+          const lastTutor = [...history].reverse().find(h => h.role === 'assistant')?.content ?? ''
+          learning = validateLearningFacts(stream.learningFacts, {
+            conversationId: typeof request.conversationId === 'string' ? request.conversationId : '',
+            currentStudentMessage: request.message ?? '',
+            priorStudentMessages: history.filter(h => h.role === 'user').map(h => h.content),
+            invitationInConversation: (state.commercialOffers ?? []).some(o => o && state.sessionId != null && o.sessionId === state.sessionId)
+              || mentionsImmersionChannel(lastTutor),
+            at: new Date().toISOString(),
+          })
+          // Codes only: no student text in logs.
+          console.info('[learning-facts]', JSON.stringify({ declared: stream.learningFacts.map(f => f.fact), accepted: learning.accepted.map(f => f.fact), rejected: learning.rejected }))
+        }
         // Mode phases are observable state, not a separate pedagogical model.
         // A native tutor-authored quiz opens the exercise phase; after the
         // student's tactile answers the following turn gives feedback.
@@ -257,6 +281,8 @@ export function executePlanStream(
           ...(artifactFailures.length ? { artifactFailures } : {}),
           ...(signals.length ? { artifactSignals: signals } : {}),
           ...(clientDeliveries.length ? { clientDeliveries } : {}),
+          ...(learning.accepted.length ? { learningFacts: learning.accepted } : {}),
+          ...(learning.rejected.length ? { learningFactRejections: learning.rejected } : {}),
           turnState: artifactFailures.length ? 'complete_with_failures' : 'complete',
           // P18 (continuation) — ROOT GAP: this used to be
           // `artifact ? [export_chat_pdf] : undefined` — no artifact meant

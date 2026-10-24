@@ -9,12 +9,13 @@ import { buildExportTurns, prepareConversationExport } from './export-turns'
 import { QUIZ_RESOURCE_LIMITS } from '@/lib/content/quiz'
 import { buildConversationRequest } from '@/lib/space/retrieve'
 import {
-  addConfirmedFact, addSource, confirmFact, conversationTitle, isRefusal, mergeOffers, mirrorInferredMemory,
+  addConfirmedFact, addSource, applyLearningFacts, confirmFact, conversationTitle, isRefusal, mergeOffers, mirrorInferredMemory,
   recordInterest, removeFact, removeSource, setInstructions, touchConversation, createConversation, createSpace,
   type Conversation, type Refusal, type Space,
 } from '@/lib/space/model'
 import { createSpaceStore, memoryBackend } from '@/lib/space/store'
 import { isTextSource, sha256Hex } from '@/lib/space/sha256'
+import { sanitizeAcceptedFacts } from '@/lib/learning-facts'
 import { quizFingerprint } from '@/lib/quiz-answer-key'
 import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidence'
 import { readLegacySession, clearLegacySession, spaceStore, strippedArtifact } from './beta-session'
@@ -142,11 +143,15 @@ export function useBetaPage() {
     if (ref && title && ref.title !== title) void updateSpace(sp => touchConversation(sp, meta.id, title))
     return result
   }, [recordOf, updateSpace])
-  /** What a finished turn leaves in the Space: the offer record and the Tutor's notes as INFERRED memory. */
-  const absorbTurn = useCallback((next: SS) => {
+  /** What a finished turn leaves in the Space: the offer record, the Tutor's notes as INFERRED memory, and the
+   *  facts the runtime accepted on the student's own words (goal, result, decline/reopening) as CONFIRMED memory.
+   *  Awaited before the turn ends, so the next turn reads the updated Space; a failed write is shown, never hidden. */
+  const absorbTurn = useCallback(async (next: SS, facts?: unknown) => {
     const id = conversationRef.current?.id
     if (!id) return
-    void updateSpace(sp => mirrorInferredMemory(mergeOffers(sp, next.commercialOffers), id, next.tutorMemory))
+    const accepted = sanitizeAcceptedFacts(facts).filter(f => f.conversationId === id)
+    const ok = await updateSpace(sp => applyLearningFacts(mirrorInferredMemory(mergeOffers(sp, next.commercialOffers), id, next.tutorMemory), accepted))
+    if (!ok && accepted.length) setSpaceNotice('Un hecho que tu tutor reconoció no se pudo guardar en tu espacio.')
   }, [updateSpace])
   useEffect(() => {
     // 7.5: open (or create) the Space. A 7.1–7.4 single session migrates once into the first conversation.
@@ -276,6 +281,7 @@ export function useBetaPage() {
           ...payload,
           conversationHistory,
           ...(sp ? { spaceContext: turn.spaceContext } : {}),
+          ...(meta ? { conversationId: meta.id } : {}),
           state: {
             ...trimStateForPayload(sessionRef.current as unknown as Record<string, unknown>),
             mentor: mentorRef.current,
@@ -291,7 +297,7 @@ export function useBetaPage() {
             currentExercise: sessionRef.current.currentExercise,
             expectedResponseMode: sessionRef.current.expectedResponseMode,
             _exerciseAttemptCount: sessionRef.current._exerciseAttemptCount,
-            ...(sp ? { commercialOffers: turn.commercialOffers, immersionInterest: turn.immersionInterest } : {}),
+            ...(sp ? { commercialOffers: turn.commercialOffers, immersionInterest: turn.immersionInterest, commercialFacts: turn.commercialFacts } : {}),
           }
         }),
       })
@@ -346,7 +352,7 @@ export function useBetaPage() {
                 // completed turn until its exact artifacts are durable in IndexedDB.
                 // The existing serialized save path owns both success and failure.
                 const result = await saveActive(conversationRef.current, completedMsgs, nextSession, phaseRef.current)
-                absorbTurn(nextSession)
+                await absorbTurn(nextSession, parsed.learningFacts)
                 sessionRef.current = nextSession
                 setSession(nextSession)
                 msgsRef.current = completedMsgs
@@ -388,7 +394,7 @@ export function useBetaPage() {
           sessionRef.current = n
           return n
         })
-        absorbTurn({ ...sessionRef.current, ...data.state })
+        await absorbTurn({ ...sessionRef.current, ...data.state }, data.learningFacts)
       }
       if (data.diagnostic) { addMsg({ sender:'ln', text: JSON.stringify(data.diagnostic,null,2) }); return }
       if (Array.isArray(data.clientDeliveries) && data.clientDeliveries.includes('conversation_pdf')) pendingExportRef.current = true

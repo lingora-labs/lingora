@@ -10,6 +10,7 @@
 //   from that conversation alone (buildConversationRequest).
 import { estimateTokens, selectHistoryWindow } from '../tutor-memory'
 import type { Space } from './model'
+import { projectCommercialFacts } from './commercial-projection'
 
 export const RETRIEVAL_TOKEN_BUDGET = 1_500
 const PASSAGE_CHARS = 900
@@ -135,5 +136,7 @@ export function buildConversationRequest<M extends DialogueMsg>(
     // Space-wide facts the commercial context needs (frequency and recorded interest).
     commercialOffers: space.offers.map(o => ({ timestamp: o.timestamp, sessionId: o.sessionId })),
     immersionInterest: space.interest.map(i => ({ at: i.at, note: i.note })),
+    // Bounded projection for immersion eligibility (independent of lexical retrieval).
+    commercialFacts: projectCommercialFacts(space),
   }
 }

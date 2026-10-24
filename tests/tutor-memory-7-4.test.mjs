@@ -87,7 +87,7 @@ assert.match(block,/\[STUDENT MEMORY/);assert.match(block,/m1 \[goal, learned at
 
 // ── Wiring: every user-reachable route, typed contract, no silent cut ────────────────────────────────────────────────────────────────────────────────────────
 const eng=fs.readFileSync(root+'server/mentors/mentor-engine.ts','utf8')
-assert.match(eng,/UPDATE_STUDENT_MEMORY_TOOL\]/);assert.match(eng,/formatMemoryBlock\(state\.tutorMemory\)/)
+assert.match(eng,/UPDATE_STUDENT_MEMORY_TOOL[,\]]/);assert.match(eng,/formatMemoryBlock\(state\.tutorMemory\)/)
 assert.match(eng,/planHistoryBudget\(/,'integral budget used by the engine');assert.match(eng,/formatContextNote\(/,'Tutor is told when context was trimmed')
 assert.ok(!/HISTORY_MESSAGE_MAX_CHARS/.test(eng),'no leftover silent caps')
 const stream=fs.readFileSync(root+'server/core/execution-engine-stream.ts','utf8')

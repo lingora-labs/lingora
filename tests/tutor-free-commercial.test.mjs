@@ -11,11 +11,15 @@ const P = load('server/core/tutor-first-plan.ts')
 const M = load('server/mentors/mentor-engine.ts')
 const DAY = 24 * 60 * 60 * 1000
 const now = Date.UTC(2026, 9, 24, 12)
-const base = { activeMode: 'interact', tokens: 6, sessionId: 'cv_a', commercialOffers: [], interfaceLanguage: 'es', confirmedLevel: 'B1', lastUserGoal: 'viajar a Medellín' }
+// 7.5 inmersion-hechos: eligibility reads the Space projection (confirmed goal + earlier recognized result).
+const earlier = new Date(now - DAY).toISOString()
+const facts = { goals: [{ id: 'mf_goal', value: 'viajar a Medellín', at: earlier }], results: [{ id: 'lf_result_1', value: 'Usó bien el pretérito', at: earlier }], declinedAt: null }
+const base = { activeMode: 'interact', tokens: 6, sessionId: 'cv_a', commercialOffers: [], interfaceLanguage: 'es', confirmedLevel: 'B1', lastUserGoal: 'viajar a Medellín', commercialFacts: facts }
 
 // 1. buildCommercialContext → { level, goal, interest, offerAllowed }
 const c0 = C.buildCommercialContext(base, now)
-assert.equal(c0.level, 'B1'); assert.equal(c0.goal, 'viajar a Medellín'); assert.equal(c0.interest.recorded, false); assert.equal(c0.offerAllowed, true)
+assert.equal(c0.level, 'B1'); assert.deepEqual(c0.goal, { confirmed: true, value: 'viajar a Medellín' }); assert.equal(c0.interest.recorded, false); assert.equal(c0.offerAllowed, true)
+assert.equal(C.buildCommercialContext({ ...base, commercialFacts: undefined }, now).offerAllowed, false, 'lastUserGoal alone is not a confirmed goal')
 const withInterest = C.buildCommercialContext({ ...base, immersionInterest: [{ at: '2026-10-20T10:00:00.000Z', note: 'Me interesa Cartagena' }] }, now)
 assert.equal(withInterest.interest.recorded, true); assert.equal(withInterest.interest.lastNote, 'Me interesa Cartagena')
 

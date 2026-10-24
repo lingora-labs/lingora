@@ -17,6 +17,7 @@ type Actions = {
   clearNotice: () => void
 }
 
+const FACT_LABELS: Record<string, string> = { goal: 'Objetivo', result: 'Logro reconocido' }
 const h: React.CSSProperties = { fontSize: 11, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--teal)', margin: '18px 0 8px' }
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', marginBottom: 6 }
 const small: React.CSSProperties = { fontSize: 11, color: 'var(--muted)' }
@@ -115,7 +116,12 @@ export function SpacePanel(props: {
         <div style={{ ...small, marginBottom: 8 }}>Datos que tú das por ciertos. Son los únicos que pasan de una conversación a otra.</div>
         {confirmed.map(f => (
           <div key={f.id} style={row}>
-            <div style={{ flex: 1, minWidth: 0, fontSize: 13 }} dir="auto"><b>{f.key}:</b> {f.value}</div>
+            <div style={{ flex: 1, minWidth: 0, fontSize: 13 }} dir="auto">
+              {f.key === 'immersion_declined'
+                ? <><b>Inmersión:</b> dijiste que no ({new Date(f.value).toLocaleDateString()}). Tu tutor no la propondrá; quítalo para reabrir el tema.</>
+                : <><b>{FACT_LABELS[f.key] ?? f.key}:</b> {f.value}</>}
+              {f.provenance && <div style={small} title={f.provenance.evidence}>Reconocido por tu tutor a partir de tus palabras: «{f.provenance.evidence.length > 80 ? f.provenance.evidence.slice(0, 77) + '…' : f.provenance.evidence}»</div>}
+            </div>
             <TwoStep label="Quitar" confirm="¿Quitar?" onConfirm={() => void actions.removeFact(f.id)} />
           </div>
         ))}

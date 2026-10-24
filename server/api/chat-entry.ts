@@ -388,6 +388,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       uiAction: body.uiAction,
       conversationHistory: body.conversationHistory,
       spaceContext: sanitizeSpaceContext(body.spaceContext),
+      conversationId: typeof body.conversationId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.conversationId) ? body.conversationId : undefined,
     };
 
     // 7.4: ONE Tutor engine, two transports. Tutor turns always run through the tool-capable engine

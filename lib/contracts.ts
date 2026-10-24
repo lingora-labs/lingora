@@ -491,6 +491,8 @@ export interface SessionState {
   commercialOffers?: CommercialOffer[];
   // 7.5: interest the student recorded in their Space (transported from the browser each turn; a fact, never inferred).
   immersionInterest?: Array<{ at: string; note: string }>;
+  // 7.5: confirmed facts projected from the Space for immersion eligibility (lib/space/commercial-projection.ts).
+  commercialFacts?: import('./space/commercial-projection').CommercialFacts;
 
   // SEEK 4.1c2 — sovereign document contract
   pendingDocumentRequest?: PendingDocumentRequest;
@@ -603,6 +605,8 @@ export interface ChatRequest {
   // 7.5: what the student's Space contributes to this turn (instructions + retrieved passages with provenance).
   // Selected in the browser from the Space only; never another conversation's messages.
   spaceContext?: import('./space/retrieve').SpaceContextPayload | null;
+  // 7.5: the Space conversation this turn belongs to (provenance of the facts the Tutor declares).
+  conversationId?: string;
   // 7.4: transport only. `false` asks for one JSON document instead of SSE; the engine is the same.
   stream?: boolean;
 }

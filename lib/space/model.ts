@@ -9,6 +9,7 @@
 //
 // Pure data and pure operations. Storage lives in ./store.ts; selection for a turn in
 // ./retrieve.ts. Isomorphic: no browser or server API is used here.
+import type { AcceptedLearningFact } from '../learning-facts'
 
 export const SPACE_VERSION = 1 as const
 
@@ -29,6 +30,8 @@ export interface MemoryFact {
   at: string
   /** For an inferred fact: the conversation whose Tutor recorded it. */
   conversationId?: string
+  /** 7.5: a fact the Tutor declared and the runtime accepted on the student's own words (lib/learning-facts.ts). */
+  provenance?: { origin: 'tutor_declared'; conversationId: string; evidence: string }
 }
 export interface ImmersionInterest { spaceId: string; conversationId: string | null; at: string; note: string }
 /** Frequency record of immersion invitations actually sent by the Tutor. */
@@ -206,6 +209,29 @@ export function mergeOffers(space: Space, offers: unknown): Space {
     seen.add(rec.timestamp + '|' + rec.sessionId); added.push(rec)
   }
   return added.length ? { ...space, offers: [...space.offers, ...added] } : space
+}
+
+/**
+ * 7.5 — store the facts accepted for a completed turn. Idempotent: the same student words in the same
+ * conversation give the same id (retries, re-asks and reloads add nothing); one standing decline at most;
+ * a reopening removes it. Returns the same object when nothing changes.
+ */
+export function applyLearningFacts(space: Space, facts: AcceptedLearningFact[]): Space {
+  let memory = space.memory
+  for (const f of facts) {
+    if (f.fact === 'immersion_reopened') {
+      if (memory.some(m => m.kind === 'confirmed' && m.key === 'immersion_declined')) memory = memory.filter(m => !(m.kind === 'confirmed' && m.key === 'immersion_declined'))
+      continue
+    }
+    if (f.fact === 'immersion_declined') {
+      if (memory.some(m => m.kind === 'confirmed' && m.key === 'immersion_declined')) continue
+      memory = [...memory, { id: f.id, kind: 'confirmed', key: 'immersion_declined', value: f.at, at: f.at, provenance: { origin: 'tutor_declared', conversationId: f.conversationId, evidence: f.evidence } }]
+      continue
+    }
+    if (memory.some(m => m.id === f.id)) continue
+    memory = [...memory, { id: f.id, kind: 'confirmed', key: f.fact, value: f.text, at: f.at, provenance: { origin: 'tutor_declared', conversationId: f.conversationId, evidence: f.evidence } }]
+  }
+  return memory === space.memory ? space : { ...space, memory }
 }
 
 export function isRefusal(v: unknown): v is Refusal {
