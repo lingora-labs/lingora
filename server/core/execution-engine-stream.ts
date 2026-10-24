@@ -24,6 +24,7 @@ interface SSEDelta { delta: string }
 interface SSEDone {
   done: true
   turnState?: 'complete' | 'complete_with_failures' | 'failed'
+  servedModel?: string
   clientDeliveries?: string[]
   state: SessionState
   artifact?: ArtifactPayload
@@ -49,6 +50,8 @@ const TUTOR_FAILURES: Record<string, string | null> = {
   invalid_language_code: 'El Tutor intentó fijar un idioma de explicación no válido; no se guardó.',
   invalid_memory_ops: 'El Tutor intentó guardar una nota de memoria con formato no válido; no se guardó.',
   invalid_learning_fact: 'El Tutor intentó registrar un hecho del alumno con formato no válido; no se guardó.',
+  // The exact visible sentence is emitted by mentor-engine; do not duplicate it as an artifact failure.
+  model_mismatch: null,
   // Reported per declaration through rejectedReasons.
   artifact_signal_rejected: null,
 }
@@ -275,6 +278,7 @@ export function executePlanStream(
         const wireState = toWireState(updatedState, patch)
         emit({
           done: true,
+          servedModel: stream.servedModel,
           state: wireState,
           ...(artifact ? { artifact } : {}),
           ...(artifacts.length ? { artifacts } : {}),
@@ -283,7 +287,7 @@ export function executePlanStream(
           ...(clientDeliveries.length ? { clientDeliveries } : {}),
           ...(learning.accepted.length ? { learningFacts: learning.accepted } : {}),
           ...(learning.rejected.length ? { learningFactRejections: learning.rejected } : {}),
-          turnState: artifactFailures.length ? 'complete_with_failures' : 'complete',
+          turnState: stream.deliveryFailure === 'model_mismatch' ? 'failed' : artifactFailures.length ? 'complete_with_failures' : 'complete',
           // P18 (continuation) — ROOT GAP: this used to be
           // `artifact ? [export_chat_pdf] : undefined` — no artifact meant
           // NO suggested actions at all from the backend, and the frontend's

@@ -183,6 +183,17 @@ type NormalizedMentorCall = {
 export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number }
 export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; memoryOps?: TutorMemoryOp[]; learningFacts?: LearningFactDeclaration[]; deliveryFailure?: string; deliveryFailures?: string[]; rejectedSignals?: number; rejectedReasons?: string[]; usage?: ProviderUsage; servedModel?: string }
 
+export const PRODUCT_MODEL = 'gpt-5.6-sol'
+
+function configuredModelMismatch(): string | null {
+  const configured = process.env.OPENAI_MAIN_MODEL
+  return configured && configured !== PRODUCT_MODEL ? configured : null
+}
+
+function incorrectModelMessage(served: string): string {
+  return `Modelo incorrecto: se sirvió ${served}, el producto es ${PRODUCT_MODEL}.`
+}
+
 function resolveInterfaceLanguage(state: LegacyMentorState): string {
   return state.interfaceLanguage ?? state.lang ?? 'en'
 }
@@ -403,13 +414,23 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  // Only a clicked Article 27 review (a direct uiAction) is a pure formatting effect.
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
- const model=process.env.OPENAI_MAIN_MODEL||'gpt-4o-mini'
+ const mismatchedModel=configuredModelMismatch()
+ const model=PRODUCT_MODEL
  const budget=resolveOutputBudget(n.plan,pack)
  // The opening greeting settles no language: that tool exists only once the student has written.
  const tools=n.opening?[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL]:[COMPLETE_TUTOR_TURN_TOOL,DELIVER_FROM_TEXT_TOOL,SET_EXPLANATORY_LANGUAGE_TOOL,UPDATE_STUDENT_MEMORY_TOOL,RECORD_LEARNING_FACT_TOOL]
  const fit=fitHistory(n.history,built,tools)
  const baseMessages:any[]=[{role:'system',content:built.system+fit.note},...fit.history,{role:'user',content:user},{role:'system',content:languageNote}]
  let response:AsyncIterable<any>|undefined
+ if(mismatchedModel){
+   const rejected=(async function*(){yield incorrectModelMessage(mismatchedModel)})() as MentorStream
+   rejected.artifactSignals=[]
+   rejected.textDeliveries=[]
+   rejected.deliveryFailure='model_mismatch'
+   rejected.deliveryFailures=['model_mismatch']
+   rejected.servedModel=mismatchedModel
+   return rejected
+ }
  try{
    response=await openai.chat.completions.create({
      ...buildModelParams(model,budget,0.7,0.88),
