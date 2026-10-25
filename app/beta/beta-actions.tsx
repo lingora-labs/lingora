@@ -1,5 +1,6 @@
 'use client'
 import React from 'react'
+import { useSeedUi } from './seed-locale'
 import type { SuggestedAction } from './beta-model'
 
 export function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAction[]; onAction: (action: SuggestedAction) => void }) {
@@ -28,6 +29,7 @@ export function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAc
 }
 
 export function CopyBlock({ text, children }: { text: string; children: React.ReactNode }) {
+  const t = useSeedUi()
   const [copied, setCopied] = React.useState(false)
   const copy = () => {
     navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800) }).catch(() => {})
@@ -35,9 +37,9 @@ export function CopyBlock({ text, children }: { text: string; children: React.Re
   return (
     <div style={{ position:'relative', width:'100%' }}>
       {children}
-      <button onClick={copy} title="Copiar"
+      <button onClick={copy} title={t('Copiar')}
         style={{ position:'absolute', top:4, right:4, minHeight:40, padding:'9px 10px', borderRadius:6, border:'1px solid rgba(0,201,167,.3)', background:'rgba(0,201,167,.08)', color:'var(--teal)', fontSize:11, fontWeight:700, cursor:'pointer', lineHeight:1.4, transition:'all .15s', opacity: copied ? 1 : 0.7 }}>
-        {copied ? '✓ Copiado' : '⎘ Copiar'}
+        {copied ? '✓ ' + t('Copiado') : '⎘ ' + t('Copiar')}
       </button>
     </div>
   )
