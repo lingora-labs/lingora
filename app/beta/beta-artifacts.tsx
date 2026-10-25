@@ -44,7 +44,7 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
   const [err, setErr] = React.useState('')
   const make = () => {
     const blob = dataUrlToHtmlBlob(webUrl)
-    if (!blob) { setErr('No se pudo preparar la versión web.'); return null }
+    if (!blob) { setErr(t('No se pudo preparar la versión web.')); return null }
     setErr('')
     return URL.createObjectURL(blob)
   }
@@ -52,7 +52,7 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
     const url = make()
     if (!url) return
     const w = window.open(url, '_blank')
-    if (!w) setErr('El navegador bloqueó la ventana. Usa «Descargar HTML».')
+    if (!w) setErr(t('El navegador bloqueó la ventana. Usa «Descargar HTML».'))
     setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000)
   }
   const download = () => {
@@ -82,14 +82,14 @@ function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: st
     if (st.k === 'checking') return
     setSt({ k: 'checking', text: t('Comprobando el PDF…') })
     const r = await fetchVerifiedPdf(url, expected)
-    if (!r.ok) { setSt({ k: 'error', text: `No se pudo descargar el PDF: ${r.reason}.` }); return }
+    if (!r.ok) { setSt({ k: 'error', text: `${t('No se pudo descargar el PDF:')} ${r.reason}.` }); return }
     const name = pdfFileName(title)
     const blobUrl = URL.createObjectURL(new Blob([r.bytes as unknown as BlobPart], { type: 'application/pdf' }))
     const el = document.createElement('a'); el.href = blobUrl; el.download = name
     document.body.appendChild(el); el.click(); el.remove()
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000)
-    const pages = typeof pageCount === 'number' ? `${pageCount} ${pageCount === 1 ? 'página' : 'páginas'}, ` : ''
-    setSt({ k: 'done', text: `PDF comprobado (${pages}${Math.max(1, Math.round(r.byteLength / 1024))} KB) y entregado al navegador como ${name}.` })
+    const pages = typeof pageCount === 'number' ? `${pageCount} ${pageCount === 1 ? t('página') : t('páginas')}, ` : ''
+    setSt({ k: 'done', text: `${t('PDF comprobado')} (${pages}${Math.max(1, Math.round(r.byteLength / 1024))} KB) ${t('y entregado al navegador como')} ${name}.` })
   }
   return (
     <span style={{ display:'inline-flex', flexDirection:'column', gap:4 }}>
@@ -120,14 +120,14 @@ function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: strin
   const [status, setStatus] = React.useState<{ k: 'busy' | 'done' | 'error'; text: string } | null>(null)
   const downloadSvg = () => {
     saveBlob(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }), `${file}.svg`)
-    setStatus({ k: 'done', text: `SVG entregado al navegador como ${file}.svg.` })
+    setStatus({ k: 'done', text: `${t('SVG entregado al navegador como')} ${file}.svg.` })
   }
   const downloadPng = async () => {
-    setStatus({ k: 'busy', text: 'Preparando el PNG…' })
+    setStatus({ k: 'busy', text: t('Preparando el PNG…') })
     const png = await svgToPng(fileSvg, 2)
-    if (!png.ok) { setStatus({ k: 'error', text: `No se pudo crear el PNG: ${png.reason}. Puedes descargar el SVG.` }); return }
+    if (!png.ok) { setStatus({ k: 'error', text: `${t('No se pudo crear el PNG:')} ${png.reason}. ${t('Puedes descargar el SVG.')}` }); return }
     saveBlob(png.blob, `${file}.png`)
-    setStatus({ k: 'done', text: `PNG comprobado (${png.width}×${png.height}) y entregado al navegador como ${file}.png.` })
+    setStatus({ k: 'done', text: `${t('PNG comprobado')} (${png.width}×${png.height}) ${t('y entregado al navegador como')} ${file}.png.` })
   }
   const btn: React.CSSProperties = { fontSize:12, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0, marginRight:14 }
   return (
