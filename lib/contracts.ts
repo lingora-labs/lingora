@@ -478,7 +478,7 @@ export interface SessionState {
   tutorMemorySeq?: number;
   // 7.3.2/7.5 P1-A: the explanatory language and where it comes from (lib/explanatory-language.ts).
   explanatoryLanguage?: string;
-  explanatoryLanguageSource?: 'student_request' | 'tutor_detected';
+  explanatoryLanguageSource?: 'student_request' | 'student_turn' | 'tutor_detected';
   uiLanguageChoice?: string;
   expectedResponseMode?: 'exercise_answer' | 'free' | 'quiz_answer';
   _exerciseAttemptCount?: number;
