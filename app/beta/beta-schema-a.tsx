@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'rea
 import type { TableRow, QuizQ, Sub, Norm } from './beta-model'
 import { validateQuizAnswerKey, verifiedKeyFor, quizFingerprint } from '../../lib/quiz-answer-key'
 import { QUIZ_ACTIVATE_EVENT } from './quiz-actions'
+import { useSeedUi } from './seed-locale'
 
 export const ss = (v: unknown): string => typeof v === 'string' ? v : ''
 export const sa = (v: unknown): string[] => Array.isArray(v) ? v.map(ss).filter(Boolean) : []
@@ -46,6 +47,7 @@ export function TableBlock({ rows }: { rows: TableRow[] }) {
 }
 
 export function QuizBlock({ quiz, reviewMode = false, initial, instanceId, title = 'Simulacro' }: { quiz: QuizQ[]; reviewMode?: boolean; initial?: { answers?: Array<number | null>; sent?: boolean }; instanceId?: string; title?: string }) {
+  const t = useSeedUi()
   const [ans, setAns] = useState<Record<number, number|null>>(() => {
     const out: Record<number, number|null> = {}
     ;(initial?.answers ?? []).forEach((v, i) => { if (typeof v === 'number') out[i] = v })
@@ -108,7 +110,7 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId, title
   return (
     <div ref={rootRef} style={{ display:'flex', flexDirection:'column', gap:12, ...(active ? { outline:'2px solid var(--teal)', outlineOffset:6, borderRadius:12 } : {}) }}
       data-testid="quiz-block" data-instance={instanceId} data-quiz-key={fingerprint} data-active={active ? 'true' : undefined}>
-      {active && <div role="status" data-testid="quiz-active" style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>Quiz abierto: responde aquí.</div>}
+      {active && <div role="status" data-testid="quiz-active" style={{ fontSize:12, color:'var(--teal)', fontWeight:700 }}>{t('Quiz abierto: responde aquí.')}</div>}
       {quiz.map((q, qi) => {
         const sel = ans[qi] ?? null; const done = sel !== null
         const key = verified[qi]; const hasKey = key !== null
@@ -133,26 +135,26 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId, title
             {done && hasKey && (
               <div style={{ marginTop:8, fontSize:12, fontWeight:700, display:'flex', flexDirection:'column', gap:4 }} data-testid={`quiz-verified-${qi}`}>
                 {sel === key
-                  ? <span style={{ color:'var(--teal)' }}>✅ Correcto <span style={{ fontWeight:400, color:'var(--muted)' }}>(verificado automáticamente)</span></span>
-                  : <span style={{ color:'var(--coral)' }}>❌ Incorrecto — la respuesta correcta es: <strong style={{ color:'#fff' }}>{q.options[key as number]}</strong> <span style={{ fontWeight:400, color:'var(--muted)' }}>(verificado automáticamente)</span></span>}
+                  ? <span style={{ color:'var(--teal)' }}>✅ {t('Correcto')} <span style={{ fontWeight:400, color:'var(--muted)' }}>{t('(verificado automáticamente)')}</span></span>
+                  : <span style={{ color:'var(--coral)' }}>❌ {t('Incorrecto — la respuesta correcta es:')} <strong style={{ color:'#fff' }}>{q.options[key as number]}</strong> <span style={{ fontWeight:400, color:'var(--muted)' }}>{t('(verificado automáticamente)')}</span></span>}
                 {q.explanation && q.correct === key && <span style={{ color:'var(--muted)', fontWeight:400, fontSize:11 }}>{q.explanation}</span>}
               </div>
             )}
             {done && !hasKey && (
-              <div style={{ marginTop:8, fontSize:11, color:'var(--muted)' }} data-testid={`quiz-pending-${qi}`}>Pendiente de la revisión de tu Tutor.</div>
+              <div style={{ marginTop:8, fontSize:11, color:'var(--muted)' }} data-testid={`quiz-pending-${qi}`}>{t('Pendiente de la revisión de tu Tutor.')}</div>
             )}
           </div>
         )
       })}
       {checkable > 0 && answeredCheckable > 0 && (
         <div style={{ fontSize:12, color:'var(--silver)' }} data-testid="quiz-autoscore">
-          Autocorrección verificable: {rightCount}/{checkable} {checkable < quiz.length ? `(en ${checkable} de ${quiz.length} preguntas; el resto lo revisa tu Tutor)` : ''}
+          {t('Autocorrección verificable:')} {rightCount}/{checkable} {checkable < quiz.length ? `(${t('en')} ${checkable} ${t('de')} ${quiz.length} ${t('preguntas; el resto lo revisa tu Tutor')})` : ''}
         </div>
       )}
       {requiresReview && (
         <div style={{ border:'1px solid var(--border)',borderRadius:12,padding:12 }}>
           <div style={{fontSize:12,color:'var(--silver)',marginBottom:8}}>
-            La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática a las preguntas sin clave verificable; tu Tutor las revisa y explica cada resultado.
+            {t('La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática a las preguntas sin clave verificable; tu Tutor las revisa y explica cada resultado.')}
           </div>
           {!sent ? (
             <button
@@ -167,20 +169,20 @@ export function QuizBlock({ quiz, reviewMode = false, initial, instanceId, title
                 if (request.detail.accepted) { setSendRefused(false); setSent(true) } else setSendRefused(true)
               }}
               style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--teal)',color:'var(--teal)',background:'rgba(0,201,167,.1)',cursor:allAnswered?'pointer':'default',opacity:allAnswered?1:.5}}>
-              Revisar mis respuestas con mi Tutor
+              {t('Revisar mis respuestas con mi Tutor')}
             </button>
           ) : (
-            <div style={{fontSize:12,color:'var(--teal)',fontWeight:700}} data-testid="quiz-sent">Enviado a tu Tutor ✓ — su revisión aparece en el chat.</div>
+            <div style={{fontSize:12,color:'var(--teal)',fontWeight:700}} data-testid="quiz-sent">{t('Enviado a tu Tutor ✓ — su revisión aparece en el chat.')}</div>
           )}
           {sendRefused && !sent && (
-            <div role="alert" data-testid="quiz-send-refused" style={{marginTop:8,fontSize:12,color:'var(--danger,#f87171)',fontWeight:700}}>No se ha enviado: espera a que termine la respuesta actual e inténtalo de nuevo.</div>
+            <div role="alert" data-testid="quiz-send-refused" style={{marginTop:8,fontSize:12,color:'var(--danger,#f87171)',fontWeight:700}}>{t('No se ha enviado: espera a que termine la respuesta actual e inténtalo de nuevo.')}</div>
           )}
         </div>
       )}
       {(sent || (!requiresReview && allAnswered)) && (
         <button type="button" data-testid="quiz-continue" onClick={() => window.dispatchEvent(new CustomEvent('lingora-quiz-continue', { detail: { quiz: identity } }))}
           style={{minHeight:44,padding:'10px 14px',borderRadius:10,border:'1px solid var(--border)',color:'var(--silver)',background:'transparent',cursor:'pointer'}}>
-          Seguir aprendiendo con mi Tutor
+          {t('Seguir aprendiendo con mi Tutor')}
         </button>
       )}
     </div>
