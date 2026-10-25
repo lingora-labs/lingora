@@ -1,5 +1,6 @@
 'use client'
 import React from 'react'
+import { useSeedUi } from './seed-locale'
 import type { Msg } from './beta-model'
 import { resolveMsgArtifacts, resolveMsgArtifactFailures } from './beta-model'
 import { renderTutorMarkdown } from '../../lib/content/markdown'
@@ -9,45 +10,46 @@ import { ArtifactRender } from './beta-artifacts'
 // 7.5: every bubble is the canonical rendering of the text (lib/content/markdown) — the same
 // HTML the PDF and the HTML version print. Memoized: a streamed delta re-renders one bubble.
 export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: string }) {
+  const t = useSeedUi()
   const isUser = msg.sender === 'user'
   const html = React.useMemo(() => renderTutorMarkdown(msg.text || ''), [msg.text])
   return (
     <>
       <div data-testid={isUser ? 'bubble-user' : 'bubble-mentor'} data-msg-id={msg.id}
-        data-voice-first-text-ms={msg.voiceTimings?.firstTextMs ?? undefined} data-voice-first-audio-ms={msg.voiceTimings?.firstAudioMs ?? undefined} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
+        data-voice-first-text-ms={msg.voiceTimings?.firstTextMs ?? undefined} data-voice-first-audio-ms={msg.voiceTimings?.firstAudioMs ?? undefined} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'100%', minWidth:0, ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
         <div style={{ width:28, height:28, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, flexShrink:0, background: isUser ? 'var(--teal)' : mc, color:'#fff' }}>
           {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
         </div>
-        <div style={{ display:'flex', flexDirection:'column', gap:6, maxWidth:'100%' }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:6, minWidth:0, maxWidth:'100%' }}>
           {msg.text && (
             !isUser && isCopyable(msg.text) ? (
               <CopyBlock text={msg.text}>
-                <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
+                <div style={{ padding:'10px 14px', paddingTop:34, borderRadius:16, fontSize:14, lineHeight:1.6, overflowWrap:'anywhere', background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }}
                   dangerouslySetInnerHTML={{ __html: html }} />
               </CopyBlock>
             ) : (
-              <div className={isUser ? 'ln-user' : undefined} style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
+              <div className={isUser ? 'ln-user' : undefined} style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, overflowWrap:'anywhere', ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
                 dangerouslySetInnerHTML={{ __html: html }} />
             )
           )}
           {isUser && msg.voice && (
             <div data-testid="voice-heard" data-state={msg.voice.state} style={{ fontSize:11, color:'var(--muted)', textAlign:'right' }}>
-              {msg.voice.state === 'pending' ? '🎤 Escuchando lo que dijiste…' : msg.voice.state === 'not_understood' ? '🎤 No se entendió el audio' : '🎤 Transcrito de tu voz'}
+              {msg.voice.state === 'pending' ? '🎤 ' + t('Escuchando lo que dijiste…') : msg.voice.state === 'not_understood' ? '🎤 ' + t('No se entendió el audio') : '🎤 ' + t('Transcrito de tu voz')}
               {msg.voice.uncertain && msg.voice.uncertain.length > 0 && (
-                <div data-testid="voice-uncertain" style={{ color:'var(--gold)' }}>No entendí con seguridad: {msg.voice.uncertain.map(u => `«${u}»`).join(', ')}</div>
+                <div data-testid="voice-uncertain" style={{ color:'var(--gold)' }}>{t('No entendí con seguridad:')} {msg.voice.uncertain.map(u => `«${u}»`).join(', ')}</div>
               )}
             </div>
           )}
           {!isUser && msg.sender !== 'ln' && msg.complete !== false && msg.text?.trim() && (
             <div style={{ display:'flex', gap:10, alignItems:'center' }}>
               <button type="button" data-testid="speak-message" onClick={() => window.dispatchEvent(new CustomEvent('lingora-speak-message', { detail: { id: msg.id } }))}
-                style={{ fontSize:11.5, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0 }}>🔊 Escuchar</button>
-              {msg.interrupted && <span data-testid="voice-interrupted" style={{ fontSize:11, color:'var(--muted)' }}>interrumpida por ti</span>}
+                style={{ fontSize:11.5, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0 }}>🔊 {t('Escuchar')}</button>
+              {msg.interrupted && <span data-testid="voice-interrupted" style={{ fontSize:11, color:'var(--muted)' }}>{t('interrumpida por ti')}</span>}
             </div>
           )}
           {msg.imageUrl && (
             <div style={{ marginTop:4, borderRadius:12, overflow:'hidden', maxWidth:280, border:'1px solid var(--border)' }}>
-              <img src={msg.imageUrl} alt="Adjunto" style={{ width:'100%', display:'block', borderRadius:12 }} />
+              <img src={msg.imageUrl} alt={t("Adjunto")} style={{ width:'100%', display:'block', borderRadius:12 }} />
             </div>
           )}
           {msg.audioUrl && (
@@ -62,10 +64,10 @@ export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: st
           {resolveMsgArtifactFailures(msg).map((f, i) => (
             <div key={`artifact-failure-${msg.id}-${i}`} data-testid="artifact-failure"
               style={{ padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:320 }}>
-              {f.subject?.startsWith('Componente interactivo') || f.subject?.startsWith('Refuerzo visual') ? 'No se pudo mostrar el componente interactivo solicitado' : 'No se pudo generar este material descargable'}{f.subject ? ` (${f.subject})` : ''}. Intenta de nuevo.
+              {f.subject?.startsWith('Componente interactivo') || f.subject?.startsWith('Refuerzo visual') ? t('No se pudo mostrar el componente interactivo solicitado') : t('No se pudo generar este material descargable')}{f.subject ? ` (${f.subject})` : ''}. {t('Intenta de nuevo.')}
             </div>
           ))}
-          {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>Puntuación: {msg.score}/10</div>}
+          {msg.score !== undefined && <div style={{ fontSize:12, color:'var(--gold)', fontWeight:700 }}>{t('Puntuación:')} {msg.score}/10</div>}
         </div>
       </div>
       {!isUser && (msg.suggestedActions?.length ?? 0) > 0 && (
