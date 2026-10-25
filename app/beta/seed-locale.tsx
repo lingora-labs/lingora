@@ -27,7 +27,7 @@ const norwegian: Record<string, string> = {
   'No se pudo generar este material descargable': 'Det nedlastbare materialet kunne ikke opprettes',
   'Intenta de nuevo.': 'Prøv igjen.', 'Puntuación:': 'Poengsum:',
   'Copiar': 'Kopier', 'Copiado': 'Kopiert',
-  'Tu espacio': 'Ditt læringsrom', 'Guardado en este navegador. No se sincroniza entre dispositivos.': 'Lagret i denne nettleseren. Synkroniseres ikke mellom enheter.',
+  'Guardado en este navegador. No se sincroniza entre dispositivos.': 'Lagret i denne nettleseren. Synkroniseres ikke mellom enheter.',
   'Cerrar': 'Lukk', 'Conversaciones': 'Samtaler',
   'Cada conversación es independiente: ninguna lee los mensajes de otra.': 'Hver samtale er separat og leser ikke meldingene i andre samtaler.',
   'Abierta · ': 'Åpen · ', 'Borrar': 'Slett', '¿Borrar?': 'Slette?',
