@@ -1,6 +1,7 @@
 'use client'
 import React, { useRef, useState, type ReactNode } from 'react'
 import { TableArtifactBlock } from './beta-schema-a'
+import { useSeedUi } from './seed-locale'
 
 export function MatrixTableBlock({ content }: { content: Record<string, unknown> }) {
   type RCell = { text: string; icon?: string; tone?: string; bold?: boolean; align?: string }
@@ -144,6 +145,7 @@ export function isValidSBlock(raw: unknown): raw is SBlock {
 }
 
 export function SchemaProBlock({ content }: { content: Record<string, unknown> }) {
+  const t = useSeedUi()
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({})
   const [exportBusy, setExportBusy] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -227,23 +229,23 @@ export function SchemaProBlock({ content }: { content: Record<string, unknown> }
         </div>
         <div data-export-ignore="true" style={{display:'flex', gap:8, flexWrap:'wrap'}}>
           <button type="button" onClick={() => setCollapsed(Object.fromEntries(blocks.map((_,i) => [i,true])))}
-            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Contraer todo</button>
+            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>{t('Contraer todo')}</button>
           <button type="button" onClick={() => setCollapsed({})}
-            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>Expandir todo</button>
+            style={{minHeight:44, padding:'9px 12px', borderRadius:10, border:'1px solid var(--border)', background:'var(--navy2)', color:'var(--silver)', cursor:'pointer'}}>{t('Expandir todo')}</button>
         </div>
         <div data-export-ignore="true" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
           <button type="button" disabled={exportBusy} onClick={()=>void exportVisual('png')}
-            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(0,201,167,.08)',color:'var(--teal)',cursor:'pointer'}}>↓ Descargar PNG</button>
+            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(0,201,167,.08)',color:'var(--teal)',cursor:'pointer'}}>↓ {t('Descargar PNG')}</button>
           <button type="button" disabled={exportBusy} onClick={()=>void exportVisual('pdf')}
-            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(245,200,66,.08)',color:'var(--gold)',cursor:'pointer'}}>↓ Descargar PDF</button>
-          {exportBusy && <span role="status">Preparando archivo visual…</span>}
+            style={{minHeight:44,padding:'9px 12px',borderRadius:10,border:'1px solid var(--border)',background:'rgba(245,200,66,.08)',color:'var(--gold)',cursor:'pointer'}}>↓ {t('Descargar PDF')}</button>
+          {exportBusy && <span role="status">{t('Preparando archivo visual…')}</span>}
         </div>
         {exportError && <div role="alert" data-export-ignore="true" style={{color:'var(--coral)',fontSize:12}}>{exportError}</div>}
         {blocks.map((b, i) => (
           <div key={i}>
             <button type="button" aria-expanded={!collapsed[i]} onClick={() => setCollapsed(p => ({...p,[i]:!p[i]}))}
               style={{width:'100%', textAlign:'left', minHeight:44, padding:'10px 12px', borderRadius:10, border:'1px solid rgba(0,201,167,.20)', background:'rgba(0,201,167,.06)', color:'var(--teal)', fontWeight:700, cursor:'pointer'}}>
-              {collapsed[i] ? '▸' : '▾'} {b.type === 'concept' || b.type === 'bullets' ? b.title : b.type === 'highlight' ? (b.label || 'Idea esencial') : b.type === 'flow' ? 'Secuencia' : b.type === 'comparison' ? 'Comparación' : 'Tabla visual'}
+              {collapsed[i] ? '▸' : '▾'} {b.type === 'concept' || b.type === 'bullets' ? b.title : b.type === 'highlight' ? (b.label || t('Idea esencial')) : b.type === 'flow' ? t('Secuencia') : b.type === 'comparison' ? t('Comparación') : t('Tabla visual')}
             </button>
             {!collapsed[i] && renderSBlock(b, i)}
           </div>
