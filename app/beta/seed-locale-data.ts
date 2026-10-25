@@ -102,4 +102,10 @@ export const NORWEGIAN_LABELS: Record<string, string> = {
   'Empezar quiz': 'Start quiz',
   'Crear esquema visual': 'Lag visuell oversikt',
 }
+Object.assign(NORWEGIAN_LABELS, {
+  'Idea esencial': 'Hovedidé',
+  'Secuencia': 'Rekkefølge',
+  'Comparación': 'Sammenligning',
+  'Tabla visual': 'Visuell tabell',
+})
 export const UI_LABEL_KEYS = Object.keys(NORWEGIAN_LABELS)
