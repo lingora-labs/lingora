@@ -81,7 +81,6 @@ const norwegian: Record<string, string> = {
   'Autocorrección verificable:': 'Verifiserbar automatisk vurdering:',
   'Enviado a tu Tutor ✓ — su revisión aparece en el chat.': 'Sendt til veilederen ✓ — vurderingen vises i chatten.',
   'No se ha enviado: espera a que termine la respuesta actual e inténtalo de nuevo.': 'Ikke sendt: vent til veilederen er ferdig og prøv igjen.',
-}
   'Correcto': 'Riktig',
   '(verificado automáticamente)': '(automatisk verifisert)',
   'Incorrecto — la respuesta correcta es:': 'Feil — riktig svar er:',
@@ -105,6 +104,7 @@ const norwegian: Record<string, string> = {
   'PNG comprobado': 'PNG verifisert',
   'No se pudo preparar la versión web.': 'Kunne ikke klargjøre webversjonen.',
   'El navegador bloqueó la ventana. Usa «Descargar HTML».': 'Nettleseren blokkerte vinduet. Bruk «Last ned HTML».',
+}
 export const SeedLocaleContext = React.createContext<Lang>('es')
 export const seedText = (lang: Lang, label: string) => lang === 'no' ? (norwegian[label] ?? label) : label
 export const useSeedUi = () => {
