@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
 import { UI_LABEL_KEYS } from '@/app/beta/seed-locale-data'
+import { buildModelParams } from '@/server/mentors/mentor-engine'
 
 // One bounded translation of fixed UI chrome per locale. No user text, student memory, Tutor
 // decisions, or curriculum passes through this auxiliary presentation-only service.
@@ -22,10 +23,7 @@ async function translate(language: string) {
   if (calls.length >= 16) throw Error('translation_budget_exhausted')
   calls.push(now)
   const response = await api.chat.completions.create({
-    model: MODEL,
-    max_completion_tokens: 9000,
-    reasoning_effort: 'none',
-    temperature: 0.7,
+    ...buildModelParams(MODEL, 9000, 0.7),
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: 'You translate only static buttons, status labels and control text in a language-learning web application. Preserve the semantic function of each control. Output one valid JSON object whose keys are EXACTLY the source Spanish keys provided and values are fluent translations in the requested BCP-47 language. Never change a key, omit a key, add a key, include explanations, or translate product names, code identifiers or ISO language codes. Security, deletion and local-only storage statements must retain their full meaning. No markdown.' },
