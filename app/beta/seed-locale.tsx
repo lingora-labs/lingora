@@ -1,115 +1,76 @@
 'use client'
 import React from 'react'
-import type { Lang } from './beta-model'
+import { NORWEGIAN_LABELS, UI_LABEL_KEYS } from './seed-locale-data'
 
-// Seed demo UI chrome only. Never translate the Tutor's pedagogical content, transcript,
-// Space facts, user text or downloaded material. Other languages retain existing labels.
-const norwegian: Record<string, string> = {
-  'Espacio': 'Læringsrom', 'Tu espacio': 'Ditt læringsrom', 'Sesión': 'Økt',
-  'Lección': 'Leksjon', 'nivel': 'nivå', 'Export': 'Eksporter',
-  'Exportar TXT': 'Eksporter TXT', 'Exportar PDF': 'Eksporter PDF',
-  'PDF descargado. Guardando copia para la próxima sesión…': 'PDF lastet ned. Lagrer en kopi til neste økt…',
-  'Preparando PDF…': 'Klargjør PDF…',
-  'PDF no confirmado en el archivo local; conserva la descarga.': 'PDF kunne ikke bekreftes i lokal lagring. Ta vare på nedlastingen.',
-  'PDF descargado, pero no se confirmó su conservación. Descarga y guarda una copia.': 'PDF er lastet ned, men lokal lagring er ikke bekreftet. Ta vare på en kopi.',
-  'Reset': 'Nullstill', 'Local': 'Lokalt',
-  'Vacía solo esta conversación. Tu espacio (fuentes, memoria, otras conversaciones) se conserva.': 'Tøm bare denne samtalen. Læringsrommet, kilder, minner og andre samtaler beholdes.',
-  'Tu espacio y sus conversaciones se conservan en este navegador (IndexedDB). No se sincronizan entre dispositivos.': 'Læringsrommet og samtalene lagres i denne nettleseren, ikke på andre enheter.',
-  'Conversar': 'Snakk sammen', 'Voz ●': 'Tale ●', 'Conversación por voz: habla con naturalidad; puedes interrumpir': 'Talesamtale: snakk naturlig; du kan avbryte',
-  'OTROS': 'ANNET', 'Other · any language': 'Andre språk · valgfritt språk',
-  'Stop': 'Stopp', 'Mic': 'Mikrofon', 'Go': 'Send',
-  'Escuchar': 'Lytt', 'interrumpida por ti': 'avbrutt av deg',
-  'Escuchando lo que dijiste…': 'Lytter til det du sa…',
-  'No se entendió el audio': 'Lyden ble ikke forstått',
-  'Transcrito de tu voz': 'Transkribert fra stemmen din',
-  'No entendí con seguridad:': 'Usikker transkripsjon:',
-  'Adjunto': 'Vedlegg', 'No se pudo mostrar el componente interactivo solicitado': 'Den forespurte interaktive komponenten kunne ikke vises',
-  'No se pudo generar este material descargable': 'Det nedlastbare materialet kunne ikke opprettes',
-  'Intenta de nuevo.': 'Prøv igjen.', 'Puntuación:': 'Poengsum:',
-  'Copiar': 'Kopier', 'Copiado': 'Kopiert',
-  'Guardado en este navegador. No se sincroniza entre dispositivos.': 'Lagret i denne nettleseren. Synkroniseres ikke mellom enheter.',
-  'Cerrar': 'Lukk', 'Conversaciones': 'Samtaler',
-  'Cada conversación es independiente: ninguna lee los mensajes de otra.': 'Hver samtale er separat og leser ikke meldingene i andre samtaler.',
-  'Abierta · ': 'Åpen · ', 'Borrar': 'Slett', '¿Borrar?': 'Slette?',
-  '+ Nueva conversación': '+ Ny samtale', 'Instrucciones del espacio': 'Instruksjoner i læringsrommet',
-  'Tu tutor las recibe en cada conversación de este espacio.': 'Veilederen får disse instruksjonene i hver samtale i dette læringsrommet.',
-  'Ej.: Explícame en inglés. Me preparo para el DELE B2. Corrígeme siempre los acentos.': 'F.eks.: Forklar på norsk. Jeg øver til DELE B2. Rett alltid språkfeilene mine.',
-  'Guardar': 'Lagre', 'Fuentes': 'Kilder',
-  'Texto que aportas. En cada turno tu tutor recibe solo los pasajes que comparten palabras con tu mensaje (hasta': 'Teksten du har lagt til. I hver tur mottar veilederen bare utdrag som samsvarer med ordene i meldingen din (opptil',
-  'tokens), con su identificador.': 'tokener), med kilde-ID.',
-  'k car.': 'tusen tegn', 'Quitar': 'Fjern', '¿Quitar?': 'Fjerne?', 'Añadir fuente de texto': 'Legg til tekstkilde',
-  'Memoria confirmada': 'Bekreftet minne',
-  'Datos que tú das por ciertos. Son los únicos que pasan de una conversación a otra.': 'Opplysninger du selv har bekreftet. Bare disse deles mellom samtaler.',
-  'Inmersión:': 'Immersjon:', 'dijiste que no': 'du takket nei',
-  'Tu tutor no la propondrá; quítalo para reabrir el tema.': 'Veilederen foreslår det ikke. Fjern dette for å åpne temaet igjen.',
-  'Objetivo': 'Mål', 'Logro reconocido': 'Bekreftet fremgang',
-  'Reconocido por tu tutor a partir de tus palabras:': 'Bekreftet av veilederen ut fra ordene dine:',
-  'Dato (ej. objetivo)': 'Opplysning (f.eks. mål)', 'Valor (ej. DELE B2 en junio)': 'Verdi (f.eks. DELE B2 i juni)',
-  'Añadir': 'Legg til', 'Lo que anotó tu tutor': 'Veilederens notater',
-  'Inferencias de cada conversación. No llegan a las demás hasta que las confirmes.': 'Antakelser fra samtalen. De deles ikke med andre samtaler før du bekrefter dem.',
-  'Nada todavía.': 'Ingenting ennå.', 'Confirmar': 'Bekreft', 'Descartar': 'Forkast', '¿Descartar?': 'Forkaste?',
-  'Interés en inmersión': 'Interesse for immersjon',
-  'Se guarda en tu espacio, en este navegador; LINGORA aún no lo recibe. No es una reserva ni un pago, y no hay fechas, plazas ni precios.': 'Lagres kun i læringsrommet i denne nettleseren. LINGORA mottar det ikke ennå. Dette er ikke en bestilling eller betaling; ingen datoer eller priser er tilgjengelige.',
-  'Qué te gustaría vivir en español (opcional)': 'Hva vil du gjerne oppleve på spansk? (valgfritt)',
-  'Guardar mi interés': 'Lagre interessen min',
-  'Borrar espacio': 'Slett læringsrom',
-  'Elimina de este navegador todas las conversaciones, fuentes, memoria e interés. Reset solo vacía la conversación abierta.': 'Sletter alle samtaler, kilder, minner og interesser i denne nettleseren. Nullstill tømmer bare den åpne samtalen.',
-  'Pulsa otra vez para borrarlo todo': 'Trykk igjen for å slette alt',
-  'Pausa': 'Pause', 'Reanudar': 'Fortsett', 'Reintentar voz': 'Prøv tale på nytt',
-  'Detener': 'Stopp', 'Velocidad': 'Hastighet',
-  'Te escucho…': 'Jeg lytter…',
-  'Voz en pausa': 'Talen er satt på pause',
-  'Conversación por voz activa: habla cuando quieras': 'Talesamtalen er aktiv: snakk når du vil',
-  'Pidiendo permiso para el micrófono…': 'Ber om mikrofontilgang…',
-  'Micrófono apagado': 'Mikrofonen er av',
-  'está pensando…': 'tenker…', 'prepara la voz…': 'forbereder tale…',
-  'habla': 'snakker', ' — habla tú para interrumpirla': ' — snakk for å avbryte',
-  'No se pudo reproducir la voz:': 'Kunne ikke spille av stemmen:',
-  'Abrir versión interactiva': 'Åpne interaktiv versjon',
-  'Descargar HTML': 'Last ned HTML',
-  'Descargar PDF': 'Last ned PDF', 'Descargar curso PDF': 'Last ned kurs-PDF',
-  'Descargar historial PDF': 'Last ned samtale-PDF',
-  'Descargar PNG': 'Last ned PNG', 'Descargar imagen': 'Last ned bilde',
-  'Simulacro': 'Prøve', 'Respuesta de audio': 'Lydsvar', 'Nivel estimado CEFR': 'Anslått CEFR-nivå',
-  'Comprobando el PDF…': 'Kontrollerer PDF…',
-  'No se puede mostrar este componente': 'Kan ikke vise denne komponenten',
-  'este tipo de componente no tiene vista en el chat': 'denne komponenttypen har ingen chatvisning',
-  'Preparando archivo visual…': 'Klargjør bildefil…',
-  'Quiz abierto: responde aquí.': 'Oppgaven er åpen: svar her.',
-  'Contraer todo': 'Skjul alle', 'Expandir todo': 'Vis alle',
-  'Pendiente de la revisión de tu Tutor.': 'Venter på veilederens vurdering.',
-  'Autocorrección verificable:': 'Verifiserbar automatisk vurdering:',
-  'Enviado a tu Tutor ✓ — su revisión aparece en el chat.': 'Sendt til veilederen ✓ — vurderingen vises i chatten.',
-  'No se ha enviado: espera a que termine la respuesta actual e inténtalo de nuevo.': 'Ikke sendt: vent til veilederen er ferdig og prøv igjen.',
-  'Correcto': 'Riktig',
-  '(verificado automáticamente)': '(automatisk verifisert)',
-  'Incorrecto — la respuesta correcta es:': 'Feil — riktig svar er:',
-  'en': 'av',
-  'de': 'av',
-  'preguntas; el resto lo revisa tu Tutor': 'spørsmål; veilederen vurderer resten',
-  'La clave de este quiz requiere revisión pedagógica. No se asignará una puntuación automática a las preguntas sin clave verificable; tu Tutor las revisa y explica cada resultado.': 'Denne oppgaven trenger faglig vurdering. Spørsmål uten verifiserbar fasit får ikke automatisk poeng; veilederen vurderer svarene.',
-  'Revisar mis respuestas con mi Tutor': 'Send svar til veilederen for vurdering',
-  'Seguir aprendiendo con mi Tutor': 'Fortsett å lære med veilederen',
-  'Confianza:': 'Sikkerhet:',
-  'muestras': 'eksempler',
-  'No se pudo descargar el PDF:': 'Kunne ikke laste ned PDF:',
-  'PDF comprobado': 'PDF verifisert',
-  'y entregado al navegador como': 'og levert til nettleseren som',
-  'página': 'side',
-  'páginas': 'sider',
-  'SVG entregado al navegador como': 'SVG levert til nettleseren som',
-  'Preparando el PNG…': 'Klargjør PNG…',
-  'No se pudo crear el PNG:': 'Kunne ikke lage PNG:',
-  'Puedes descargar el SVG.': 'Du kan laste ned SVG.',
-  'PNG comprobado': 'PNG verifisert',
-  'No se pudo preparar la versión web.': 'Kunne ikke klargjøre webversjonen.',
-  'El navegador bloqueó la ventana. Usa «Descargar HTML».': 'Nettleseren blokkerte vinduet. Bruk «Last ned HTML».',
-  'Empezar quiz': 'Start quiz',
-  'Crear esquema visual': 'Lag visuell oversikt',
+/** Static user-interface chrome is distinct from Tutor text, student exercises and artifact content.
+ * No client-side language detector or per-language routing brain exists here. */
+export const SeedLocaleContext = React.createContext<string>('es')
+const UiLabelsContext = React.createContext<Record<string, string>>({})
+const cached = new Map<string, Record<string, string>>()
+const PACK_VERSION = '7.6-intent-1'
+const codePattern = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$/
+
+function readCached(lang: string): Record<string, string> | null {
+  if (lang === 'no' || lang.startsWith('no-')) return NORWEGIAN_LABELS
+  if (lang === 'es' || lang.startsWith('es-')) return {}
+  if (cached.has(lang)) return cached.get(lang)!
+  try {
+    const raw = localStorage.getItem('lingora-ui-' + PACK_VERSION + '-' + lang)
+    if (!raw) return null
+    const pack = JSON.parse(raw) as Record<string, string>
+    if (UI_LABEL_KEYS.every(k => typeof pack[k] === 'string' && pack[k].length > 0)) {
+      cached.set(lang, pack); return pack
+    }
+  } catch { /* storage can be unavailable; network is still an option */ }
+  return null
 }
-export const SeedLocaleContext = React.createContext<Lang>('es')
-export const seedText = (lang: Lang, label: string) => lang === 'no' ? (norwegian[label] ?? label) : label
+
+export function SeedLocaleProvider({ lang, children }: { lang: string; children: React.ReactNode }) {
+  const locale = typeof lang === 'string' && codePattern.test(lang) ? lang : 'en'
+  const [result, setResult] = React.useState<{ lang: string; labels: Record<string, string>; failed: boolean }>(() =>
+    ({ lang: locale, labels: typeof window === 'undefined' ? (locale === 'no' ? NORWEGIAN_LABELS : {}) : readCached(locale) ?? {}, failed: false }))
+  React.useEffect(() => {
+    let alive = true
+    const found = readCached(locale)
+    if (found) {
+      setResult({ lang: locale, labels: found, failed: false })
+      return () => { alive = false }
+    }
+    if (locale.startsWith('es-') || locale === 'es') {
+      setResult({ lang: locale, labels: {}, failed: false })
+      return () => { alive = false }
+    }
+    setResult({ lang: locale, labels: {}, failed: false })
+    void fetch('/api/ui-labels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: locale }),
+    }).then(async r => {
+      if (!r.ok) throw Error('locale service ' + r.status)
+      const data = await r.json()
+      const pack = data.labels as Record<string, string>
+      if (!pack || !UI_LABEL_KEYS.every(k => typeof pack[k] === 'string' && pack[k].length > 0)) throw Error('incomplete locale')
+      cached.set(locale, pack)
+      try { localStorage.setItem('lingora-ui-' + PACK_VERSION + '-' + locale, JSON.stringify(pack)) } catch {}
+      if (alive) setResult({ lang: locale, labels: pack, failed: false })
+    }).catch(() => { if (alive) setResult({ lang: locale, labels: {}, failed: true }) })
+    return () => { alive = false }
+  }, [locale])
+  const labels = result.lang === locale ? result.labels : (locale.startsWith('no') ? NORWEGIAN_LABELS : {})
+  return (
+    <SeedLocaleContext.Provider value={locale}>
+      <UiLabelsContext.Provider value={labels}>
+        {result.lang === locale && result.failed && <span role="status" data-testid="ui-locale-warning"
+          style={{ position: 'fixed', top: 0, right: 0, zIndex: 100, background: '#501e24', color: 'white', fontSize: 12, padding: 6 }}>
+          Interface translation unavailable for {locale}; original labels shown.
+        </span>}
+        {children}
+      </UiLabelsContext.Provider>
+    </SeedLocaleContext.Provider>
+  )
+}
+export const seedText = (lang: string, label: string) => lang.startsWith('no') ? NORWEGIAN_LABELS[label] ?? label : label
 export const useSeedUi = () => {
   const lang = React.useContext(SeedLocaleContext)
-  return (label: string) => seedText(lang, label)
+  const translated = React.useContext(UiLabelsContext)
+  return (label: string) => (lang.startsWith('es') ? label : (translated[label] ?? seedText(lang, label)))
 }
