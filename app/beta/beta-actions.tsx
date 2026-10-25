@@ -4,6 +4,7 @@ import { useSeedUi } from './seed-locale'
 import type { SuggestedAction } from './beta-model'
 
 export function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAction[]; onAction: (action: SuggestedAction) => void }) {
+  const t = useSeedUi()
   if (!actions?.length) return null
   const toneStyle = (tone?: string) => {
     if (tone === 'primary') return { bg: 'rgba(0,201,167,.15)', border: 'rgba(0,201,167,.35)', color: 'var(--teal)' }
@@ -20,7 +21,7 @@ export function SuggestedActionBar({ actions, onAction }: { actions: SuggestedAc
             onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}>
             {a.emoji && <span style={{ fontSize:13 }}>{a.emoji}</span>}
-            {a.label}
+            {({ download_pdf: t('Descargar PDF'), hear_audio: t('Escuchar'), export_chat_pdf: t('Exportar PDF'), start_quiz: t('Empezar quiz'), create_visual_review: t('Crear esquema visual') } as Record<string, string>)[a.action] ?? a.label}
           </button>
         )
       })}
