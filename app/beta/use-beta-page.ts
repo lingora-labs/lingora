@@ -55,8 +55,8 @@ export function useBetaPage() {
   const [otherLang, setOtherLang] = useState(false)
   const otherRef = useRef(false)
   const lastCallFailedRef = useRef(false)
-  const pickLang = useCallback((l: Lang) => { otherRef.current = false; setOtherLang(false); setLang(l) }, [])
-  const pickOther = useCallback(() => { otherRef.current = true; setOtherLang(true); setLang('en') }, [])
+  const pickLang = useCallback((l: Lang) => { otherRef.current = false; setOtherLang(false); setLang(l); setSession(s => ({ ...s, uiLanguageChoice: undefined })) }, [])
+  const pickOther = useCallback(() => { otherRef.current = true; setOtherLang(true); setLang('en'); setSession(s => ({ ...s, uiLanguageChoice: 'other' })) }, [])
   const [mentor, setMentor] = useState<MK>('sarah')
   const [topic, setTopic] = useState<TK>('conversation')
   const [msgs, setMsgs] = useState<Msg[]>([])
@@ -122,6 +122,8 @@ export function useBetaPage() {
     const t = (TOPICS as string[]).includes(c.ui.topic) ? c.ui.topic as TK : topicRef.current
     const mode = (MODES as string[]).includes(c.ui.activeMode) ? c.ui.activeMode as ActiveMode : 'interact'
     setLang(l); langRef.current = l
+    const freeLanguage = c.session.uiLanguageChoice === 'other' || (c.session.explanatoryLanguageSource === 'tutor_detected' && c.ui.lang === 'en')
+    otherRef.current = freeLanguage; setOtherLang(freeLanguage)
     setMentor(m); mentorRef.current = m
     setTopic(t); topicRef.current = t
     activeModeRef.current = mode; setActiveMode(mode)
@@ -328,7 +330,7 @@ export function useBetaPage() {
             activeMode: sessionRef.current.activeMode,
             mentorProfile: mentorRef.current,
             interfaceLanguage: BACKEND_LANG(langRef.current),
-            uiLanguageChoice: otherRef.current ? 'other' : undefined,
+            uiLanguageChoice: (sessionRef.current.uiLanguageChoice === 'other' || otherRef.current) ? 'other' : undefined,
             currentLessonTopic: sessionRef.current.currentLessonTopic,
             currentExercise: sessionRef.current.currentExercise,
             expectedResponseMode: sessionRef.current.expectedResponseMode,
@@ -801,7 +803,7 @@ export function useBetaPage() {
   const startChat = useCallback((m: MK, t: TK, l: Lang) => {
     setMentor(m); setTopic(t); setLang(l)
     mentorRef.current = m; topicRef.current = t; langRef.current = l
-    setSession(s => { const n = {...s, mentor:m, topic:t, lang:l}; sessionRef.current = n; return n })
+    setSession(s => { const n = {...s, mentor:m, topic:t, lang:l, uiLanguageChoice: otherRef.current ? 'other' as const : undefined}; sessionRef.current = n; return n })
     const c = COPY[l] ?? COPY.en
     setSplashMsg(c.lnw); setSplashRev(false); phaseRef.current = 'splash'; setPhase('splash')
     setTimeout(() => setSplashRev(true), 1800)
