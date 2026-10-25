@@ -1,7 +1,7 @@
 'use client'
 import { VoiceBar } from './voice/voice-bar'
 import React from 'react'
-import { SeedLocaleContext, seedText } from './seed-locale'
+import { SeedLocaleProvider, useSeedLocaleDictionary } from './seed-locale'
 import { chromeLessonLabel, chromeLevelLabel } from './chrome-gate'
 import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, MODE_UI_COPY, type ActiveMode } from './beta-model'
 import { Bubble, Typing } from './beta-chat-ui'
@@ -21,11 +21,14 @@ export default function BetaPageView() {
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   } = useBetaPage()
-  const t = (label: string) => seedText(lang, label)
+  const uiLang = (session.explanatoryLanguage && ['student_request', 'student_turn', 'tutor_detected'].includes(session.explanatoryLanguageSource ?? ''))
+    ? session.explanatoryLanguage : lang
+  const localePack = useSeedLocaleDictionary(uiLang)
+  const t = (label: string) => uiLang.toLowerCase().startsWith('es') ? label : (localePack.labels[label] ?? label)
   const modeCopy = MODE_UI_COPY[lang] ?? MODE_UI_COPY.en
   if (!hydrated) return null
   return (
-    <SeedLocaleContext.Provider value={lang}>
+    <SeedLocaleProvider lang={uiLang} labels={localePack.labels} failed={localePack.failed}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700;800&display=swap');
         :root { --navy:#080f1f; --navy2:#0d1828; --navy3:#132035; --teal:#00c9a7; --coral:#ff6b6b; --gold:#f5c842; --silver:rgba(255,255,255,.88); --muted:rgba(255,255,255,.50); --dim:rgba(255,255,255,.22); --border:rgba(255,255,255,.08); --card:rgba(255,255,255,.04); }
@@ -179,7 +182,7 @@ export default function BetaPageView() {
             <div style={{ width:42, height:42, borderRadius:'50%', background:mm.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{mm.emoji}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:800, fontSize:15, color:'#fff' }}>{mm.name} <span style={{ fontSize:10, color:mm.color }}>{mm.code}</span></div>
-              <div style={{ fontSize:10, color:'var(--muted)' }}>{lang === 'no' ? chromeLessonLabel(session.tokens, session.lessonIndex).replace(/^Sesión$/, t('Sesión')).replace(/^Lección /, t('Lección') + ' ') : chromeLessonLabel(session.tokens, session.lessonIndex)}</div>
+              <div style={{ fontSize:10, color:'var(--muted)' }}>{chromeLessonLabel(session.tokens, session.lessonIndex).replace(/^Sesión$/, t('Sesión')).replace(/^Lección /, t('Lección') + ' ')}</div>
             </div>
             <div style={{ textAlign:'center' }}>
               <div style={{ fontSize:12, fontWeight:800, color:'var(--teal)' }}>{chromeLevelLabel(session.tokens, session.level)}</div>
@@ -244,6 +247,6 @@ export default function BetaPageView() {
           {pendingAudioUrl && <audio controls src={pendingAudioUrl} style={{ margin:'0 12px 8px', height:28 }} />}
         </div>
       )}
-    </SeedLocaleContext.Provider>
+    </SeedLocaleProvider>
   )
 }
