@@ -5,6 +5,7 @@ import { UI_LABEL_KEYS } from '@/app/beta/seed-locale-data'
 // One bounded translation of fixed UI chrome per locale. No user text, student memory, Tutor
 // decisions, or curriculum passes through this auxiliary presentation-only service.
 export const runtime = 'nodejs'
+export const maxDuration = 60
 const MODEL = 'gpt-5.6-sol'
 const cache = new Map<string, Record<string, string>>()
 const pending = new Map<string, Promise<Record<string, string>>>()
