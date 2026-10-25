@@ -1,6 +1,6 @@
 'use client'
 import React from 'react'
-import { useSeedUi } from './seed-locale'
+import { useSeedUi, SeedLocaleContext } from './seed-locale'
 import type { Artifact } from './beta-model'
 import type { QuizQ } from './beta-model'
 import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
@@ -105,6 +105,7 @@ function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: st
 // Tutor's validated content. Fluid inside a horizontally scrollable box, so nothing is ever clipped.
 function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: string; renderAt?: (width: number) => string; fileSvg: string; kind: string; file: string }) {
   const t = useSeedUi()
+  const uiLanguage = React.useContext(SeedLocaleContext)
   // 7.5 P1-B: on a narrow screen the same content is laid out for the width it actually has (text at its
   // real size, never shrunk); the files are always the full-width drawing.
   const boxRef = React.useRef<HTMLDivElement>(null)
@@ -125,7 +126,13 @@ function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: strin
   const downloadPng = async () => {
     setStatus({ k: 'busy', text: t('Preparando el PNG…') })
     const png = await svgToPng(fileSvg, 2)
-    if (!png.ok) { setStatus({ k: 'error', text: `${t('No se pudo crear el PNG:')} ${png.reason}. ${t('Puedes descargar el SVG.')}` }); return }
+    if (!png.ok) {
+      // Keep the canonical Spanish refusal for contract tests and all existing locales;
+      // Norwegian translates only the display, never the PNG refusal/fallback semantics.
+      const spanishError = `No se pudo crear el PNG: ${png.reason}. Puedes descargar el SVG.`
+      setStatus({ k: 'error', text: uiLanguage === 'no' ? `${t('No se pudo crear el PNG:')} ${png.reason}. ${t('Puedes descargar el SVG.')}` : spanishError })
+      return
+    }
     saveBlob(png.blob, `${file}.png`)
     setStatus({ k: 'done', text: `${t('PNG comprobado')} (${png.width}×${png.height}) ${t('y entregado al navegador como')} ${file}.png.` })
   }
