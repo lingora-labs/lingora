@@ -100,9 +100,13 @@ export function formatLanguageTurnNote(pack: ContextPack, opts: { opening?: bool
   const voice = formatVoiceInputNote(pack)
   if (opts.opening) {
     const free = 'Do not teach and do not produce artifacts on this greeting.'
-    if (opts.other) return '[LANGUAGE FOR THIS TURN] The student selected OTHER and has not spoken yet. Greet briefly in English and invite them to write in any language. ' + free
-    if (pack.interfaceLanguage === 'es') return '[LANGUAGE FOR THIS TURN] Greet briefly in Spanish. ' + free
-    return '[LANGUAGE FOR THIS TURN] The student selected ' + pack.interfaceLanguage + '. Give a short friendly greeting in Spanish with a concise explanation in ' + pack.interfaceLanguage + '; do not start a full lesson. ' + free
+    if (opts.other) {
+      return '[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and picked OTHER. Write ONLY in English: invite them to write one sentence in any language they like. ' + free
+    }
+    if (pack.interfaceLanguage === 'es') {
+      return '[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and selected Spanish. Write ONLY in Spanish: greet and invite a first sentence. ' + free
+    }
+    return '[LANGUAGE FOR THIS TURN] Opening greeting: first the greeting in Spanish, then a blank line, then the same greeting in "' + pack.interfaceLanguage + '" as ONE paragraph wrapped in single asterisks for italics. ' + free
   }
   const remembered = pack.explanatoryLanguage ?? (opts.other ? 'not yet established' : pack.interfaceLanguage)
   return '[LANGUAGE FOR THIS TURN] Remembered explanatory language: "' + remembered + '"; Spanish is the LEARNING TARGET. Determine the response language from the meaning of the student\'s LATEST turn and the conversation. A genuine conversational shift of language (e.g. a Russian dialogue followed by a student speaking Portuguese) normally changes the reply language without requiring a formal request. An exercise answer, example phrase, quotation, translation target, code or doubtful ASR fragment must NOT change it. Explicit preference to keep a language takes priority. If the explanation language changes, call set_explanatory_language with the new BCP-47 language, basis=conversation_shift or explicit_request, and evidence quoting exact words of THIS turn. The UI follows this declaration automatically. Continue the original learning task, with Spanish examples in Spanish. ' + voice
