@@ -25,7 +25,7 @@ function readCached(lang: string): Record<string, string> | null {
   return null
 }
 
-export function SeedLocaleProvider({ lang, children }: { lang: string; children: React.ReactNode }) {
+export function useSeedLocaleDictionary(lang: string) {
   const locale = typeof lang === 'string' && codePattern.test(lang) ? lang : 'en'
   const [result, setResult] = React.useState<{ lang: string; labels: Record<string, string>; failed: boolean }>(() =>
     ({ lang: locale, labels: typeof window === 'undefined' ? (locale === 'no' ? NORWEGIAN_LABELS : {}) : readCached(locale) ?? {}, failed: false }))
@@ -34,10 +34,6 @@ export function SeedLocaleProvider({ lang, children }: { lang: string; children:
     const found = readCached(locale)
     if (found) {
       setResult({ lang: locale, labels: found, failed: false })
-      return () => { alive = false }
-    }
-    if (locale.startsWith('es-') || locale === 'es') {
-      setResult({ lang: locale, labels: {}, failed: false })
       return () => { alive = false }
     }
     setResult({ lang: locale, labels: {}, failed: false })
@@ -55,13 +51,15 @@ export function SeedLocaleProvider({ lang, children }: { lang: string; children:
     }).catch(() => { if (alive) setResult({ lang: locale, labels: {}, failed: true }) })
     return () => { alive = false }
   }, [locale])
-  const labels = result.lang === locale ? result.labels : (locale.startsWith('no') ? NORWEGIAN_LABELS : {})
+  return { locale, labels: result.lang === locale ? result.labels : (locale.startsWith('no') ? NORWEGIAN_LABELS : {}), failed: result.lang === locale && result.failed }
+}
+export function SeedLocaleProvider({ lang, labels, failed, children }: { lang: string; labels: Record<string, string>; failed?: boolean; children: React.ReactNode }) {
   return (
-    <SeedLocaleContext.Provider value={locale}>
+    <SeedLocaleContext.Provider value={lang}>
       <UiLabelsContext.Provider value={labels}>
-        {result.lang === locale && result.failed && <span role="status" data-testid="ui-locale-warning"
+        {failed && <span role="status" data-testid="ui-locale-warning"
           style={{ position: 'fixed', top: 0, right: 0, zIndex: 100, background: '#501e24', color: 'white', fontSize: 12, padding: 6 }}>
-          Interface translation unavailable for {locale}; original labels shown.
+          Interface translation unavailable for {lang}; original labels shown.
         </span>}
         {children}
       </UiLabelsContext.Provider>
