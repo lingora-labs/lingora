@@ -54,13 +54,13 @@ async function turn(message, stateExtra, provider, voice) {
 }
 // 3a. Spanish selected; an English-looking transcription and a Tutor that declares English without a request.
 let r = await turn('I want to go to the beach today', { interfaceLanguage: 'es' }, [[langCall({ language: 'en' })], [text('¿Qué quieres hacer en la playa?')]])
-assert.match(r.note, /explanatoryLanguage = "es" \(the student selected it\)/)
-assert.match(r.system, /explanatoryLanguage=es; targetLanguage=es/)
+assert.match(r.note, /Remembered explanatory language: "es"/)
+assert.match(r.system, /targetLanguage=es\. Previous explanatoryLanguage=es/)
 assert.match(r.toolResult, /Language NOT changed: it stays es/)
 assert.equal(r.done.state.explanatoryLanguage, undefined, 'nothing recorded'); assert.equal(r.done.state.explanatoryLanguageSource, undefined)
 // 3b. A session poisoned by 7.4 (explanatoryLanguage 'en' recorded without the student's request) is repaired.
 r = await turn('Hola, ¿qué tal?', { interfaceLanguage: 'es', explanatoryLanguage: 'en' }, [[text('¡Muy bien!')]])
-assert.match(r.note, /explanatoryLanguage = "es"/)
+assert.match(r.note, /Remembered explanatory language: "es"/)
 // 3c. An Italian expression is content, not a language request.
 r = await turn('¿Qué significa «in bocca al lupo»?', { interfaceLanguage: 'es' }, [[text('Es una expresión italiana. '), langCall({ language: 'it', evidence: 'in bocca al lupo' })], [text('Significa «buena suerte».')]])
 assert.equal(r.done.state.explanatoryLanguage, 'it', 'the quote is in the student words: the contract cannot judge meaning (documented limit)')
@@ -74,7 +74,7 @@ assert.equal(r.done.state.explanatoryLanguage, 'en'); assert.equal(r.done.state.
 let r2 = await turn('Por favor, explícamelo en inglés.', { interfaceLanguage: 'es' }, [[langCall({ language: 'en', evidence: 'explícamelo en inglés' })], [text('Of'), text(' course. '), text('From now on, English.')]])
 assert.equal(r2.text, 'Of course. From now on, English.')
 r = await turn('Yo soy cansado', { ...r.done.state }, [[text('We say «estoy cansado».')]])
-assert.match(r.note, /explanatoryLanguage = "en" \(the student asked for it\)/)
+assert.match(r.note, /Remembered explanatory language: "en"/)
 // 3e. A spoken turn: the recognizer's doubts are facts; a request inside a doubtful fragment does not count.
 r = await turn('háblame en inglés', { interfaceLanguage: 'es' }, [[langCall({ language: 'en', evidence: 'en inglés' })], [text('¿Me lo repites?')]],
   { transcript: 'háblame en inglés', uncertain: ['en inglés'], asrModel: 'test', asrMs: 1 })
@@ -83,6 +83,27 @@ assert.match(r.note, /\[SPOKEN TURN\]/); assert.match(r.note, /not sure about: �
 // 3f. OTROS: the first language the Tutor settles on is recorded as detected.
 r = await turn('مرحبا، أريد أن أتعلم', { interfaceLanguage: 'en', uiLanguageChoice: 'other' }, [[langCall({ language: 'ar' })], [text('أهلاً!')]])
 assert.equal(r.done.state.explanatoryLanguage, 'ar'); assert.equal(r.done.state.explanatoryLanguageSource, 'tutor_detected')
+// 7.6: a true change of conversation language is accepted without an explicit request.
+const ptShift = L.decideLanguageDeclaration({
+  declared: 'pt', basis: 'conversation_shift', evidence: 'Olá, agora gostaria de continuar contigo.',
+  state: { interfaceLanguage: 'ru' }, studentWords: 'Olá, agora gostaria de continuar contigo.'
+})
+assert.deepEqual(ptShift, { outcome: 'accepted', language: 'pt', source: 'student_turn' })
+assert.deepEqual(L.resolveExplanatoryLanguage({ interfaceLanguage: 'ru', explanatoryLanguage: 'pt', explanatoryLanguageSource: 'student_turn' }),
+  { language: 'pt', source: 'student_turn' })
+assert.equal(L.decideLanguageDeclaration({
+  declared: 'pt', basis: 'conversation_shift', evidence: 'Olá', uncertain: ['Olá'],
+  state: { interfaceLanguage: 'ru' }, studentWords: 'Olá'
+}).reason, 'evidence_uncertain', 'ASR uncertainty still blocks the change')
+r = await turn('Olá, vamos conversar em português.', { interfaceLanguage: 'ru' },
+  [[langCall({ language: 'pt', evidence: 'Olá, vamos conversar em português.', basis: 'conversation_shift' })],
+   [text('Claro, podemos conversar em português.')]])
+assert.equal(r.done.state.explanatoryLanguage, 'pt')
+assert.equal(r.done.state.explanatoryLanguageSource, 'student_turn')
+// A practice phrase alone provides no signal and the original Russian preference remains.
+r = await turn('Traduza: obrigado', { interfaceLanguage: 'ru' }, [[text('A tradução é ...')]])
+assert.equal(r.done.state.explanatoryLanguage, undefined)
+
 // 3g. Opening greeting with Spanish selected keeps its own format.
 queue = [[text('¡Hola!')]]; requests = []
 const s0 = { ...DEFAULT_SESSION_STATE, interfaceLanguage: 'es', tokens: 0 }
