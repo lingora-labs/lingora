@@ -119,6 +119,7 @@ export interface SS {
   progressCredits?: string[]
   lastTask: string | null; lastArtifact: string | null
   // Language authority from the Tutor's completed turn, persisted with this conversation.
+  uiLanguageChoice?: 'other'
   explanatoryLanguage?: string
   explanatoryLanguageSource?: 'student_request' | 'student_turn' | 'tutor_detected'
   tutorMode?:          string
