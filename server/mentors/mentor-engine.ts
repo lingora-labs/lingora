@@ -95,7 +95,7 @@ import { getMentorProfile } from './profiles'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, formatLanguageTurnNote, type ContextPack, type VoiceInputFacts } from '@/lib/context-pack'
 import { imageCapability } from '../tools/image-generator'
-import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage, parseLanguageEvidence, decideLanguageDeclaration, resolveExplanatoryLanguage } from '@/lib/explanatory-language'
+import { SET_EXPLANATORY_LANGUAGE_TOOL, parseExplanatoryLanguage, parseLanguageEvidence, parseLanguageBasis, decideLanguageDeclaration, resolveExplanatoryLanguage } from '@/lib/explanatory-language'
 import { UPDATE_STUDENT_MEMORY_TOOL, parseMemoryOps, formatMemoryBlock, selectHistoryWindow, planHistoryBudget, formatContextNote, type TutorMemoryOp } from '@/lib/tutor-memory'
 import { formatQuizEvidence } from '@/lib/quiz-evidence'
 import { formatSpaceContext } from '@/server/space/context'
@@ -183,7 +183,7 @@ type NormalizedMentorCall = {
 }
 
 export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number }
-export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; explanatoryLanguageSource?: 'student_request' | 'tutor_detected'; languageRejection?: string; memoryOps?: TutorMemoryOp[]; learningFacts?: LearningFactDeclaration[]; deliveryFailure?: string; deliveryFailures?: string[]; rejectedSignals?: number; rejectedReasons?: string[]; usage?: ProviderUsage; servedModel?: string }
+export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; explanatoryLanguageSource?: 'student_request' | 'student_turn' | 'tutor_detected'; languageRejection?: string; memoryOps?: TutorMemoryOp[]; learningFacts?: LearningFactDeclaration[]; deliveryFailure?: string; deliveryFailures?: string[]; rejectedSignals?: number; rejectedReasons?: string[]; usage?: ProviderUsage; servedModel?: string }
 
 export const PRODUCT_MODEL = 'gpt-5.6-sol'
 
@@ -385,11 +385,11 @@ export function buildMentorPrompt(params: {
   const recentQuiz = formatQuizEvidence(state.quizEvidence)
   // This session metadata comes from the actual UI selection, not a regex classifier.
   const opening = Boolean(params.opening)
-  const localeEnvelope = pack.explanatoryLanguage && !(opening && pack.explanatoryLanguageSource === 'selection')
-    ? `[SESSION LOCALE: explanatoryLanguage=${pack.explanatoryLanguage}; targetLanguage=es. The language of your explanations is fixed by the session (${pack.explanatoryLanguageSource === 'student_request' ? 'the student asked for it' : pack.explanatoryLanguageSource === 'selection' ? 'the student selected it' : 'the student uses it'}); Spanish examples use targetLanguage.]\n\n`
-    : opening
-      ? '[SESSION LOCALE: targetLanguage=es. This is the opening greeting; its language format is given in the language note.]\n\n'
-      : '[SESSION LOCALE: targetLanguage=es. The language of your explanations is the language the student writes in or asks for; any language you can write well is allowed. Spanish examples use targetLanguage.]\n\n'
+  const localeEnvelope = '[SESSION LOCALE: targetLanguage=es. Previous explanatoryLanguage=' +
+    (pack.explanatoryLanguage ?? 'unset') + '; provenance=' +
+    (pack.explanatoryLanguageSource ?? 'none') +
+    '. This is context, NOT an absolute lock. The latest student intent governs whether to continue or change the conversation language. A foreign-language exercise or quote is not a switch. The tutor decides, and announces genuine changes through set_explanatory_language.]\\n\\n'
+
   // 7.5 P1-B: the tool contract states the capabilities this deployment actually has.
   const system = [localeEnvelope, profile.system, artifactChannelInstruction({ image: imageCapability().available }), executionDirective, modeInstructions, TUTOR_PROHIBITIONS, buildContext(state, opening, pack.explanatoryLanguage), formatMemoryBlock(state.tutorMemory), recentQuiz ? '\n\n[QUIZ UI EVIDENCE]\n' + recentQuiz : '', '\n\n' + formatContextPack(pack, { opening }), formatSpaceContext(params.spaceContext)].filter(Boolean).join('')
   return { system, user: String(params.message || ''), languageNote: formatLanguageTurnNote(pack, { opening, other: state.uiLanguageChoice === 'other' }) }
@@ -492,7 +492,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    // 7.5: every failure is collected and shown to the student by the stream engine, not only logged.
    const fail=(reason:string)=>{const w=box.w!;w.deliveryFailure??=reason;(w.deliveryFailures??=[]).push(reason);console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
    const count=(u:any)=>{if(!u)return;const w=box.w!;const x=w.usage??={prompt:0,completion:0,cached:0,calls:0};x.prompt+=u.prompt_tokens??0;x.completion+=u.completion_tokens??0;x.cached+=u.prompt_tokens_details?.cached_tokens??0;x.calls+=1}
-   const publishLanguage=(l:string,source:'student_request'|'tutor_detected')=>{wrapped.explanatoryLanguage=l;wrapped.explanatoryLanguageSource=source}
+   const publishLanguage=(l:string,source:'student_request'|'student_turn'|'tutor_detected')=>{wrapped.explanatoryLanguage=l;wrapped.explanatoryLanguageSource=source}
    const publishRejected=(n:number)=>{wrapped.rejectedSignals=(wrapped.rejectedSignals??0)+n}
    const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
    const publishFacts=(f:LearningFactDeclaration[])=>{wrapped.learningFacts=[...(wrapped.learningFacts??[]),...f]}
@@ -553,7 +553,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
        if(!lang)fail('invalid_language_code')
        else{
          // 7.5 P1-A: the declaration changes the session only under the state contract's precedence.
-         const decision=decideLanguageDeclaration({declared:lang,evidence:parseLanguageEvidence(raw),state:n.state,studentWords:n.message,uncertain:voiceFacts?.uncertain})
+         const decision=decideLanguageDeclaration({declared:lang,evidence:parseLanguageEvidence(raw),basis:parseLanguageBasis(raw),state:n.state,studentWords:n.message,uncertain:voiceFacts?.uncertain})
          if(decision.outcome==='accepted'){declared=decision.language;publishLanguage(decision.language,decision.source)}
          else if(decision.outcome==='rejected'){languageKept=decision.language??undefined;box.w!.languageRejection=decision.reason}
          else declared=decision.language??lang
