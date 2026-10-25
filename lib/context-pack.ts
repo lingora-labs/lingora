@@ -108,7 +108,7 @@ export function formatLanguageTurnNote(pack: ContextPack, opts: { opening?: bool
     }
     return '[LANGUAGE FOR THIS TURN] Opening greeting: first the greeting in Spanish, then a blank line, then the same greeting in "' + pack.interfaceLanguage + '" as ONE paragraph wrapped in single asterisks for italics. ' + free
   }
-  const remembered = pack.explanatoryLanguage ?? (opts.other ? 'not yet established' : pack.interfaceLanguage)
+  const remembered = pack.explanatoryLanguage ?? 'not yet established'
   return '[LANGUAGE FOR THIS TURN] Remembered explanatory language: "' + remembered + '"; Spanish is the LEARNING TARGET. Determine the response language from the meaning of the student\'s LATEST turn and the conversation. A genuine conversational shift of language (e.g. a Russian dialogue followed by a student speaking Portuguese) normally changes the reply language without requiring a formal request. An exercise answer, example phrase, quotation, translation target, code or doubtful ASR fragment must NOT change it. Explicit preference to keep a language takes priority. If the explanation language changes, call set_explanatory_language with the new BCP-47 language, basis=conversation_shift or explicit_request, and evidence quoting exact words of THIS turn. The UI follows this declaration automatically. Continue the original learning task, with Spanish examples in Spanish. ' + voice
 }
 /** 7.5 P1-A: facts of a spoken turn. The recognizer's doubts are the platform's, never the student's errors. */
