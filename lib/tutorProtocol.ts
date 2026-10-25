@@ -62,15 +62,15 @@ export function resolvePedagogicalAction(params: {
   const { state, explicit } = params
   const topic = resolveTopic(state)
   const mentor = resolveMentor(state)
-  if (state.activeMode === 'interact' || state.activeMode === 'free') {
+  if (explicit && explicit !== 'conversation') {
+    if (state.activeMode === 'interact' || state.activeMode === 'free') {
     const freeMode = modeToTutorMode(state.activeMode as 'interact' | 'free', topic, mentor)
     return {
       action: 'conversation', mode: freeMode, systemDirective: buildDirective('conversation', state),
       nextPhase: 'conversation', nextLessonIndex: resolveModuleIndex(state), nextCourseActive: resolveCourseActive(state),
     }
   }
-  if (explicit && explicit !== 'conversation') {
-    const mode = state.activeMode
+  const mode = state.activeMode
       ? modeToTutorMode(state.activeMode as 'interact' | 'structured' | 'pdf_course' | 'free', topic, mentor)
       : resolveTutorMode(topic, mentor)
     return {
@@ -148,7 +148,7 @@ function buildDirective(action: PedagogicalAction, state: Partial<SessionState>)
 
 export function getModeInstruction(mode: TutorMode, topic: string | null): string {
   const map: Record<TutorMode, string> = {
-    structured: `\n\nMODE: STRUCTURED TUTORING (${topic ?? 'Spanish'})\nFollow the pedagogical sequence: guide → lesson → schema → quiz → feedback.\nDo not skip steps. Do not blend phases in one response unless the student explicitly sequenced several requests in this message — then fulfill that sequence now.\nTone: professional, warm, university-tutor level.`,
+    structured: `\n\nMODE: STRUCTURED TUTORING (${topic ?? 'Spanish'})\nUse guide → lesson → schema → quiz → feedback as a useful default for a structured course, not a forced response shape. Follow the student's current explicit intention first: a direct question, translation, correction, artifact request or multi-step request may bypass the default sequence. Resume the course naturally afterward.\nTone: professional, warm, university-tutor level.`,
     conversational: `\n\nMODE: CONVERSATIONAL IMMERSION (${topic ?? 'Spanish'})\nPrioritize natural conversation. Grammar correction is inline and brief.`,
     professional: `\n\nMODE: PROFESSIONAL SPANISH (${topic ?? 'Spanish'})\nGround every interaction in a realistic workplace scenario.`,
     diagnostic: `\n\nMODE: LEVEL DIAGNOSTIC\nAssess CEFR over several exchanges. Do not reveal the assessment mid-conversation.`,
