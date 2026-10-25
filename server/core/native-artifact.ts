@@ -35,6 +35,11 @@ const REASONS: Array<[RegExp, (m: RegExpExecArray) => string]> = [
   [/^info_section_count$/, () => 'la infografía no tiene secciones'],
   [/^info_section_shape:(\d+)$/, m => `la sección ${Number(m[1]) + 1} no tiene título y texto`],
   [/^info_untraceable_stat:(\d+):(.*)$/, m => `la cifra «${m[2]}» no aparece en la explicación`],
+  [/^info_example_shape:(\d+)$/, m => `el ejemplo ${Number(m[1]) + 1} no tiene segmentos válidos`],
+  [/^info_example_part:(\d+):(\d+)$/, m => `el segmento ${Number(m[2]) + 1} del ejemplo ${Number(m[1]) + 1} no tiene texto o etiqueta válidos`],
+  [/^info_example_emphasis:(\d+):(\d+):(.*)$/, m => `«${m[3]}» no aparece como palabra en el segmento ${Number(m[2]) + 1} del ejemplo ${Number(m[1]) + 1}`],
+  [/^info_example_mismatch:(\d+)$/, m => `la frase del ejemplo ${Number(m[1]) + 1} no coincide con sus segmentos`],
+  [/^info_(?:stat_count|stat_shape|stat_tone|icon|tone|takeaway)/, () => 'una cifra, un icono o la conclusión no tienen un formato válido'],
   [/^chart_untraceable_value:\d+:\d+:(.*)$/, m => `el valor ${m[1]} no aparece en la explicación`],
   [/^chart_value_category:\d+:(\d+):(.*)$/, m => `el valor ${m[2]} no corresponde a la categoría ${Number(m[1]) + 1}`],
   [/^chart_value_count:(\d+):(.*)$/, m => `la serie ${Number(m[1]) + 1} no tiene un valor por categoría (${m[2]})`],
@@ -44,7 +49,7 @@ const REASONS: Array<[RegExp, (m: RegExpExecArray) => string]> = [
 /** Student-facing sentence for a validator code. */
 export function explainNativeRefusal(code: string): string {
   for (const [re, say] of REASONS) { const m = re.exec(code); if (m) return say(m) }
-  return `estructura no válida (${code})`
+  return 'la estructura del componente no es válida'
 }
 
 export function materializeNativeArtifactOrReason(signal: ArtifactSignal, sources: ChartSources = {}): Materialized {

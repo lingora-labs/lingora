@@ -8,6 +8,7 @@
 // =============================================================================
 import type { CEFRLevel } from './contracts';
 import { buildCommercialContext, formatCommercialFacts, type CommercialContext } from './commercial-context';
+import { resolveExplanatoryLanguage, type LanguageSource } from './explanatory-language';
 
 export type DomainProficiency = 'novice' | 'practitioner' | 'expert' | 'unknown';
 export type PedagogicalGoal = 'teach' | 'practice' | 'assess' | 'converse' | 'review';
@@ -30,11 +31,19 @@ export interface ContextPack {
   // 7.3.2: the language the Tutor itself declared for its explanations (any
   // language code), carried by the session. Null until the Tutor declares one.
   explanatoryLanguage: string | null;
+  // 7.5 P1-A: where that language comes from (lib/explanatory-language.ts precedence). 'selection' = the
+  // language the student picked; 'student_request' = a change they asked for; 'tutor_detected' = OTROS only.
+  explanatoryLanguageSource: LanguageSource | null;
+  // 7.5 P1-A: this turn was spoken. Facts about the recognition, never instructions.
+  voiceInput: VoiceInputFacts | null;
   // 7.5: immersion facts (level, goal, recorded interest, whether frequency allows an invitation). Information, not an order.
   commercial: CommercialContext | null;
 }
 
 export type LevelConfirmed = boolean;
+
+/** What the speech recognizer could and could not hear in a spoken turn. */
+export interface VoiceInputFacts { uncertain: string[]; interruptedTutor?: { heard: string } | null }
 
 const CEFR: CEFRLevel[] = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
@@ -58,6 +67,9 @@ export function buildContextPack(input: {
   turnCount?: number;
   activeMode?: string;
   explanatoryLanguage?: string;
+  explanatoryLanguageSource?: string;
+  uiLanguageChoice?: string;
+  voiceInput?: VoiceInputFacts | null;
   /** 7.5: session facts for the immersion context; omitted => no commercial facts in this pack. */
   commercialState?: Parameters<typeof buildCommercialContext>[0];
   now?: number;
@@ -75,32 +87,43 @@ export function buildContextPack(input: {
     lastUserGoal: input.lastUserGoal ?? null,
     activeFlowType: input.activeMode === 'pdf_course' || input.activeMode === 'structured' ? 'course' : null,
     turnCount: input.turnCount ?? 0,
-    explanatoryLanguage: input.explanatoryLanguage?.trim() || null,
+    ...(() => { const a = resolveExplanatoryLanguage({ interfaceLanguage: input.interfaceLanguage, uiLanguageChoice: input.uiLanguageChoice, explanatoryLanguage: input.explanatoryLanguage, explanatoryLanguageSource: input.explanatoryLanguageSource }); return { explanatoryLanguage: a.language, explanatoryLanguageSource: a.source } })(),
+    voiceInput: input.voiceInput ?? null,
     commercial: input.commercialState ? buildCommercialContext(input.commercialState, input.now) : null,
   };
 }
 
-/** 7.3.2c/d: the language fact is delivered adjacent to the student's turn (a
- *  trailing system note, after the turn). It is the ONLY runtime statement
- *  about language. The UI default (interfaceLanguage) is visible to the Tutor
- *  only while the student has not written anything yet (`opening`), where this
- *  note defines the greeting format; afterwards the Tutor follows the input. */
+/** 7.3.2c/d: the language fact is delivered adjacent to the student's turn (a trailing system note, after
+ *  the turn). It is the ONLY runtime statement about language. 7.5 P1-A: the language it states is the one
+ *  the state contract resolved (lib/explanatory-language.ts); the note informs the Tutor of that decision. */
 export function formatLanguageTurnNote(pack: ContextPack, opts: { opening?: boolean; other?: boolean } = {}): string {
-  if (pack.explanatoryLanguage) {
-    return `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}". Write your explanations, corrections and the reasons for each correction in this language, even though the student's message above may be Spanish practice. Spanish stays only for the examples, sentences and exercises you teach. It is already recorded: call set_explanatory_language again only if the student asks for, or clearly moves to, a different language (small call; keep writing your reply as usual).`
-  }
-  if (opts.opening) {
-    // One voice for the opening greeting. After it, the Tutor follows the student's input.
-    const free = 'Do not teach and do not produce artifacts on this greeting. Once the student writes, use the language they write in or ask for, any language you can write well; this greeting format is not a limit.'
+  const voice = formatVoiceInputNote(pack)
+  if (opts.opening && pack.explanatoryLanguageSource !== 'student_request') {
+    // One voice for the opening greeting, defined by the student's selection.
+    const free = 'Do not teach and do not produce artifacts on this greeting.'
     if (opts.other) {
-      return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and picked OTHER because their language is not in the picker. Write ONLY in English: a short warm greeting, then invite them to write one sentence about today in any language they like, or anything at all. ${free}`
+      return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and picked OTHER because their language is not in the picker. Write ONLY in English: a short warm greeting, then invite them to write one sentence about today in any language they like, or anything at all. ${free} Once they write, explain in the language they use and record it with set_explanatory_language.`
     }
     if (pack.interfaceLanguage === 'es') {
       return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and selected Spanish. Write ONLY in Spanish: a short warm greeting, then invite them to write one sentence about today. ${free}`
     }
     return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and selected "${pack.interfaceLanguage}" in the picker. Format: first the greeting in Spanish (Spanish is the protagonist), a short warm greeting that invites them to write one sentence about today; then a blank line; then the same greeting in "${pack.interfaceLanguage}" as ONE single paragraph wrapped in single asterisks for italics (no line breaks and no other asterisks inside it). ${free}`
   }
-  return '[LANGUAGE FOR THIS TURN] No explanatory language has been declared yet. Answer in the language the student writes in or asks for: any language you can write well, whether or not it appears in any UI picker. Your explanations, corrections and the reasons for each correction go in that language; Spanish stays for the examples and exercises you teach. When you settle on that language, call set_explanatory_language once so it is remembered (small call; keep writing your reply as usual).'
+  if (pack.explanatoryLanguage) {
+    const why = pack.explanatoryLanguageSource === 'student_request' ? 'the student asked for it' : pack.explanatoryLanguageSource === 'selection' ? 'the student selected it' : 'it is the language this student uses'
+    return `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}" (${why}). Write your explanations, corrections, the reasons for each correction, your questions and instructions in this language, even though the student's message above may be Spanish practice, contain words of another language or have been transcribed from speech. Spanish stays for the examples, sentences and exercises you teach; examples in other languages are allowed and do not change it. It changes only if the student explicitly asks you to explain in another language: then call set_explanatory_language with that language and evidence = their exact words.${voice}`
+  }
+  return `[LANGUAGE FOR THIS TURN] No explanatory language exists yet (the student picked OTHER). Answer in the language the student writes in or asks for: any language you can write well. Your explanations, corrections and the reasons for each correction go in that language; Spanish stays for the examples and exercises you teach. When you settle on that language, call set_explanatory_language once so it is remembered (small call; keep writing your reply as usual).${voice}`
+}
+
+/** 7.5 P1-A: facts of a spoken turn. The recognizer's doubts are the platform's, never the student's errors. */
+export function formatVoiceInputNote(pack: ContextPack): string {
+  const v = pack.voiceInput
+  if (!v) return ''
+  const parts = [' [SPOKEN TURN] The student spoke; the message above is an automatic transcription.']
+  if (v.uncertain.length) parts.push(` The recognizer was not sure about: ${v.uncertain.map(u => `«${u}»`).join(', ')}. Do not treat these as the student's mistakes; if they matter for your answer, ask briefly, in explanatoryLanguage, only about them.`)
+  if (v.interruptedTutor) parts.push(` The student interrupted your previous spoken answer; they had heard up to: «${v.interruptedTutor.heard.slice(-240)}». Continue from what they say now.`)
+  return parts.join('')
 }
 
 export function formatContextPack(pack: ContextPack, opts: { opening?: boolean } = {}): string {

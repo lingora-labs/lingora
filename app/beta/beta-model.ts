@@ -58,6 +58,12 @@ export interface Msg {
   audioUrl?: string
   imageUrl?: string
   suggestedActions?: SuggestedAction[]
+  // 7.5 P1-A: a spoken student turn — what the recognizer heard, and what it was unsure of.
+  voice?: { state: 'pending' | 'heard' | 'not_understood'; uncertain?: string[]; asrModel?: string; asrMs?: number }
+  // 7.5 P1-A: a Tutor answer that was spoken; whether the student interrupted it; measured latencies.
+  spoken?: boolean
+  interrupted?: boolean
+  voiceTimings?: { firstTextMs: number | null; firstAudioMs?: number; asrMs: number | null; asrModel: string | null; speechModel?: string | null; servedModel: string | null }
 }
 
 // P10b — precedence resolver: if `artifacts` is present and non-empty, it is

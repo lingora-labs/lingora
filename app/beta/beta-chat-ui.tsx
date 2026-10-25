@@ -13,7 +13,8 @@ export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: st
   const html = React.useMemo(() => renderTutorMarkdown(msg.text || ''), [msg.text])
   return (
     <>
-      <div data-testid={isUser ? 'bubble-user' : 'bubble-mentor'} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
+      <div data-testid={isUser ? 'bubble-user' : 'bubble-mentor'} data-msg-id={msg.id}
+        data-voice-first-text-ms={msg.voiceTimings?.firstTextMs ?? undefined} data-voice-first-audio-ms={msg.voiceTimings?.firstAudioMs ?? undefined} style={{ display:'flex', alignItems:'flex-end', gap:8, maxWidth:'88%', ...(isUser?{flexDirection:'row-reverse',marginLeft:'auto'}:{}) }}>
         <div style={{ width:28, height:28, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, flexShrink:0, background: isUser ? 'var(--teal)' : mc, color:'#fff' }}>
           {isUser ? 'YOU' : msg.sender.toUpperCase().slice(0,2)}
         </div>
@@ -28,6 +29,21 @@ export const Bubble = React.memo(function Bubble({ msg, mc }: { msg: Msg; mc: st
               <div className={isUser ? 'ln-user' : undefined} style={{ padding:'10px 14px', borderRadius:16, fontSize:14, lineHeight:1.6, ...(isUser ? { background:'var(--teal)', color:'var(--navy)', fontWeight:500, borderBottomRightRadius:4 } : { background:'var(--navy2)', border:'1px solid var(--border)', color:'var(--silver)', borderBottomLeftRadius:4 }) }}
                 dangerouslySetInnerHTML={{ __html: html }} />
             )
+          )}
+          {isUser && msg.voice && (
+            <div data-testid="voice-heard" data-state={msg.voice.state} style={{ fontSize:11, color:'var(--muted)', textAlign:'right' }}>
+              {msg.voice.state === 'pending' ? '🎤 Escuchando lo que dijiste…' : msg.voice.state === 'not_understood' ? '🎤 No se entendió el audio' : '🎤 Transcrito de tu voz'}
+              {msg.voice.uncertain && msg.voice.uncertain.length > 0 && (
+                <div data-testid="voice-uncertain" style={{ color:'var(--gold)' }}>No entendí con seguridad: {msg.voice.uncertain.map(u => `«${u}»`).join(', ')}</div>
+              )}
+            </div>
+          )}
+          {!isUser && msg.sender !== 'ln' && msg.complete !== false && msg.text?.trim() && (
+            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+              <button type="button" data-testid="speak-message" onClick={() => window.dispatchEvent(new CustomEvent('lingora-speak-message', { detail: { id: msg.id } }))}
+                style={{ fontSize:11.5, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0 }}>🔊 Escuchar</button>
+              {msg.interrupted && <span data-testid="voice-interrupted" style={{ fontSize:11, color:'var(--muted)' }}>interrumpida por ti</span>}
+            </div>
           )}
           {msg.imageUrl && (
             <div style={{ marginTop:4, borderRadius:12, overflow:'hidden', maxWidth:280, border:'1px solid var(--border)' }}>

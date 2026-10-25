@@ -74,6 +74,16 @@ const infoSection = {
   properties: { heading: label, body: label, icon: label, tone },
   required: ['heading', 'body'],
 }
+const infoPart = {
+  type: 'object', additionalProperties: false,
+  properties: { text: label, label, emphasis: label, emphasisLabel: label, tone },
+  required: ['text'],
+}
+const infoExample = {
+  type: 'object', additionalProperties: false,
+  properties: { caption: label, sentence: label, parts: { type: 'array', items: infoPart } },
+  required: ['parts'],
+}
 const infoStat = {
   type: 'object', additionalProperties: false,
   properties: { value: label, label, tone },
@@ -96,13 +106,14 @@ const tableColumn = {
  */
 export const NATIVE_ARTIFACT_CONTENT_TOOL_SCHEMA = {
   type: 'object',
-  description: 'Fields depend on the artifact type. flowchart: title, nodes (id, label, kind=start|step|decision|end) and edges (from, to, optional label). infographic: title, sections (heading, body), optional subtitle, stats (value, label) and takeaway; figures must come from your reply. table_matrix: title, columns, rows of cells (text, optional tone). chart: title, categories and panels (kind bar|line, title, values: one number per category). Include only the fields of the chosen type.',
+  description: 'Fields depend on the artifact type. flowchart: title, nodes (id, label, kind=start|step|decision|end) and edges (from, to, optional label). infographic (any visual summary, poster or \'image of an infographic\' with exact text): title, sections (heading, body), optional subtitle, stats (value, label), examples and takeaway; figures must come from your reply. examples: worked examples drawn in colour — parts in order, each with text, optional label (what it is, e.g. Sujeto), optional emphasis (the exact word or words of that part to highlight, e.g. its nucleus) and emphasisLabel (e.g. Núcleo del sujeto). table_matrix: title, columns, rows of cells (text, optional tone). chart: title, categories and panels (kind bar|line, title, values: one number per category). Include only the fields of the chosen type.',
   properties: {
     title: label, subtitle: label,
     nodes: { type: 'array', items: flowNode },
     edges: { type: 'array', items: flowEdge },
     sections: { type: 'array', items: infoSection },
     stats: { type: 'array', items: infoStat },
+    examples: { type: 'array', items: infoExample },
     takeaway: label,
     columns: { type: 'array', items: tableColumn },
     rows: { type: 'array', items: { type: 'array', items: tableCell } },

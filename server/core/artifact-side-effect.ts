@@ -26,6 +26,15 @@ export const PER_TURN_BUDGET = { images: 1, audio: 2 } as const
 const MENTOR_VOICES: Record<string, string> = { sarah: 'shimmer', alex: 'fable', nick: 'onyx' }
 export const voiceFor = (mentor: unknown): string => MENTOR_VOICES[String(mentor ?? '').toLowerCase()] ?? 'fable'
 
+const NATIVE_LABEL: Record<string, string> = { infographic: 'infografía', flowchart: 'diagrama', chart: 'gráfico', table_matrix: 'tabla', schema_pro: 'esquema', quiz: 'quiz' }
+/** 7.5 P1-B: what a student may read about a costed failure. No prompt, model id, HTTP status or provider text. */
+export const PUBLIC_FAILURE = {
+  image_unavailable: 'Imagen: la generación de ilustraciones libres no está disponible ahora; puedo hacerte una infografía o un diagrama',
+  image_failed: 'Imagen: no se pudo generar ahora; puedes intentarlo de nuevo o pedir una infografía',
+  image_budget: 'Imagen: solo se genera una imagen por respuesta',
+  audio_failed: 'Respuesta hablada: no se pudo generar el audio; el texto está completo y puedes reintentar la voz',
+} as const
+
 const PRINTABLE_NATIVE = new Set(['table_matrix', 'schema_pro', 'quiz', 'chart', 'flowchart', 'infographic'])
 
 export async function fulfillArtifactSignals(
@@ -66,7 +75,11 @@ export async function fulfillArtifactSignals(
         ? fromText
         : materializeNativeArtifactOrReason(signal, { text: `${studentMessage}\n${pedagogicalContent}`, tables })
       if ('payload' in out) artifacts.push(out.payload)
-      else failures.push({ subject: `Componente interactivo no válido: ${signal.subject} — ${out.reason}` })
+      else {
+        // 7.5 P1-B: the student sees the kind and the validator's own sentence; never the declaration's subject.
+        console.warn('[native-artifact]', JSON.stringify({ type: signal.type, refused: true }))
+        failures.push({ subject: `Componente interactivo (${NATIVE_LABEL[signal.type] ?? 'componente'}): ${out.reason}` })
+      }
     }
   }
 
@@ -90,13 +103,14 @@ export async function fulfillArtifactSignals(
   if (imageSignals.length) {
     const { generateImage } = await import('../tools/image-generator')
     for (const [i, signal] of imageSignals.entries()) {
-      if (i >= PER_TURN_BUDGET.images) { failures.push({ subject: `${signal.subject}: solo se genera ${PER_TURN_BUDGET.images} imagen por respuesta` }); continue }
+      if (i >= PER_TURN_BUDGET.images) { failures.push({ subject: PUBLIC_FAILURE.image_budget }); continue }
       try {
         const result = await generateImage(signal.subject)
-        if (result.success && result.url) artifacts.push({ type: 'illustration', prompt: signal.subject, url: result.url } as ArtifactPayload)
-        else failures.push({ subject: `${signal.subject}: ${result.message ?? result.error ?? 'la imagen no se generó'}` })
+        if (result.success) artifacts.push({ type: 'illustration', url: result.url } as ArtifactPayload)
+        else failures.push({ subject: result.error === 'image_unavailable' || result.error === 'image_rejected' ? PUBLIC_FAILURE.image_unavailable : PUBLIC_FAILURE.image_failed })
       } catch (error) {
-        failures.push({ subject: `${signal.subject}: ${error instanceof Error ? error.message : 'la imagen no se generó'}` })
+        console.error('[image]', JSON.stringify({ outcome: 'exception', class: error instanceof Error ? error.name : 'Error' }))
+        failures.push({ subject: PUBLIC_FAILURE.image_failed })
       }
     }
   }
@@ -105,10 +119,10 @@ export async function fulfillArtifactSignals(
   if (audioSignals.length) {
     const { speakTutorText } = await import('../tools/audio-toolkit')
     for (const [i, signal] of audioSignals.entries()) {
-      if (i >= PER_TURN_BUDGET.audio) { failures.push({ subject: `${signal.subject}: solo se generan ${PER_TURN_BUDGET.audio} audios por respuesta` }); continue }
+      if (i >= PER_TURN_BUDGET.audio) { failures.push({ subject: `Respuesta hablada: solo se generan ${PER_TURN_BUDGET.audio} audios por respuesta` }); continue }
       const result = await speakTutorText(pedagogicalContent, { voice: voiceFor(mentorName) })
       if (result.success && result.url) artifacts.push({ type: 'audio', dataUrl: result.url } as ArtifactPayload)
-      else failures.push({ subject: `${signal.subject}: ${result.message ?? 'el audio no se generó'}` })
+      else { console.error('[tts]', JSON.stringify({ outcome: result.error ?? 'failed' })); failures.push({ subject: PUBLIC_FAILURE.audio_failed }) }
     }
   }
 

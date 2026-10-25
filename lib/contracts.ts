@@ -224,7 +224,8 @@ export interface QuizArtifact {
 
 export interface IllustrationArtifact {
   type: 'illustration';
-  prompt: string;
+  /** 7.5 P1-B: the instrumental description is never sent to the browser. */
+  prompt?: string;
   url?: string;
   dataUrl?: string;
   caption?: string;
@@ -475,6 +476,10 @@ export interface SessionState {
   // that guarantees ids are never reused. Validated at the boundary (lib/tutor-memory.ts).
   tutorMemory?: import('./tutor-memory').TutorMemoryEntry[];
   tutorMemorySeq?: number;
+  // 7.3.2/7.5 P1-A: the explanatory language and where it comes from (lib/explanatory-language.ts).
+  explanatoryLanguage?: string;
+  explanatoryLanguageSource?: 'student_request' | 'tutor_detected';
+  uiLanguageChoice?: string;
   expectedResponseMode?: 'exercise_answer' | 'free' | 'quiz_answer';
   _exerciseAttemptCount?: number;
   lastUserAudioTranscript?: string;
@@ -560,6 +565,19 @@ export interface AttachedFile {
   base64?: string;
 }
 
+/** 7.5 P1-A: what the recognizer produced for one spoken turn, and how the voice exchange went. */
+export interface VoiceTurn {
+  transcript: string;
+  /** Fragments recognized with low confidence: shown to the student, never treated as their errors. */
+  uncertain: string[];
+  asrModel: string;
+  asrMs: number;
+  /** The student interrupted the Tutor's previous spoken answer after hearing this much of it. */
+  interruptedTutor?: { heard: string } | null;
+  /** The browser plays the answer progressively (sentence by sentence); the server does not synthesize it. */
+  clientSpeech?: boolean;
+}
+
 export interface ChatRequest {
   message: string;
   exportTranscript?: string;
@@ -577,6 +595,12 @@ export interface ChatRequest {
   files?: AttachedFile[];
   audioDataUrl?: string;
   audioMimeType?: string;
+  /** 7.5 P1-A: facts of a spoken turn, set by the route after recognition (never by the client). */
+  voice?: VoiceTurn;
+  /** 7.5 P1-A (client → route): the student interrupted the previous spoken answer after hearing this much. */
+  voiceInterruption?: unknown;
+  /** 7.5 P1-A (client → route): the browser speaks the answer progressively; no server-side synthesis. */
+  clientSpeech?: boolean;
   // P17 Defect 1 — was already sent by the frontend (use-beta-page.ts) and
   // already handled correctly by the legacy /api/audio endpoint's grounded
   // evaluatePronunciation() (compares actual transcript vs target text —

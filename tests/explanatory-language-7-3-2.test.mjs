@@ -14,7 +14,8 @@ for(const bad of ['','x','arabic language','12','ar_',null,{},{language:5}])asse
 assert.deepEqual(SET_EXPLANATORY_LANGUAGE_TOOL.function.parameters.required,['language'])
 
 // Declared language persists across a Spanish-practice turn; the UI default is superseded and not shown.
-const dp=buildContextPack({interfaceLanguage:'es',message:'Yo vivo en Madrid',explanatoryLanguage:'ar'})
+// 7.5 P1-A: a declared language supersedes the selection only when the student asked for it (source).
+const dp=buildContextPack({interfaceLanguage:'es',message:'Yo vivo en Madrid',explanatoryLanguage:'ar',explanatoryLanguageSource:'student_request'})
 for(const opening of [false,true]){
   const declared=formatContextPack(dp,{opening})
   assert.match(declared,/explanatoryLanguage: ar/)
@@ -39,10 +40,15 @@ assert.ok(!/"no"/.test(other),'OTHER must not mention a panel language')
 assert.ok(!/interfaceLanguage/.test(formatContextPack(fresh,{opening:true})),'the pack carries no second language statement')
 const afterWrite=formatContextPack(fresh,{opening:false})
 assert.ok(!/interfaceLanguage/.test(afterWrite),'once the student writes, the UI default has no voice')
+// 7.5 P1-A: after the greeting the selected language binds (it is the session's explanatoryLanguage);
+// only OTROS leaves the language open for the Tutor to settle.
 const freshNote=formatLanguageTurnNote(fresh,{opening:false})
-assert.ok(!/interfaceLanguage|"no"/.test(freshNote),'undeclared note must not mention the UI default')
-assert.match(freshNote,/any language you can write well/)
-assert.match(freshNote,/call set_explanatory_language once/)
+assert.match(freshNote,/explanatoryLanguage = "no" \(the student selected it\)/)
+assert.match(freshNote,/changes only if the student explicitly asks/)
+const otherNote=formatLanguageTurnNote(buildContextPack({interfaceLanguage:'en',uiLanguageChoice:'other',message:'x'}),{opening:false})
+assert.ok(!/interfaceLanguage|"en"/.test(otherNote),'OTROS note must not mention a panel language')
+assert.match(otherNote,/any language you can write well/)
+assert.match(otherNote,/call set_explanatory_language once/)
 
 // Source barriers: no script detector, not required every turn, state carried.
 const pack=fs.readFileSync(root+'lib/context-pack.ts','utf8')

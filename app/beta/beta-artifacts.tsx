@@ -5,6 +5,8 @@ import type { QuizQ } from './beta-model'
 import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
 import { renderFlowchartSvg, validateFlowchartContent } from '../../lib/flowchart-contract'
 import { renderInfographicSvg, validateInfographicContent } from '../../lib/infographic-contract'
+import { svgToPng, saveBlob } from './svg-export'
+import { explainNativeRefusal } from '../../server/core/native-artifact'
 import { SchemaBlock, TableArtifactBlock, MatrixTableBlock, SchemaProBlock, QuizBlock } from './beta-schema'
 import { renderTutorMarkdown } from '../../lib/content/markdown'
 import { fetchVerifiedPdf, pdfFileName, type PdfExpectation } from '../../lib/pdf-download'
@@ -13,7 +15,7 @@ import { fetchVerifiedPdf, pdfFileName, type PdfExpectation } from '../../lib/pd
 export function ArtifactUnavailable({ type, reason }: { type: string; reason: string }) {
   return (
     <div data-testid="artifact-unavailable" role="status" style={{ marginTop:8, padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:420 }}>
-      No se puede mostrar este componente ({type}): {reason}.
+      No se puede mostrar este componente ({type}): {/^[a-z]+_[a-z_]+(:|$)/.test(reason) ? explainNativeRefusal(reason) : reason}.
     </div>
   )
 }
@@ -97,36 +99,41 @@ function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: st
 
 // 7.4.2/7.4.3 — native SVG instruments (chart, flowchart, infographic): drawn deterministically from the
 // Tutor's validated content. Fluid inside a horizontally scrollable box, so nothing is ever clipped.
-function SvgInstrumentBlock({ svg, fileSvg, kind, file }: { svg: string; fileSvg: string; kind: string; file: string }) {
-  const save = (href: string, name: string) => {
-    const a = document.createElement('a'); a.href = href; a.download = name
-    document.body.appendChild(a); a.click(); a.remove()
-  }
+function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: string; renderAt?: (width: number) => string; fileSvg: string; kind: string; file: string }) {
+  // 7.5 P1-B: on a narrow screen the same content is laid out for the width it actually has (text at its
+  // real size, never shrunk); the files are always the full-width drawing.
+  const boxRef = React.useRef<HTMLDivElement>(null)
+  const [width, setWidth] = React.useState<number | null>(null)
+  React.useEffect(() => {
+    if (!renderAt || !boxRef.current || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([e]) => { const w = Math.floor(e.contentRect.width / 10) * 10 - 2; setWidth(w < 500 ? Math.max(260, w) : null) })
+    ro.observe(boxRef.current)
+    return () => ro.disconnect()
+  }, [renderAt])
+  const narrow = Boolean(renderAt && width)
+  const shown = React.useMemo(() => (renderAt && width ? renderAt(width) : svg), [renderAt, width, svg])
+  const [status, setStatus] = React.useState<{ k: 'busy' | 'done' | 'error'; text: string } | null>(null)
   const downloadSvg = () => {
-    const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
-    save(url, `${file}.svg`); setTimeout(() => URL.revokeObjectURL(url), 60000)
+    saveBlob(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }), `${file}.svg`)
+    setStatus({ k: 'done', text: `SVG entregado al navegador como ${file}.svg.` })
   }
-  const downloadPng = () => {
-    const url = URL.createObjectURL(new Blob([fileSvg], { type: 'image/svg+xml;charset=utf-8' }))
-    const img = new Image()
-    img.onload = () => {
-      const c = document.createElement('canvas'); c.width = img.width * 2; c.height = img.height * 2
-      const g = c.getContext('2d'); if (!g) { downloadSvg(); return }
-      g.scale(2, 2); g.drawImage(img, 0, 0)
-      c.toBlob(b => { if (b) { const u = URL.createObjectURL(b); save(u, `${file}.png`); setTimeout(() => URL.revokeObjectURL(u), 60000) } else downloadSvg() }, 'image/png')
-      URL.revokeObjectURL(url)
-    }
-    img.onerror = () => { URL.revokeObjectURL(url); downloadSvg() }
-    img.src = url
+  const downloadPng = async () => {
+    setStatus({ k: 'busy', text: 'Preparando el PNG…' })
+    const png = await svgToPng(fileSvg, 2)
+    if (!png.ok) { setStatus({ k: 'error', text: `No se pudo crear el PNG: ${png.reason}. Puedes descargar el SVG.` }); return }
+    saveBlob(png.blob, `${file}.png`)
+    setStatus({ k: 'done', text: `PNG comprobado (${png.width}×${png.height}) y entregado al navegador como ${file}.png.` })
   }
   const btn: React.CSSProperties = { fontSize:12, color:'var(--teal)', fontWeight:700, background:'none', border:'none', cursor:'pointer', padding:0, marginRight:14 }
   return (
-    <div style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid={`${kind}-artifact`}>
-      <div style={{ borderRadius:14, overflowX:'auto', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: svg }} />
+    <div ref={boxRef} style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid={`${kind}-artifact`} data-layout={narrow ? 'narrow' : 'wide'}>
+      <div style={{ borderRadius:14, overflowX:'auto', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: shown }} />
       <div style={{ marginTop:5 }}>
-        <button type="button" data-testid={`${kind}-download-png`} onClick={downloadPng} style={btn}>↓ Descargar imagen</button>
+        <button type="button" data-testid={`${kind}-download-png`} onClick={() => { void downloadPng() }} disabled={status?.k === 'busy'} style={btn}>↓ Descargar PNG</button>
         <button type="button" data-testid={`${kind}-download-svg`} onClick={downloadSvg} style={btn}>↓ SVG</button>
       </div>
+      {status && <div data-testid={`${kind}-download-status`} data-state={status.k} role={status.k === 'error' ? 'alert' : 'status'}
+        style={{ marginTop:4, fontSize:12, color: status.k === 'error' ? 'var(--danger,#f87171)' : 'var(--silver)' }}>{status.text}</div>}
     </div>
   )
 }
@@ -144,7 +151,8 @@ function FlowchartBlock({ content }: { content: Record<string, unknown> }) {
 function InfographicBlock({ content }: { content: Record<string, unknown> }) {
   const checked = validateInfographicContent(content)
   if (!checked.ok) return <ArtifactUnavailable type="infografía" reason={checked.reason} />
-  return <SvgInstrumentBlock kind="infographic" file="lingora-infografia" svg={renderInfographicSvg(checked.info)} fileSvg={renderInfographicSvg(checked.info, { fixed: true })} />
+  const info = checked.info
+  return <SvgInstrumentBlock kind="infographic" file="lingora-infografia" svg={renderInfographicSvg(info)} renderAt={w => renderInfographicSvg(info, { width: w })} fileSvg={renderInfographicSvg(info, { fixed: true })} />
 }
 
 export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: string }) {

@@ -4,6 +4,7 @@
 // S0: CORS headers added for diagnostic access
 // =============================================================================
 import { NextRequest, NextResponse } from 'next/server';
+import type { VoiceTurn } from '../../lib/contracts';
 
 import {
   ChatRequest,
@@ -258,34 +259,30 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
     const AUDIO_FILENAME_RE = /^[^\s]+\.(webm|mp3|mp4|m4a|ogg|wav|aac)$/i;
 
     let audioTranscript: string | null = null;
+    // 7.5 P1-A: spoken turns. The recognizer hears (language hint from the selection, conversational context,
+    // confidence kept); it never invents a turn from silence. What it was unsure of travels as facts.
+    let voiceTurn: VoiceTurn | undefined;
     if (hasAudio && audioDataUrl) {
-      try {
-        const { transcribeAudio } = await import('../tools/audio-toolkit');
-        const base64 = audioDataUrl.includes(',') ? audioDataUrl.split(',')[1] : audioDataUrl;
-        const format = audioMimeType?.split('/')[1] || 'webm';
-        const transcription = await transcribeAudio({ data: base64, format });
-        if (transcription.success && transcription.text?.trim()) {
-          audioTranscript = transcription.text.trim();
-        } else if (!transcription.success) {
-          console.warn('[route] audio transcription failed:', transcription.message);
-        }
-      } catch (e) {
-        console.error('[route] audio transcription exception:', e instanceof Error ? e.message : e);
+      const { recognizeSpeech } = await import('../tools/voice');
+      const { resolveExplanatoryLanguage } = await import('../../lib/explanatory-language');
+      const base64 = audioDataUrl.includes(',') ? audioDataUrl.split(',')[1] : audioDataUrl;
+      const selectedSpanish = state.interfaceLanguage === 'es' && state.uiLanguageChoice !== 'other';
+      const rec = await recognizeSpeech({ base64, mime: audioMimeType }, {
+        languageHint: selectedSpanish ? 'es' : undefined,
+        context: 'Conversación de un estudiante de español con su tutora. El estudiante puede tener nivel inicial, cometer errores y mezclar el español con otro idioma.',
+      });
+      if (!rec.ok) {
+        console.warn('[voice]', JSON.stringify({ understood: false, reason: rec.reason, asrModel: rec.model, asrMs: rec.ms }));
+        const lang = (resolveExplanatoryLanguage(state).language ?? 'es').split('-')[0];
+        return NextResponse.json({
+          message: voiceRetryMessage(lang, rec.reason), state, suggestedActions: [],
+          voice: { understood: false, reason: rec.reason, asrModel: rec.model, asrMs: rec.ms },
+        }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
       }
-    }
-
-    if (hasAudio && audioDataUrl && !audioTranscript) {
-      const lang = state.interfaceLanguage ?? 'en';
-      const retryMsgs: Record<string, string> = {
-        es: 'No pude entender el audio. ¿Puedes intentarlo de nuevo?',
-        en: 'I could not understand the audio. Could you try again?',
-        no: 'Jeg fikk ikke med meg lyden. Kan du proeve igjen?',
-      };
-      return NextResponse.json({
-        message: retryMsgs[lang] ?? retryMsgs.en,
-        state,
-        suggestedActions: [],
-      }, { headers: { ...NO_CACHE, ...CORS_HEADERS } });
+      const heard = body.voiceInterruption && typeof body.voiceInterruption === 'object' && typeof (body.voiceInterruption as { heard?: unknown }).heard === 'string'
+        ? String((body.voiceInterruption as { heard: string }).heard).slice(-600) : null;
+      voiceTurn = { transcript: rec.text, uncertain: rec.uncertain, asrModel: rec.model, asrMs: rec.ms, interruptedTutor: heard ? { heard } : null, clientSpeech: body.clientSpeech === true };
+      audioTranscript = rec.text;
     }
 
     const rawMessageForNormalization =
@@ -389,6 +386,7 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       conversationHistory: body.conversationHistory,
       spaceContext: sanitizeSpaceContext(body.spaceContext),
       conversationId: typeof body.conversationId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.conversationId) ? body.conversationId : undefined,
+      ...(voiceTurn ? { voice: voiceTurn } : {}),
     };
 
     // 7.4: ONE Tutor engine, two transports. Tutor turns always run through the tool-capable engine
@@ -456,6 +454,15 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
 }
 
 /** Same engine, JSON transport: drain the turn and return it as one ChatResponse-shaped document. */
+const VOICE_RETRY: Record<string, Record<'nothing_heard' | 'unreadable_audio' | 'asr_unavailable', string>> = {
+  es: { nothing_heard: 'No he oído nada claro. ¿Puedes repetirlo un poco más cerca del micrófono?', unreadable_audio: 'No he podido procesar esa grabación. ¿Lo intentas otra vez?', asr_unavailable: 'Ahora mismo no puedo escuchar audio. Puedes escribirme tu mensaje y seguimos.' },
+  en: { nothing_heard: 'I could not hear anything clear. Could you say it again, a bit closer to the microphone?', unreadable_audio: 'I could not process that recording. Could you try again?', asr_unavailable: 'I cannot listen to audio right now. You can type your message and we carry on.' },
+  no: { nothing_heard: 'Jeg hørte ikke noe tydelig. Kan du si det igjen, litt nærmere mikrofonen?', unreadable_audio: 'Jeg klarte ikke å behandle opptaket. Prøver du igjen?', asr_unavailable: 'Jeg kan ikke lytte til lyd akkurat nå. Du kan skrive meldingen din.' },
+};
+function voiceRetryMessage(lang: string, reason: 'nothing_heard' | 'unreadable_audio' | 'asr_unavailable'): string {
+  return (VOICE_RETRY[lang] ?? VOICE_RETRY.es)[reason];
+}
+
 async function buildJsonFromStream(stream: ReadableStream<Uint8Array>): Promise<NextResponse> {
   const reader = stream.getReader();
   const dec = new TextDecoder();

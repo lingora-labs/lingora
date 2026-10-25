@@ -94,7 +94,8 @@ assert.equal(isvg,renderInfographicSvg(io.info),'infographic deterministic')
 for(const s of info.stats){assert.ok(isvg.includes('>'+s.value+'<'),'figure drawn: '+s.value)}
 for(const s of info.sections){assert.ok(isvg.includes(s.heading));for(const w of s.body.split(/\s+/))assert.ok(isvg.includes(w.replace(/&/g,'&amp;')),'body word drawn: '+w)}
 assert.equal((isvg.match(/data-section=/g)||[]).length,2);assert.equal((isvg.match(/data-stat=/g)||[]).length,3);assert.ok(isvg.includes('data-takeaway'))
-assert.ok(isvg.includes('min-width:440px')&&/ width="520" height="\d+"/.test(renderInfographicSvg(io.info,{fixed:true})))
+// 7.5 P1-B: the screen SVG scales to its box and has a narrow layout for phones; the file keeps 520 wide.
+assert.ok(isvg.includes('width:100%')&&/ width="520" height="\d+"/.test(renderInfographicSvg(io.info,{fixed:true}))&&renderInfographicSvg(io.info,{width:360}).includes('data-layout-width="360"'))
 // NEGATIVE
 const ib=(mut,src,why)=>{const f=JSON.parse(JSON.stringify(info));mut(f);assert.equal(validateInfographicContent(f,src??{text:turn}).ok,false,'must reject: '+why)}
 ib(f=>{f.stats[0].value='95%'},undefined,'invented headline figure')

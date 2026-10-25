@@ -21,6 +21,9 @@ import { normalizeQuizEvidence, type QuizEvidence } from '../../lib/quiz-evidenc
 import { PDF_REQUEST_TIMEOUT_MS, explainPdfRequestFailure, fetchVerifiedPdf } from '../../lib/pdf-download'
 import { QUIZ_ACTIVATE_EVENT, buildQuizReviewMessage, findQuizInstance, normalizeQuizIdentity, quizIdentityLine, type QuizIdentity } from './quiz-actions'
 import { readLegacySession, clearLegacySession, spaceStore, strippedArtifact } from './beta-session'
+import { SpeechPlayer, type PlayerState } from './voice/speech-player'
+import { SpeechSegmenter, spokenText } from './voice/speech-segmenter'
+import { useVoiceConversation, pickRecorderMime, type Utterance } from './voice/use-voice'
 
 const actionOf = (x: SuggestedAction): string => (x as unknown as { action?: string }).action ?? x.type ?? ''
 const LANGS: Lang[] = ['es','en','no','fr','de','it','pt','ar','ja','zh']
@@ -79,6 +82,15 @@ export function useBetaPage() {
   const pendingQuizFeedbackRef = useRef<QuizEvidence | null>(null)
   const pendingQuizIdentityRef = useRef<QuizIdentity | null>(null)
   const pendingExportRef = useRef(false)
+  // 7.5 P1-A: one voice for the Tutor (the player), one microphone (hands-free conversation), one state.
+  const voiceModeRef = useRef(false)
+  const [voiceMode, setVoiceModeState] = useState(false)
+  const playerRef = useRef<SpeechPlayer | null>(null)
+  const [player, setPlayer] = useState<SpeechPlayer | null>(null)
+  const [playerState, setPlayerState] = useState<PlayerState | null>(null)
+  const voiceTimingRef = useRef<Record<string, { firstTextMs: number | null; asrMs: number | null; asrModel: string | null; servedModel: string | null }>>({})
+  const pendingUtteranceRef = useRef<Utterance | null>(null)
+  const loadingRef = useRef(false)
   const resetGenerationRef = useRef(0)
   const resetInProgressRef = useRef(false)
   const mentorRef = useRef<MK>(mentor)
@@ -256,7 +268,21 @@ export function useBetaPage() {
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
   }, [saveActive])
-  const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean }) => {
+  // Speak a message the student already has on screen (no new Tutor turn): its visible text, in segments.
+  const speakMessage = useCallback((m: Msg | undefined) => {
+    const p = playerRef.current
+    if (!p || !m || m.sender === 'user' || m.sender === 'ln' || !m.text?.trim()) return
+    p.begin(m.id)
+    const seg = new SpeechSegmenter()
+    for (const s of [...seg.push(m.text), ...seg.flush()]) p.enqueue(s)
+    p.end()
+  }, [])
+  const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean; speak?: boolean; voiceStartedAt?: number; userMsgId?: string }) => {
+    // 7.5 P1-A: a spoken answer starts with its first sentence, while the rest is still being written.
+    const speak = Boolean(opts?.speak || voiceModeRef.current) && !payload.uiAction
+    const segmenter = speak ? new SpeechSegmenter() : null
+    const t0 = opts?.voiceStartedAt ?? performance.now()
+    let firstDeltaMs: number | null = null
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
     lastCallFailedRef.current = false
     setLoading(true)
@@ -317,6 +343,7 @@ export function useBetaPage() {
         const decoder = new TextDecoder()
         const streamId = Date.now()+'-stream'
         const openTurn: Msg = { id: streamId, sender: mentorRef.current, text: '', complete: false, artifact: null, artifacts: null, artifactFailures: null }
+        if (segmenter) playerRef.current?.begin(streamId, t0)
         // Keep the canonical snapshot in sync with streamed text, not just React's next render.
         msgsRef.current = [...msgsRef.current, openTurn]
         setMsgs(msgsRef.current)
@@ -333,13 +360,23 @@ export function useBetaPage() {
             if (!line.startsWith('data: ')) continue
             try {
               const parsed = JSON.parse(line.slice(6))
+              if (parsed.voice && opts?.userMsgId) {
+                // The student sees what was understood (and what was not) before the Tutor answers.
+                const v = parsed.voice as { transcript: string; uncertain: string[]; asrModel: string; asrMs: number }
+                msgsRef.current = msgsRef.current.map(m => m.id === opts.userMsgId ? { ...m, text: v.transcript, voice: { state: 'heard', uncertain: v.uncertain, asrModel: v.asrModel, asrMs: v.asrMs } } : m)
+                setMsgs(msgsRef.current)
+              }
               if (parsed.delta) {
+                if (firstDeltaMs === null) firstDeltaMs = Math.round(performance.now() - t0)
+                if (segmenter) for (const seg of segmenter.push(parsed.delta)) playerRef.current?.enqueue(seg)
                 accumulated += parsed.delta
                 msgsRef.current = msgsRef.current.map(m => m.id === streamId ? { ...m, text: accumulated } : m)
                 setMsgs(msgsRef.current)
               }
               if (parsed.done) {
                 sawCompleted = true
+                if (segmenter) { for (const seg of segmenter.flush()) playerRef.current?.enqueue(seg); playerRef.current?.end() }
+                if (speak) voiceTimingRef.current[streamId] = { firstTextMs: firstDeltaMs, asrMs: (parsed.voice as { asrMs?: number } | undefined)?.asrMs ?? null, asrModel: (parsed.voice as { asrModel?: string } | undefined)?.asrModel ?? null, servedModel: typeof parsed.servedModel === 'string' ? parsed.servedModel : null }
                 if (Array.isArray(parsed.clientDeliveries) && parsed.clientDeliveries.includes('conversation_pdf')) pendingExportRef.current = true
                 const previous = sessionRef.current
                 const nextSession: SS = parsed.state
@@ -353,6 +390,7 @@ export function useBetaPage() {
                 const completedMsgs: Msg[] = msgsRef.current.map(m => m.id === streamId ? {
                   ...m, text: accumulated, complete:true,
                   turnState: typeof parsed.turnState === 'string' ? parsed.turnState : undefined,
+                  ...(speak ? { spoken: true } : {}),
                   artifact: parsed.artifact ?? m.artifact ?? null,
                   artifacts: (Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0) ? parsed.artifacts : (m.artifacts ?? null),
                   artifactFailures: (Array.isArray(parsed.artifactFailures) && parsed.artifactFailures.length > 0) ? parsed.artifactFailures : (m.artifactFailures ?? null),
@@ -387,6 +425,10 @@ export function useBetaPage() {
         throw new Error('HTTP_ERROR_' + res.status)
       }
       const data = await res.json()
+      if (data.voice?.understood === false && opts?.userMsgId) {
+        msgsRef.current = msgsRef.current.map(m => m.id === opts.userMsgId ? { ...m, text: 'Audio no entendido', voice: { state: 'not_understood' } } : m)
+        setMsgs(msgsRef.current)
+      }
       if (pdfRequest && data.artifact?.type === 'pdf') {
         // Success is announced only after the bytes the student will save were recovered and checked.
         const check = await fetchVerifiedPdf(data.artifact.url, { byteLength: data.artifact.pdfByteLength, sha256: data.artifact.pdfSha256 })
@@ -424,6 +466,7 @@ export function useBetaPage() {
         suggestedActions: Array.isArray(data.suggestedActions) && filterPdfActions(data.suggestedActions).length > 0
         ? filterPdfActions(data.suggestedActions)
         : ([{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
+      if (speak && text) speakMessage(msgsRef.current[msgsRef.current.length - 1])
     } catch (e) {
       lastCallFailedRef.current = true
       if (pdfRequest) { pdfFailure(explainPdfRequestFailure(e)); return }
@@ -434,7 +477,7 @@ export function useBetaPage() {
       else if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')) msg = 'No se pudo conectar con el servidor.'
       addMsg({ sender: mentorRef.current ?? 'ln', text: msg })
     } finally { if (pdfTimer) clearTimeout(pdfTimer); setLoading(false) }
-  }, [addMsg, saveActive, absorbTurn])
+  }, [addMsg, saveActive, absorbTurn, speakMessage])
   // ONE conversation export for the menu, the chat chip and a Tutor's conversation_pdf delivery:
   // the whole conversation held here, with its artifacts, printed by the canonical document page.
   const runConversationExport = useCallback((message: string) => {
@@ -649,6 +692,63 @@ export function useBetaPage() {
     window.addEventListener('lingora-quiz-continue', handler)
     return () => window.removeEventListener('lingora-quiz-continue', handler)
   }, [loading, callAPI, addMsg])
+  // ── 7.5 P1-A: voice ─────────────────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const p = new SpeechPlayer({ mentor: () => mentorRef.current, onState: st => {
+      setPlayerState(st)
+      // Latency evidence of a spoken answer: first text and first audio, measured from the end of speech.
+      if (st.messageId && st.firstAudioMs !== undefined && voiceTimingRef.current[st.messageId] && !('firstAudioMs' in voiceTimingRef.current[st.messageId])) {
+        const t = { ...voiceTimingRef.current[st.messageId], firstAudioMs: st.firstAudioMs, speechModel: st.speechModel ?? null }
+        voiceTimingRef.current[st.messageId] = t
+        console.info('[voice-timing]', JSON.stringify(t))
+        msgsRef.current = msgsRef.current.map(m => m.id === st.messageId ? { ...m, voiceTimings: t } : m)
+        setMsgs(msgsRef.current)
+      }
+    } })
+    playerRef.current = p; setPlayer(p)
+    return () => { p.stop(); playerRef.current = null }
+  }, [])
+  useEffect(() => { loadingRef.current = loading }, [loading])
+  const sendUtterance = useCallback(async (u: Utterance) => {
+    const audioUrl = URL.createObjectURL(u.blob)
+    const id = Date.now() + '-voice-' + Math.random().toString(36).slice(2)
+    msgsRef.current = [...msgsRef.current, { id, sender: 'user', text: '🎤 …', audioUrl, voice: { state: 'pending' } }]
+    setMsgs(msgsRef.current)
+    const audioDataUrl = await new Promise<string>(res => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(u.blob) })
+    await callAPI({ audioDataUrl, audioMimeType: u.mime, clientSpeech: true, ...(u.interruption ? { voiceInterruption: u.interruption } : {}) },
+      { speak: true, voiceStartedAt: u.endedAt, userMsgId: id })
+  }, [callAPI])
+  const voice = useVoiceConversation({
+    player,
+    onUtterance: u => { if (loadingRef.current) pendingUtteranceRef.current = u; else void sendUtterance(u) },
+    onInterrupt: () => {
+      const id = playerRef.current?.current.messageId
+      if (id) { msgsRef.current = msgsRef.current.map(m => m.id === id ? { ...m, interrupted: true } : m); setMsgs(msgsRef.current) }
+    },
+  })
+  // An utterance spoken while the Tutor was still writing is sent as soon as the turn closes (one per utterance).
+  useEffect(() => {
+    if (loading || !pendingUtteranceRef.current) return
+    const u = pendingUtteranceRef.current; pendingUtteranceRef.current = null
+    void sendUtterance(u)
+  }, [loading, sendUtterance])
+  const setVoiceMode = useCallback(async (on: boolean) => {
+    playerRef.current?.unlock()
+    voiceModeRef.current = on; setVoiceModeState(on)
+    if (on) await voice.start(); else { voice.stop(); playerRef.current?.stop() }
+  }, [voice])
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id as string | undefined
+      const m = msgsRef.current.find(x => x.id === id)
+      playerRef.current?.unlock()
+      const p = playerRef.current
+      if (p && p.current.messageId === id && p.current.status === 'error') p.retry()
+      else speakMessage(m)
+    }
+    window.addEventListener('lingora-speak-message', handler)
+    return () => window.removeEventListener('lingora-speak-message', handler)
+  }, [speakMessage])
   const sendComposer = useCallback(async () => {
     const msg = input.trim()
     const hasText = msg.length > 0
@@ -663,6 +763,7 @@ export function useBetaPage() {
       setSession(s => { const n = {...s, samples:[...s.samples,msg]}; sessionRef.current = n; return n })
     }
     const payload: Record<string, unknown> = {}
+    let userVoiceId: string | undefined
     if (hasText) payload.message = msg
     if (hasAudio) {
       const evalKeywords = ['pronuncia', 'pronunciación', 'pronunciacion', 'califica mi', 'evalúa mi', 'evalua mi', 'cómo sueno', 'como sueno']
@@ -679,11 +780,12 @@ export function useBetaPage() {
       }
     }
     if (hasAudio && pendingAudioBlob) {
-      if (!hasText) addMsg({ sender:'user', text:'Audio enviado', audioUrl: pendingAudioUrl ?? undefined })
+      if (!hasText) { userVoiceId = Date.now() + '-voice'; msgsRef.current = [...msgsRef.current, { id: userVoiceId, sender: 'user', text: '🎤 …', audioUrl: pendingAudioUrl ?? undefined, voice: { state: 'pending' } }]; setMsgs(msgsRef.current) }
       else { const cur = msgsRef.current; msgsRef.current = cur.map(m => m.id === cur[cur.length-1]?.id ? { ...m, audioUrl: pendingAudioUrl ?? undefined } : m); setMsgs(msgsRef.current) }
       const audioDataUrl = await new Promise<string>(res => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(pendingAudioBlob) })
       payload.audioDataUrl = audioDataUrl
       payload.audioMimeType = pendingAudioBlob.type || 'audio/webm'
+      payload.clientSpeech = true
     }
     if (hasFiles) {
       const imageFile = pendingFiles.find(f => f.type.startsWith('image/'))
@@ -693,7 +795,8 @@ export function useBetaPage() {
       payload.files = pendingFiles
     }
     setPendingAudioBlob(null); setPendingAudioUrl(null); setPendingFiles([])
-    await callAPI(payload)
+    playerRef.current?.unlock()
+    await callAPI(payload, hasAudio ? { speak: true, voiceStartedAt: performance.now(), ...(userVoiceId ? { userMsgId: userVoiceId } : {}) } : undefined)
   }, [input, loading, pendingAudioBlob, pendingAudioUrl, pendingFiles, msgs, addMsg, callAPI])
   const startChat = useCallback((m: MK, t: TK, l: Lang) => {
     setMentor(m); setTopic(t); setLang(l)
@@ -828,11 +931,13 @@ export function useBetaPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       chunksRef.current = []
-      const rec = new MediaRecorder(stream)
+      // 7.5 P1-A: the browser's own recording format (Safari records mp4), labelled as such.
+      const mime = pickRecorderMime()
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
       rec.ondataavailable = e => chunksRef.current.push(e.data)
       rec.onstop = () => {
         stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || mime || 'audio/webm' })
         setPendingAudioBlob(blob); setPendingAudioUrl(URL.createObjectURL(blob))
       }
       rec.start(); mrRef.current = rec; setRecording(true)
@@ -849,6 +954,7 @@ export function useBetaPage() {
     activeConversationId: conversationRef.current?.id ?? null,
     phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
+    voiceMode, setVoiceMode, voiceStatus: voice.status, voiceError: voice.error, voiceLevel: voice.level, player, playerState,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   }

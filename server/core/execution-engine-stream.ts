@@ -21,10 +21,13 @@ import { creditLearningProgress } from '../../lib/progress-tokens'
 import type { ArtifactFailure } from './artifact-side-effect'
 
 interface SSEDelta { delta: string }
+/** 7.5 P1-A: what the recognizer heard, sent before the Tutor answers so the student sees it at once. */
+interface SSEVoice { voice: { transcript: string; uncertain: string[]; asrModel: string; asrMs: number } }
 interface SSEDone {
   done: true
   turnState?: 'complete' | 'complete_with_failures' | 'failed'
   servedModel?: string
+  voice?: SSEVoice['voice']
   clientDeliveries?: string[]
   state: SessionState
   artifact?: ArtifactPayload
@@ -60,7 +63,7 @@ const TUTOR_FAILURES: Record<string, string | null> = {
 }
 /** Student-facing sentence for a Tutor-turn technical failure, or null when reported elsewhere. */
 export function explainTutorFailure(code: string): string | null {
-  return code in TUTOR_FAILURES ? TUTOR_FAILURES[code] : `Fallo técnico del turno (${code}).`
+  return code in TUTOR_FAILURES ? TUTOR_FAILURES[code] : 'Fallo técnico del turno.'
 }
 const DECLARATION: Array<[RegExp, string]> = [
   [/^invalid_type/, 'el tipo de material no existe'],
@@ -74,7 +77,7 @@ const DECLARATION: Array<[RegExp, string]> = [
 ]
 export function explainRejectedDeclaration(code: string): string {
   const hit = DECLARATION.find(([re]) => re.test(code))
-  return `Un material que el Tutor declaró no se generó: ${hit ? hit[1] : code}`
+  return `Un material que el Tutor declaró no se generó: ${hit ? hit[1] : 'su formato no era válido'}`
 }
 
 export function executePlanStream(
@@ -85,9 +88,11 @@ export function executePlanStream(
   const enc = new TextEncoder()
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const emit = (payload: SSEDelta | SSEDone) => {
+      const emit = (payload: SSEDelta | SSEDone | SSEVoice) => {
         controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
       }
+      const voiceFacts = request.voice ? { transcript: request.voice.transcript, uncertain: request.voice.uncertain, asrModel: request.voice.asrModel, asrMs: request.voice.asrMs } : undefined
+      if (voiceFacts) emit({ voice: voiceFacts })
       try {
         const { getMentorResponseStream, MODEL_FAILURES } = await import('../mentors/mentor-engine')
         const stream = await getMentorResponseStream({
@@ -178,21 +183,23 @@ export function executePlanStream(
         // second model, no shorter/parallel answer, no new tutor. If an
         // emit_audio signal already produced an audio artifact this turn,
         // do not speak a second time.
-        if (request.audioDataUrl && fullText.trim().length > 0
+        // 7.5 P1-A: when the browser speaks the answer progressively (clientSpeech), the server does not
+        // synthesize the whole reply a second time.
+        if (request.audioDataUrl && !request.voice?.clientSpeech && fullText.trim().length > 0
             && !artifacts.some((a) => (a as { type?: string }).type === 'audio')) {
           try {
             const { speakTutorText } = await import('../tools/audio-toolkit')
-            const { voiceFor } = await import('./artifact-side-effect')
+            const { voiceFor, PUBLIC_FAILURE } = await import('./artifact-side-effect')
             const tts = await speakTutorText(fullText, { voice: voiceFor((state as unknown as { mentorProfile?: string }).mentorProfile ?? 'alex') })
             if (tts.success && tts.url) {
               artifacts.push({ type: 'audio', dataUrl: tts.url } as ArtifactPayload)
             } else {
-              console.error('[P16] voice-turn TTS failed', tts.message)
-              artifactFailures.push({ subject: `Respuesta hablada: ${tts.message ?? 'no se generó el audio'}` })
+              console.error('[P16] voice-turn TTS failed', JSON.stringify({ error: tts.error ?? null }))
+              artifactFailures.push({ subject: PUBLIC_FAILURE.audio_failed })
             }
           } catch (e) {
-            console.error('[P16] voice-turn TTS exception', e instanceof Error ? e.message : e)
-            artifactFailures.push({ subject: `Respuesta hablada: ${e instanceof Error ? e.message : 'no se generó el audio'}` })
+            console.error('[P16] voice-turn TTS exception', e instanceof Error ? e.name : 'Error')
+            artifactFailures.push({ subject: (await import('./artifact-side-effect')).PUBLIC_FAILURE.audio_failed })
           }
         }
 
@@ -202,7 +209,9 @@ export function executePlanStream(
         const artifact = artifacts[0]
         const progress=creditLearningProgress(state,request)
         const patch: Record<string, unknown> = { tokens:progress.tokens, progressCredits:progress.progressCredits, engagement:progress.engagement }
-        if (stream.explanatoryLanguage) patch.explanatoryLanguage = stream.explanatoryLanguage
+        // 7.5 P1-A: only a declaration the state contract accepted reaches the session, with its source.
+        if (stream.explanatoryLanguage) { patch.explanatoryLanguage = stream.explanatoryLanguage; patch.explanatoryLanguageSource = stream.explanatoryLanguageSource }
+        if (stream.languageRejection) console.warn('[tutor-language]', JSON.stringify({ rejected: stream.languageRejection }))
         // 7.4: notes the Tutor itself recorded; the platform stores them with provenance and a
         // persisted id counter so a forgotten id is never reissued to a different note.
         if (stream.memoryOps?.length) {
@@ -290,6 +299,7 @@ export function executePlanStream(
         emit({
           done: true,
           servedModel: stream.servedModel,
+          ...(voiceFacts ? { voice: voiceFacts } : {}),
           state: wireState,
           ...(artifact ? { artifact } : {}),
           ...(artifacts.length ? { artifacts } : {}),
