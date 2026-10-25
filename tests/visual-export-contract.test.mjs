@@ -7,7 +7,7 @@ const plan=fs.readFileSync(new URL('../server/core/tutor-first-plan.ts',import.m
 const pkg=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'))
 for (const signal of [
  "ref={exportRef}","import('html-to-image')","import('pdf-lib')",
- "pdf.embedPng(","↓ Descargar PNG","↓ Descargar PDF",
+ "pdf.embedPng(","onClick={()=>void exportVisual('png')}","onClick={()=>void exportVisual('pdf')}","t('Descargar PNG')","t('Descargar PDF')",
  "setCollapsed({})","setCollapsed(previous)","data-export-ignore",
  "new Blob([bytes as BlobPart]","role=\"alert\"",
  "const captureWidth = 580","toPng(exportRef.current", "width:captureWidth", "style:{width:captureWidth",
