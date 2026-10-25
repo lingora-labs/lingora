@@ -1,5 +1,6 @@
 'use client'
 import React from 'react'
+import { useSeedUi } from './seed-locale'
 import type { Artifact } from './beta-model'
 import type { QuizQ } from './beta-model'
 import { renderChartSvg, validateChartContent } from '../../lib/chart-contract'
@@ -13,9 +14,10 @@ import { fetchVerifiedPdf, pdfFileName, type PdfExpectation } from '../../lib/pd
 
 /** 7.5: a component that cannot be drawn says so; it never disappears (7.4 returned null). */
 export function ArtifactUnavailable({ type, reason }: { type: string; reason: string }) {
+  const t = useSeedUi()
   return (
     <div data-testid="artifact-unavailable" role="status" style={{ marginTop:8, padding:'8px 12px', borderRadius:10, fontSize:12.5, background:'rgba(217,119,6,.10)', border:'1px solid rgba(217,119,6,.25)', color:'var(--silver)', maxWidth:420 }}>
-      No se puede mostrar este componente ({type}): {/^[a-z]+_[a-z_]+(:|$)/.test(reason) ? explainNativeRefusal(reason) : reason}.
+      {t('No se puede mostrar este componente')} ({type}): {/^[a-z]+_[a-z_]+(:|$)/.test(reason) ? explainNativeRefusal(reason) : reason}.
     </div>
   )
 }
@@ -38,6 +40,7 @@ export function dataUrlToHtmlBlob(dataUrl: string): Blob | null {
 }
 
 function HtmlVersionActions({ webUrl }: { webUrl: string }) {
+  const t = useSeedUi()
   const [err, setErr] = React.useState('')
   const make = () => {
     const blob = dataUrlToHtmlBlob(webUrl)
@@ -63,8 +66,8 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
   const btn: React.CSSProperties = { display:'inline-flex', alignItems:'center', gap:6, padding:'9px 13px', borderRadius:10, background:'rgba(0,201,167,.1)', border:'1px solid rgba(0,201,167,.25)', color:'var(--teal)', fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }
   return (
     <>
-      <button type="button" data-testid="html-open" onClick={open} style={btn}>🌐 Abrir versión interactiva</button>
-      <button type="button" data-testid="html-download" onClick={download} style={btn}>⬇ Descargar HTML</button>
+      <button type="button" data-testid="html-open" onClick={open} style={btn}>🌐 {t('Abrir versión interactiva')}</button>
+      <button type="button" data-testid="html-download" onClick={download} style={btn}>⬇ {t('Descargar HTML')}</button>
       {err && <span role="alert" style={{ fontSize:12, color:'var(--gold)', alignSelf:'center' }}>{err}</span>}
     </>
   )
@@ -73,10 +76,11 @@ function HtmlVersionActions({ webUrl }: { webUrl: string }) {
 // 7.5 — «Descargar PDF» saves a file only after its bytes were recovered and checked (header, trailer,
 // length and SHA-256 recorded at render). Otherwise it says why, visibly. No data: navigation, no print.
 function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: string; label: string; title?: string; expected: PdfExpectation; pageCount?: number }) {
+  const t = useSeedUi()
   const [st, setSt] = React.useState<{ k: 'idle' | 'checking' | 'done' | 'error'; text?: string }>({ k: 'idle' })
   const run = async () => {
     if (st.k === 'checking') return
-    setSt({ k: 'checking', text: 'Comprobando el PDF…' })
+    setSt({ k: 'checking', text: t('Comprobando el PDF…') })
     const r = await fetchVerifiedPdf(url, expected)
     if (!r.ok) { setSt({ k: 'error', text: `No se pudo descargar el PDF: ${r.reason}.` }); return }
     const name = pdfFileName(title)
@@ -100,6 +104,7 @@ function PdfDownloadButton({ url, label, title, expected, pageCount }: { url: st
 // 7.4.2/7.4.3 — native SVG instruments (chart, flowchart, infographic): drawn deterministically from the
 // Tutor's validated content. Fluid inside a horizontally scrollable box, so nothing is ever clipped.
 function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: string; renderAt?: (width: number) => string; fileSvg: string; kind: string; file: string }) {
+  const t = useSeedUi()
   // 7.5 P1-B: on a narrow screen the same content is laid out for the width it actually has (text at its
   // real size, never shrunk); the files are always the full-width drawing.
   const boxRef = React.useRef<HTMLDivElement>(null)
@@ -129,7 +134,7 @@ function SvgInstrumentBlock({ svg, renderAt, fileSvg, kind, file }: { svg: strin
     <div ref={boxRef} style={{ marginTop:8, width:'100%', maxWidth:560 }} data-testid={`${kind}-artifact`} data-layout={narrow ? 'narrow' : 'wide'}>
       <div style={{ borderRadius:14, overflowX:'auto', border:'1px solid var(--border)' }} dangerouslySetInnerHTML={{ __html: shown }} />
       <div style={{ marginTop:5 }}>
-        <button type="button" data-testid={`${kind}-download-png`} onClick={() => { void downloadPng() }} disabled={status?.k === 'busy'} style={btn}>↓ Descargar PNG</button>
+        <button type="button" data-testid={`${kind}-download-png`} onClick={() => { void downloadPng() }} disabled={status?.k === 'busy'} style={btn}>↓ {t('Descargar PNG')}</button>
         <button type="button" data-testid={`${kind}-download-svg`} onClick={downloadSvg} style={btn}>↓ SVG</button>
       </div>
       {status && <div data-testid={`${kind}-download-status`} data-state={status.k} role={status.k === 'error' ? 'alert' : 'status'}
@@ -156,6 +161,7 @@ function InfographicBlock({ content }: { content: Record<string, unknown> }) {
 }
 
 export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: string }) {
+  const t = useSeedUi()
   if (a.type === 'schema') return <SchemaBlock content={a as unknown as Record<string, unknown>} instanceId={instanceId} />
   if (a.type === 'schema_pro') return <SchemaProBlock content={(a.content ?? a) as Record<string, unknown>} />
   if (a.type === 'table') return <TableArtifactBlock content={a as unknown as Record<string, unknown>} />
@@ -179,7 +185,7 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     return (
       <div style={{ marginTop:10, width:'100%', maxWidth:540, borderRadius:16, border:'1px solid rgba(0,201,167,.25)', background:'rgba(0,201,167,.05)', overflow:'hidden' }}>
         <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(0,201,167,.15)', display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>Simulacro</span>
+          <span style={{ fontSize:11, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--teal)' }}>{t('Simulacro')}</span>
           <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{title}</span>
         </div>
         <div style={{ padding:14 }}><QuizBlock quiz={questions} reviewMode={contentObj?.gradingMode === 'tutor_review'} initial={a.progress} instanceId={instanceId} title={title} /></div>
@@ -190,12 +196,12 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     return (
       <div style={{ marginTop:8 }}>
         <img src={a.url} alt="LINGORA visual" style={{ maxWidth:'100%', borderRadius:14, display:'block', border:'1px solid var(--border)' }} />
-        <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-block', marginTop:5, fontSize:12, color:'var(--teal)', fontWeight:700 }}>↓ Descargar imagen</a>
+        <a href={a.url} download target="_blank" rel="noopener" style={{ display:'inline-block', marginTop:5, fontSize:12, color:'var(--teal)', fontWeight:700 }}>↓ {t('Descargar imagen')}</a>
       </div>
     )
   }
   if ((a.type === 'pdf' || a.type === 'pdf_chat' || a.type === 'course_pdf') && a.url) {
-    const label = a.type === 'course_pdf' ? '📄 Descargar curso PDF' : a.type === 'pdf_chat' ? '📋 Descargar historial PDF' : '📄 Descargar PDF'
+    const label = a.type === 'course_pdf' ? '📄 ' + t('Descargar curso PDF') : a.type === 'pdf_chat' ? '📋 ' + t('Descargar historial PDF') : '📄 ' + t('Descargar PDF')
     const webUrl = (a as { webUrl?: string }).webUrl
     return (
       <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:6 }}>
@@ -210,7 +216,7 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
     const src = String(a.dataUrl ?? a.url ?? (a.content as Record<string, unknown>)?.dataUrl ?? '')
     return (
       <div style={{ marginTop:8 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', letterSpacing:'.06em', textTransform:'uppercase' }}>🔊 Respuesta de audio</div>
+        <div style={{ fontSize:11, fontWeight:700, color:'var(--teal)', letterSpacing:'.06em', textTransform:'uppercase' }}>🔊 {t('Respuesta de audio')}</div>
         {/* P16 — voice-turn replies autoplay: the mic tap that started this
             exchange is the user gesture: most browsers permit the audio
             response from that same interaction chain to play without a
@@ -259,8 +265,8 @@ export function ArtifactRender({ a, instanceId }: { a: Artifact; instanceId?: st
         <div style={{ padding:'10px 14px', display:'flex', alignItems:'center', gap:12 }}>
           <span style={{ fontSize:28, fontWeight:800, color:'var(--teal)' }}>{level}</span>
           <div>
-            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>Nivel estimado CEFR</div>
-            <div style={{ fontSize:11, color:'var(--muted)' }}>Confianza: {conf} · {count} muestras</div>
+            <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{t('Nivel estimado CEFR')}</div>
+            <div style={{ fontSize:11, color:'var(--muted)' }}>{t('Confianza:')} {conf} · {count} {t('muestras')}</div>
           </div>
         </div>
         {obs.map((o, i) => <div key={i} style={{ padding:'0 14px 8px', fontSize:12, color:'var(--silver)' }}>• {o}</div>)}
