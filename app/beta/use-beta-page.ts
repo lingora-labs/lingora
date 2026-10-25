@@ -136,7 +136,7 @@ export function useBetaPage() {
     setPersistWarning(c.reduced ? 'Se recuperó una conversación reducida. Comprueba si están todos tus archivos.' : null)
   }, [])
   const seedFor = useCallback((phaseNow: UiPhase) => ({
-    session: freshSession(langRef.current, mentorRef.current, topicRef.current),
+    session: { ...freshSession(langRef.current, mentorRef.current, topicRef.current), uiLanguageChoice: otherRef.current ? 'other' as const : undefined },
     ui: { phase: phaseNow, lang: langRef.current, mentor: mentorRef.current, topic: topicRef.current, activeMode: 'interact' },
   }), [])
   const recordOf = useCallback((meta: ConvMeta, msgsNow: Msg[], sessionNow: SS, phaseNow: Phase): Conversation<Msg, SS> => ({
