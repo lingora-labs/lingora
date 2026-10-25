@@ -104,6 +104,8 @@ const norwegian: Record<string, string> = {
   'PNG comprobado': 'PNG verifisert',
   'No se pudo preparar la versión web.': 'Kunne ikke klargjøre webversjonen.',
   'El navegador bloqueó la ventana. Usa «Descargar HTML».': 'Nettleseren blokkerte vinduet. Bruk «Last ned HTML».',
+  'Empezar quiz': 'Start quiz',
+  'Crear esquema visual': 'Lag visuell oversikt',
 }
 export const SeedLocaleContext = React.createContext<Lang>('es')
 export const seedText = (lang: Lang, label: string) => lang === 'no' ? (norwegian[label] ?? label) : label
