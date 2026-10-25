@@ -22,8 +22,9 @@ async function translate(language: string) {
   calls.push(now)
   const response = await api.chat.completions.create({
     model: MODEL,
-    max_tokens: 9000,
-    temperature: 0,
+    max_completion_tokens: 9000,
+    reasoning_effort: 'none',
+    temperature: 0.7,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: 'You translate only static buttons, status labels and control text in a language-learning web application. Preserve the semantic function of each control. Output one valid JSON object whose keys are EXACTLY the source Spanish keys provided and values are fluent translations in the requested BCP-47 language. Never change a key, omit a key, add a key, include explanations, or translate product names, code identifiers or ISO language codes. Security, deletion and local-only storage statements must retain their full meaning. No markdown.' },
