@@ -1,6 +1,7 @@
 'use client'
 import { VoiceBar } from './voice/voice-bar'
 import React from 'react'
+import { SeedLocaleContext, seedText } from './seed-locale'
 import { chromeLessonLabel, chromeLevelLabel } from './chrome-gate'
 import { MENTOR_META, TOPIC_META, LANG_GRID, TOPIC_KEYS, MENTOR_KEYS, MODE_UI_COPY, type ActiveMode } from './beta-model'
 import { Bubble, Typing } from './beta-chat-ui'
@@ -20,10 +21,11 @@ export default function BetaPageView() {
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   } = useBetaPage()
+  const t = (label: string) => seedText(lang, label)
   const modeCopy = MODE_UI_COPY[lang] ?? MODE_UI_COPY.en
   if (!hydrated) return null
   return (
-    <>
+    <SeedLocaleContext.Provider value={lang}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700;800&display=swap');
         :root { --navy:#080f1f; --navy2:#0d1828; --navy3:#132035; --teal:#00c9a7; --coral:#ff6b6b; --gold:#f5c842; --silver:rgba(255,255,255,.88); --muted:rgba(255,255,255,.50); --dim:rgba(255,255,255,.22); --border:rgba(255,255,255,.08); --card:rgba(255,255,255,.04); }
@@ -53,7 +55,7 @@ export default function BetaPageView() {
       {phase !== 'chat' && space && (
         <button type="button" onClick={() => setShowSpace(true)}
           style={{ position:'fixed', top:8, right:8, zIndex:60, fontSize:11, minHeight:36, padding:'6px 12px', borderRadius:999, border:'1px solid var(--border)', background:'rgba(8,17,32,.86)', color:'var(--silver)', cursor:'pointer' }}>
-          Espacio · {space.conversations.length}
+          {t('Espacio')} · {space.conversations.length}
         </button>
       )}
       {phase === 'mode' && (
@@ -110,8 +112,8 @@ export default function BetaPageView() {
                   <button key="other" onClick={() => pickOther()}
                     style={{ background: otherLang ? 'rgba(0,201,167,.12)' : 'var(--card)', border:`1px solid ${otherLang?'var(--teal)':'var(--border)'}`, borderRadius:12, padding:'12px 8px', cursor:'pointer' }}>
                     <div style={{ fontSize:22 }}>🌍</div>
-                    <div style={{ fontSize:12, fontWeight:700, color: otherLang ? 'var(--teal)' : '#fff' }}>OTROS</div>
-                    <div style={{ fontSize:10, color:'var(--dim)' }}>Other · any language</div>
+                    <div style={{ fontSize:12, fontWeight:700, color: otherLang ? 'var(--teal)' : '#fff' }}>{t('OTROS')}</div>
+                    <div style={{ fontSize:10, color:'var(--dim)' }}>{t('Other · any language')}</div>
                   </button>
                 </div>
               </div>
@@ -172,50 +174,50 @@ export default function BetaPageView() {
         </div>
       )}
       {phase === 'chat' && (
-        <div style={{ display:'flex', flexDirection:'column', height:'100dvh', maxWidth:760, margin:'0 auto' }}>
+        <div style={{ display:'flex', flexDirection:'column', height:'100dvh', minWidth:0, maxWidth:760, margin:'0 auto' }}>
           <div style={{ padding:'13px 18px', background:'rgba(8,17,32,.86)', borderBottom:'1px solid var(--border)', display:'flex', flexWrap:'wrap', alignItems:'center', gap:12 }}>
             <div style={{ width:42, height:42, borderRadius:'50%', background:mm.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{mm.emoji}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:800, fontSize:15, color:'#fff' }}>{mm.name} <span style={{ fontSize:10, color:mm.color }}>{mm.code}</span></div>
-              <div style={{ fontSize:10, color:'var(--muted)' }}>{chromeLessonLabel(session.tokens, session.lessonIndex)}</div>
+              <div style={{ fontSize:10, color:'var(--muted)' }}>{lang === 'no' ? chromeLessonLabel(session.tokens, session.lessonIndex).replace(/^Sesión$/, t('Sesión')).replace(/^Lección /, t('Lección') + ' ') : chromeLessonLabel(session.tokens, session.lessonIndex)}</div>
             </div>
             <div style={{ textAlign:'center' }}>
               <div style={{ fontSize:12, fontWeight:800, color:'var(--teal)' }}>{chromeLevelLabel(session.tokens, session.level)}</div>
-              <div style={{ fontSize:9, color:'var(--dim)' }}>nivel</div>
+              <div style={{ fontSize:9, color:'var(--dim)' }}>{t('nivel')}</div>
             </div>
             <div style={{ position:'relative' }}>
-              <button onClick={() => setShowExport(v => !v)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Export</button>
+              <button onClick={() => setShowExport(v => !v)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>{t('Export')}</button>
               {showExport && (
                 <div style={{ position:'absolute', top:'115%', right:0, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:12, padding:'5px 0', zIndex:50, minWidth:160 }}>
-                  <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar TXT</button>
-                  <button onClick={() => { setExportStatus('Preparando PDF…'); void (async () => {
+                  <button onClick={() => { doExportTxt(msgs); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>{t('Exportar TXT')}</button>
+                  <button onClick={() => { setExportStatus(t('Preparando PDF…')); void (async () => {
                     try {
                       const result = await doExportPdfBackend(msgs, session)
                       if (!result.ok) { setExportStatus(result.message); return }
-                      setExportStatus('PDF descargado. Guardando copia para la próxima sesión…')
+                      setExportStatus(t('PDF descargado. Guardando copia para la próxima sesión…'))
                       const stored = await registerExport(result.archiveUrl, session.sessionId)
                       if (stored === 'cancelled') { setExportStatus(null); return }
                       setExportStatus(stored === 'saved'
                         ? `PDF verificado y guardado localmente (${result.bytes} bytes).`
-                        : 'PDF descargado, pero no se confirmó su conservación. Descarga y guarda una copia.')
+                        : t('PDF descargado, pero no se confirmó su conservación. Descarga y guarda una copia.'))
                     } catch (err) {
                       console.warn('[LINGORA] PDF archive confirmation failed', err)
-                      setExportStatus('PDF no confirmado en el archivo local; conserva la descarga.')
+                      setExportStatus(t('PDF no confirmado en el archivo local; conserva la descarga.'))
                     }
-                  })(); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>Exportar PDF</button>
+                  })(); setShowExport(false) }} style={{ display:'block', width:'100%', textAlign:'left', padding:'9px 16px', background:'none', border:'none', color:'var(--silver)', fontSize:13, cursor:'pointer' }}>{t('Exportar PDF')}</button>
                 </div>
               )}
             </div>
-            <button onClick={() => setShowSpace(true)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid rgba(0,201,167,.4)', background:'none', color:'var(--teal)', cursor:'pointer' }}>Espacio</button>
-            <button title="Vacía solo esta conversación. Tu espacio (fuentes, memoria, otras conversaciones) se conserva." onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>Reset</button>
-            <span title="Tu espacio y sus conversaciones se conservan en este navegador (IndexedDB). No se sincronizan entre dispositivos." style={{ fontSize:10, color:'var(--dim)' }}>Local</span>
+            <button onClick={() => setShowSpace(true)} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid rgba(0,201,167,.4)', background:'none', color:'var(--teal)', cursor:'pointer' }}>{t('Espacio')}</button>
+            <button title={t("Vacía solo esta conversación. Tu espacio (fuentes, memoria, otras conversaciones) se conserva.")} onClick={() => { resetChat(); setExportStatus(null) }} style={{ fontSize:11, minHeight:44, padding:'10px 12px', borderRadius:999, border:'1px solid var(--border)', background:'none', color:'var(--muted)', cursor:'pointer' }}>{t('Reset')}</button>
+            <span title={t("Tu espacio y sus conversaciones se conservan en este navegador (IndexedDB). No se sincronizan entre dispositivos.")} style={{ fontSize:10, color:'var(--dim)' }}>{t('Local')}</span>
             {(exportStatus || persistWarning || (spaceNotice && !showSpace)) && (
               <div role="status" aria-live="polite" style={{ fontSize:10, maxWidth:260, color:'var(--teal)' }}>
                 {exportStatus || persistWarning || spaceNotice}
               </div>
             )}
           </div>
-          <div style={{ flex:1, overflowY:'auto', padding:'20px 16px', display:'flex', flexDirection:'column', gap:14 }}>
+          <div style={{ flex:1, minHeight:0, overflowY:'auto', overflowX:'hidden', padding:'20px 16px', display:'flex', flexDirection:'column', gap:14 }}>
             {msgs.map(m => <Bubble key={m.id} msg={m} mc={mm.color} />)}
             {loading && <Typing mc={mm.color} />}
             <div ref={msgsEndRef} />
@@ -223,9 +225,9 @@ export default function BetaPageView() {
           <div style={{ textAlign:'center', fontSize:11, color:'var(--dim)' }}>{copy.hint}</div>
           <VoiceBar voiceMode={voiceMode} micStatus={voiceStatus} micError={voiceError} level={voiceLevel} loading={loading} player={player} state={playerState} mentorName={mm.name} />
           <div style={{ borderTop:'1px solid var(--border)', padding:'9px 12px 13px', display:'flex', alignItems:'flex-end', gap:8 }}>
-            <button type="button" data-testid="voice-mode" aria-pressed={voiceMode} title="Conversación por voz: habla con naturalidad; puedes interrumpir" onClick={() => { void setVoiceMode(!voiceMode) }}
-              style={{ height:44, padding:'0 12px', borderRadius:22, border:`1px solid ${voiceMode ? 'var(--teal)' : 'var(--border)'}`, background: voiceMode ? 'rgba(0,201,167,.12)' : 'transparent', color: voiceMode ? 'var(--teal)' : 'var(--muted)', cursor:'pointer', fontSize:12, fontWeight:700 }}>{voiceMode ? 'Voz ●' : 'Conversar'}</button>
-            <button onClick={toggleRec} style={{ width:44, height:44, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', cursor:'pointer' }}>{recording ? 'Stop' : 'Mic'}</button>
+            <button type="button" data-testid="voice-mode" aria-pressed={voiceMode} title={t("Conversación por voz: habla con naturalidad; puedes interrumpir")} onClick={() => { void setVoiceMode(!voiceMode) }}
+              style={{ height:44, padding:'0 12px', borderRadius:22, border:`1px solid ${voiceMode ? 'var(--teal)' : 'var(--border)'}`, background: voiceMode ? 'rgba(0,201,167,.12)' : 'transparent', color: voiceMode ? 'var(--teal)' : 'var(--muted)', cursor:'pointer', fontSize:12, fontWeight:700 }}>{voiceMode ? t('Voz ●') : t('Conversar')}</button>
+            <button onClick={toggleRec} style={{ width:44, height:44, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', cursor:'pointer' }}>{recording ? t('Stop') : t('Mic')}</button>
             <label style={{ width:44, height:44, borderRadius:'50%', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'var(--muted)' }}>
               +
               <input ref={fileInputRef} type="file" accept="image/*,application/pdf,text/*,audio/*" onChange={handleFile} style={{ display:'none' }} />
@@ -237,11 +239,11 @@ export default function BetaPageView() {
               style={{ flex:1, background:'var(--navy2)', border:'1px solid var(--border)', borderRadius:14, padding:'10px 14px', fontSize:14, color:'var(--silver)', resize:'none', maxHeight:120, fontFamily:'inherit' }}
             />
             <button onClick={() => void sendComposer()} disabled={loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0)}
-              style={{ width:44, height:44, borderRadius:'50%', border:'none', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', cursor:'pointer' }}>Go</button>
+              style={{ width:44, height:44, borderRadius:'50%', border:'none', background: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--navy3)' : 'var(--teal)', color: loading || (!input.trim() && !pendingAudioBlob && pendingFiles.length === 0) ? 'var(--muted)' : 'var(--navy)', cursor:'pointer' }}>{t('Go')}</button>
           </div>
           {pendingAudioUrl && <audio controls src={pendingAudioUrl} style={{ margin:'0 12px 8px', height:28 }} />}
         </div>
       )}
-    </>
+    </SeedLocaleContext.Provider>
   )
 }
