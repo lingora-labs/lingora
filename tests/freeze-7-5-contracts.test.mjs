@@ -38,8 +38,8 @@ const C = load('lib/context-pack.ts')
 assert.doesNotMatch(C.formatLanguageTurnNote(C.buildContextPack({ interfaceLanguage: 'ar', message: 'x', turnCount: 5 }), { opening: false }), /Opening greeting/, 'absent with tokens > 2')
 const es = M.buildMentorPrompt({ message: 'Can you explain in English?', state: { tokens: 4, interfaceLanguage: 'es' }, opening: false })
 // 7.5 P1-A: the selection binds; an explicit request changes it through set_explanatory_language with the student's words.
-assert.match(es.system, /explanatoryLanguage=es; targetLanguage=es/, 'Spanish selected binds the explanations')
-assert.match(es.languageNote, /changes only if the student explicitly asks you to explain in another language: then call set_explanatory_language with that language and evidence = their exact words/, 'an explicit request for another language has its path')
+assert.match(es.system, /targetLanguage=es\. Previous explanatoryLanguage=es/, 'Spanish selected is the remembered starting language, not a permanent lock')
+assert.match(es.languageNote, /conversation_shift or explicit_request/, 'the tutor may change its language on an explicit request or a contextual shift')
 // interfaceLanguage travels in the body state and reaches the plan unchanged.
 assert.match(read('app/beta/use-beta-page.ts'), /interfaceLanguage: BACKEND_LANG\(langRef\.current\)/)
 assert.match(read('server/api/chat-entry.ts'), /interfaceLanguage:state\.interfaceLanguage \?\? 'en'/)
