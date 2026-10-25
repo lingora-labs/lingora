@@ -50,7 +50,7 @@ async function turn(message, stateExtra, provider, voice) {
   const events = buf.split('\n\n').filter(e => e.startsWith('data: ')).map(e => JSON.parse(e.slice(6)))
   const first = requests[0].messages, note = first[first.length - 1].content
   const toolResult = requests[1]?.messages.find(m => m.role === 'tool')?.content ?? null
-  return { done: events.find(e => e.done), note, toolResult, system: first[0].content }
+  return { done: events.find(e => e.done), text: events.filter(e => typeof e.delta === 'string').map(e => e.delta).join(''), note, toolResult, system: first[0].content }
 }
 // 3a. Spanish selected; an English-looking transcription and a Tutor that declares English without a request.
 let r = await turn('I want to go to the beach today', { interfaceLanguage: 'es' }, [[langCall({ language: 'en' })], [text('¿Qué quieres hacer en la playa?')]])
@@ -70,6 +70,9 @@ assert.equal(r.done.state.explanatoryLanguage, undefined)
 // 3d. An explicit request is recorded with its source and binds the next turns.
 r = await turn('Por favor, explícamelo en inglés.', { interfaceLanguage: 'es' }, [[langCall({ language: 'en', evidence: 'explícamelo en inglés' })], [text('Sure: «ser» is for…')]])
 assert.equal(r.done.state.explanatoryLanguage, 'en'); assert.equal(r.done.state.explanatoryLanguageSource, 'student_request')
+// The continuation after the declaration arrives in chunks and reads as written (no break inside it).
+let r2 = await turn('Por favor, explícamelo en inglés.', { interfaceLanguage: 'es' }, [[langCall({ language: 'en', evidence: 'explícamelo en inglés' })], [text('Of'), text(' course. '), text('From now on, English.')]])
+assert.equal(r2.text, 'Of course. From now on, English.')
 r = await turn('Yo soy cansado', { ...r.done.state }, [[text('We say «estoy cansado».')]])
 assert.match(r.note, /explanatoryLanguage = "en" \(the student asked for it\)/)
 // 3e. A spoken turn: the recognizer's doubts are facts; a request inside a doubtful fragment does not count.

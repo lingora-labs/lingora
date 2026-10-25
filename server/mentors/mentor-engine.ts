@@ -583,11 +583,14 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
          messages:[...baseMessages,asst,...results],
        })
        const gate2:{served:string;failure?:'model_mismatch'|'model_unreported'}={served:''}
+       // The material continues what the Tutor already said (if anything): one blank line between the two,
+       // never inside the continuation itself, which arrives in many chunks.
+       const separate=Boolean(spoken.trim())
        let separated=false
        for await(const chunk of gateByServedModel(more,gate2)){
          if(chunk.usage)count(chunk.usage)
          const d=chunk.choices?.[0]?.delta
-         if(typeof d?.content==='string'&&d.content){if(!separated&&spoken.trim()){separated=true;yield '\n\n'}spoken+=d.content;yield d.content}
+         if(typeof d?.content==='string'&&d.content){if(separate&&!separated){separated=true;yield '\n\n'}spoken+=d.content;yield d.content}
        }
        if(gate2.failure){box.w!.servedModel=gate2.served||box.w!.servedModel;fail(gate2.failure);yield (spoken.trim()?'\n\n':'')+modelFailureMessage(gate2.failure,gate2.served);return}
      }catch{fail('continuation_interrupted')}
