@@ -98,24 +98,15 @@ export function buildContextPack(input: {
  *  the state contract resolved (lib/explanatory-language.ts); the note informs the Tutor of that decision. */
 export function formatLanguageTurnNote(pack: ContextPack, opts: { opening?: boolean; other?: boolean } = {}): string {
   const voice = formatVoiceInputNote(pack)
-  if (opts.opening && pack.explanatoryLanguageSource !== 'student_request') {
-    // One voice for the opening greeting, defined by the student's selection.
+  if (opts.opening) {
     const free = 'Do not teach and do not produce artifacts on this greeting.'
-    if (opts.other) {
-      return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and picked OTHER because their language is not in the picker. Write ONLY in English: a short warm greeting, then invite them to write one sentence about today in any language they like, or anything at all. ${free} Once they write, explain in the language they use and record it with set_explanatory_language.`
-    }
-    if (pack.interfaceLanguage === 'es') {
-      return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and selected Spanish. Write ONLY in Spanish: a short warm greeting, then invite them to write one sentence about today. ${free}`
-    }
-    return `[LANGUAGE FOR THIS TURN] Opening greeting: the student has not written yet and selected "${pack.interfaceLanguage}" in the picker. Format: first the greeting in Spanish (Spanish is the protagonist), a short warm greeting that invites them to write one sentence about today; then a blank line; then the same greeting in "${pack.interfaceLanguage}" as ONE single paragraph wrapped in single asterisks for italics (no line breaks and no other asterisks inside it). ${free}`
+    if (opts.other) return '[LANGUAGE FOR THIS TURN] The student selected OTHER and has not spoken yet. Greet briefly in English and invite them to write in any language. ' + free
+    if (pack.interfaceLanguage === 'es') return '[LANGUAGE FOR THIS TURN] Greet briefly in Spanish. ' + free
+    return '[LANGUAGE FOR THIS TURN] The student selected ' + pack.interfaceLanguage + '. Give a short friendly greeting in Spanish with a concise explanation in ' + pack.interfaceLanguage + '; do not start a full lesson. ' + free
   }
-  if (pack.explanatoryLanguage) {
-    const why = pack.explanatoryLanguageSource === 'student_request' ? 'the student asked for it' : pack.explanatoryLanguageSource === 'selection' ? 'the student selected it' : 'it is the language this student uses'
-    return `[LANGUAGE FOR THIS TURN] explanatoryLanguage = "${pack.explanatoryLanguage}" (${why}). Write your explanations, corrections, the reasons for each correction, your questions and instructions in this language, even though the student's message above may be Spanish practice, contain words of another language or have been transcribed from speech. Spanish stays for the examples, sentences and exercises you teach; examples in other languages are allowed and do not change it. It changes only if the student explicitly asks you to explain in another language: then call set_explanatory_language with that language and evidence = their exact words.${voice}`
-  }
-  return `[LANGUAGE FOR THIS TURN] No explanatory language exists yet (the student picked OTHER). Answer in the language the student writes in or asks for: any language you can write well. Your explanations, corrections and the reasons for each correction go in that language; Spanish stays for the examples and exercises you teach. When you settle on that language, call set_explanatory_language once so it is remembered (small call; keep writing your reply as usual).${voice}`
+  const remembered = pack.explanatoryLanguage ?? (opts.other ? 'not yet established' : pack.interfaceLanguage)
+  return '[LANGUAGE FOR THIS TURN] Remembered explanatory language: "' + remembered + '"; Spanish is the LEARNING TARGET. Determine the response language from the meaning of the student\'s LATEST turn and the conversation. A genuine conversational shift of language (e.g. a Russian dialogue followed by a student speaking Portuguese) normally changes the reply language without requiring a formal request. An exercise answer, example phrase, quotation, translation target, code or doubtful ASR fragment must NOT change it. Explicit preference to keep a language takes priority. If the explanation language changes, call set_explanatory_language with the new BCP-47 language, basis=conversation_shift or explicit_request, and evidence quoting exact words of THIS turn. The UI follows this declaration automatically. Continue the original learning task, with Spanish examples in Spanish. ' + voice
 }
-
 /** 7.5 P1-A: facts of a spoken turn. The recognizer's doubts are the platform's, never the student's errors. */
 export function formatVoiceInputNote(pack: ContextPack): string {
   const v = pack.voiceInput
