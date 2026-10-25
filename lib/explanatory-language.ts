@@ -1,21 +1,19 @@
 // 7.3.2: the Tutor remembers its own language decision. Optional, small, never required per turn.
-// 7.5 P1-A: the language of the Tutor's explanations is a STATE CONTRACT with precedence, decided here
-// and applied by the engine — not by persona prose:
-//   1. a change the student asked for explicitly, proven by the student's own words in that turn;
-//   2. the language the student selected in the picker (any picker language, Spanish included);
-//   3. only when the student picked OTROS (no selection): the language the Tutor settled on.
-// What the student writes or says (a Spanish exercise, an Italian expression, a mixed sentence, an ASR
-// hypothesis) never changes the language by itself. Teaching examples in any language never change it.
+// 7.6: the Tutor decides whether the current turn is a genuine conversation-language shift,
+// an explicit language request, or merely a practice phrase/quotation. The picker gives an
+// initial default, never a lock. The runtime validates the Tutor's quoted user words and
+// ASR uncertainty; it does NOT classify languages, exercises, or intent by regex.
 export const SET_EXPLANATORY_LANGUAGE_TOOL = {
   type: 'function' as const,
   function: {
     name: 'set_explanatory_language',
-    description: 'Record the language you explain in for this student (ISO 639 / BCP-47 code, e.g. ar, zh, no, tr, nl, pt-BR). If the student selected a language, it stays until the student explicitly asks you to explain in another one: then call this with that language AND evidence = the exact words of the student\'s message that ask for it. Without such words the change is not recorded. The language a student writes or speaks an exercise in, or a word in another language, is not a request. Never call it on every turn. It has no effect on your reply: keep writing your normal answer.',
+    description: 'When your actual explanatory reply language changes, record the new BCP-47 language. A student can naturally shift from Russian to Portuguese by speaking Portuguese; an explicit request is NOT required. Decide from meaning and tutoring context: a Spanish exercise, quoted foreign phrase, translation target, code sample, or uncertain ASR fragment is not a conversational-language shift. For an explicit request use basis=explicit_request; for a natural switch of the conversation use basis=conversation_shift. In BOTH cases quote evidence exactly from the student current message. Do not call if the language is unchanged. This updates UI labels too; continue the teaching task without restarting it.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         language: { type: 'string', description: 'Language code, e.g. ar, zh-Hans, no, fr.' },
-        evidence: { type: 'string', description: 'The student\'s own words in this message asking to change the language of your explanations (copy them exactly).' },
+        evidence: { type: 'string', description: 'Exact words from THIS student turn supporting the requested or natural conversational language change. Never an example quoted from an older turn.' },
+        basis: { type: 'string', enum: ['explicit_request', 'conversation_shift'], description: 'Your semantic determination: explicit instruction or natural conversation-language change, not an exercise.' },
       },
       required: ['language'],
     },
@@ -34,7 +32,13 @@ export function parseLanguageEvidence(raw: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, 300) : undefined
 }
 
-export type LanguageSource = 'student_request' | 'selection' | 'tutor_detected'
+
+export function parseLanguageBasis(raw: unknown): 'explicit_request' | 'conversation_shift' | undefined {
+  const v = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).basis : undefined
+  return v === 'explicit_request' || v === 'conversation_shift' ? v : undefined
+}
+
+export type LanguageSource = 'student_request' | 'student_turn' | 'selection' | 'tutor_detected'
 export interface LanguageAuthority { language: string | null; source: LanguageSource | null }
 export interface LanguageStateFields {
   interfaceLanguage?: string
@@ -50,7 +54,7 @@ export const sameLanguage = (a?: string | null, b?: string | null): boolean => B
  *  sessions, or one the Tutor inferred from an ASR hypothesis) never overrides an explicit selection. */
 export function resolveExplanatoryLanguage(s: LanguageStateFields): LanguageAuthority {
   const declared = typeof s.explanatoryLanguage === 'string' && LANGUAGE_CODE.test(s.explanatoryLanguage.trim()) ? s.explanatoryLanguage.trim() : null
-  if (declared && s.explanatoryLanguageSource === 'student_request') return { language: declared, source: 'student_request' }
+  if (declared && (s.explanatoryLanguageSource === 'student_request' || s.explanatoryLanguageSource === 'student_turn')) return { language: declared, source: s.explanatoryLanguageSource }
   const selected = s.uiLanguageChoice !== 'other' && typeof s.interfaceLanguage === 'string' && LANGUAGE_CODE.test(s.interfaceLanguage) ? s.interfaceLanguage : null
   if (selected) return { language: selected, source: 'selection' }
   if (declared) return { language: declared, source: 'tutor_detected' }
@@ -73,6 +77,7 @@ export type LanguageDecision =
 export function decideLanguageDeclaration(input: {
   declared: string
   evidence?: string
+  basis?: 'explicit_request' | 'conversation_shift'
   state: LanguageStateFields
   studentWords: string
   /** Fragments the speech recognizer was not sure about: they can never prove a request. */
@@ -87,5 +92,5 @@ export function decideLanguageDeclaration(input: {
   const ev = fold(input.evidence)
   if ((input.uncertain ?? []).some(u => { const f = fold(u); return f && (ev.includes(f) || f.includes(ev)) }))
     return { outcome: 'rejected', language: current.language, reason: 'evidence_uncertain' }
-  return { outcome: 'accepted', language: input.declared, source: 'student_request' }
+  return { outcome: 'accepted', language: input.declared, source: input.basis === 'conversation_shift' ? 'student_turn' : 'student_request' }
 }
