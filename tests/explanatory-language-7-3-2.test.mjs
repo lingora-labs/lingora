@@ -22,8 +22,8 @@ for(const opening of [false,true]){
   assert.ok(!/interfaceLanguage/.test(declared),'declared language must not coexist with the UI default')
 }
 const note=formatLanguageTurnNote(dp)
-assert.match(note,/explanatoryLanguage = "ar"/)
-assert.match(note,/even though the student's message above may be Spanish practice/)
+assert.match(note,/Remembered explanatory language: "ar"/)
+assert.match(note,/exercise answer, example phrase, quotation/)
 
 // 7.3.3b: opening greeting = one voice, defined only in the language note. Spanish protagonist,
 // the selected language in italics below; Spanish alone for Spanish; English alone for OTHER.
@@ -43,12 +43,12 @@ assert.ok(!/interfaceLanguage/.test(afterWrite),'once the student writes, the UI
 // 7.5 P1-A: after the greeting the selected language binds (it is the session's explanatoryLanguage);
 // only OTROS leaves the language open for the Tutor to settle.
 const freshNote=formatLanguageTurnNote(fresh,{opening:false})
-assert.match(freshNote,/explanatoryLanguage = "no" \(the student selected it\)/)
-assert.match(freshNote,/changes only if the student explicitly asks/)
+assert.match(freshNote,/Remembered explanatory language: "no"/)
+assert.match(freshNote,/conversation_shift or explicit_request/)
 const otherNote=formatLanguageTurnNote(buildContextPack({interfaceLanguage:'en',uiLanguageChoice:'other',message:'x'}),{opening:false})
-assert.ok(!/interfaceLanguage|"en"/.test(otherNote),'OTROS note must not mention a panel language')
-assert.match(otherNote,/any language you can write well/)
-assert.match(otherNote,/call set_explanatory_language once/)
+assert.ok(/not yet established/.test(otherNote),'OTROS keeps the language unsettled until the student speaks')
+assert.match(otherNote,/student.s LATEST turn/)
+assert.match(otherNote,/call set_explanatory_language/)
 
 // Source barriers: no script detector, not required every turn, state carried.
 const pack=fs.readFileSync(root+'lib/context-pack.ts','utf8')
@@ -65,8 +65,8 @@ console.log('PASS 7.3.2 — explanatory language: Tutor-declared, any code, pers
 // 7.3.2b: the persona must not contain a competing, higher-ranked language rule.
 const profiles=fs.readFileSync(root+'server/mentors/profiles.ts','utf8')
 assert.ok(!/van en interfaceLanguage/.test(profiles),'persona must not bind explanations to interfaceLanguage')
-assert.match(profiles,/CONTRATO DE IDIOMA \(7\.3\.2/)
-assert.match(profiles,/NO cambia el idioma de tus explicaciones/)
+assert.match(profiles,/CONTRATO DE IDIOMA \(7\.6/)
+assert.match(profiles,/conversation_shift/)
 const art=fs.readFileSync(root+'lib/artifact-signal.ts','utf8')
 assert.ok(!/Do not call any tool for simple conversation/.test(art),'closure contract must not forbid the one language call')
 assert.match(art,/the one exception is set_explanatory_language/)
