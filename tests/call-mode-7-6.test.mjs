@@ -96,6 +96,18 @@ const mkSpeaker = () => { const sock = mkSocket(), audio = mkAudio(), states = [
   assert.equal(sp.current.status, 'error'); assert.ok(!String(sp.current.error).includes('provider'))
 }
 
+{ // generation: audio of a response that is not the current segment's is dropped, and a suspended context is woken
+  const { sp, sock, audio } = mkSpeaker(); audio.state = 'suspended'; let woke = 0; audio.resume = async () => { woke++ }
+  sp.begin('g1', 0); sp.enqueue('Primera frase para comprobar.'); sock.onopen()
+  sock.onmessage({ data: JSON.stringify({ type: 'response.created', response: { id: 'r1' } }) })
+  sock.onmessage({ data: JSON.stringify({ type: 'response.output_audio.delta', response_id: 'r1', delta: chunk(100) }) })
+  sock.onmessage({ data: JSON.stringify({ type: 'response.output_audio.delta', response_id: 'OLD', delta: chunk(100) }) }) // stale response
+  assert.equal(audio.started.length, 1); assert.ok(woke >= 1)
+  sp.begin('g2', 0) // a new message cancels and the old response's remaining audio never plays
+  sock.onmessage({ data: JSON.stringify({ type: 'response.output_audio.delta', response_id: 'r1', delta: chunk(100) }) })
+  assert.equal(audio.started.length, 1)
+}
+
 // 4. Listener: frames in, transcripts out.
 const mkListener = (over = {}) => {
   const sock = mkSocket(), out = { utt: [], barge: [], status: [], partial: [] }
@@ -140,8 +152,9 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   drive(l, [...Array(8).fill(quiet), ...Array(8).fill(loud), ...Array(9).fill(quiet)])
   assert.equal(sock.sent.length, 0); assert.equal(out.utt.length, 0)
 }
+
 { // P0 reconnect: after the socket drops with the mic still open, resume() reopens recognition (start() would return early)
-  const socks = []; const out = { utt: [], lost: 0 }
+  const socks = []; const sock0 = mkSocket(); const out = { utt: [], lost: 0 }
   const l = new CallListener({ secret: () => 'ek', speaking: () => false, heard: () => '', onStatus() {}, onBargeIn() {}, onUtterance: u => out.utt.push(u), onLost: () => out.lost++, createSocket: () => { const s = mkSocket(); socks.push(s); return s } })
   l.stream = { getTracks: () => [] } // microphone already open
   l.openSocket(); socks[0].onopen(); socks[0].onclose(); assert.equal(out.lost, 1)
@@ -161,7 +174,7 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   assert.deepEqual(a, b) // the same speech however the text streams in
   const spoken = a.join(' ')
   assert.equal(a[0], 'Te dejo la tabla en la pantalla.') // announced once, never read cell by cell
-  assert.ok(!/Estructura|Indica el destino/.test(spoken))
+  assert.ok(!/Estructura|Indica el destino|museo\.? *$/.test(a[0]) && !/Estructura|Indica el destino/.test(spoken))
   assert.ok(!/[+=→|*#😊❌✅]/u.test(spoken)); assert.match(spoken, /ir más a más lugar/)
   assert.equal(a.filter(x => x === 'Te dejo la tabla en la pantalla.').length, 1)
   assert.equal(oralize('a + el = al', 'es'), 'a más el es al'); assert.equal(oralize('go + to', 'en'), 'go plus to')
@@ -170,23 +183,28 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   // fewer seams: after the first segment, sentences are joined
   const prose = 'Claro, vamos a practicar. Dime qué hiciste hoy en tu trabajo. Después hablamos de tus planes para el fin de semana. Y si quieres, también de viajes.\n'
   assert.ok(say(prose, 7).length <= 3)
-  // outside a call the literal visible text is spoken; the mode is global to the call and cleared on hang-up
-  const { speechMode } = load('app/beta/voice/speech-segmenter.ts')
+  // outside a call the literal visible text is spoken; the oral projection belongs to the call's speaker, not to a global
   const lit = new SpeechSegmenter(); assert.ok(!/Te dejo/.test([...lit.push('| a | b |\n'), ...lit.flush()].join(' ')))
-  speechMode.oral = { lang: 'es' }; const inCall = new SpeechSegmenter(); assert.equal([...inCall.push('| a | b |\n'), ...inCall.flush()][0], 'Te dejo la tabla en la pantalla.'); speechMode.oral = null
+  assert.equal(load('app/beta/voice/speech-segmenter.ts').speechMode, undefined)
+  const sk = mkSpeaker().sp; assert.equal(sk.oral, null)
+  // the notice speaks the language of the explanation, not the phone's
+  assert.equal(say('Esto es una explicación en español para ti.\n| a | b |\n', 5, 'en').at(-1), 'Te dejo la tabla en la pantalla.')
+  assert.equal(say('This is an explanation for you today.\n| a | b |\n', 5, 'en').at(-1), "I've put the table on your screen.")
 }
 
 // 5. Static contracts of the integration (hang-up rules, same chat, no second authoring path).
 const page = fs.readFileSync('app/beta/use-beta-page.ts', 'utf8'), hook = fs.readFileSync('app/beta/voice/use-call.ts', 'utf8')
 const chat = fs.readFileSync('server/api/chat-entry.ts', 'utf8'), view = fs.readFileSync('app/beta/beta-page-view.tsx', 'utf8')
-assert.match(hook, /ctl\.abort\(\); c\.turn\?\.abort\(\); c\.pending = null/)   // D-1/D-2: hang up aborts the turns and drops what was pending
-assert.match(hook, /c\.listener\.resume\(\)/)                                     // reconnect reopens recognition
-assert.match(hook, /c\.pending = u; c\.turn\?\.abort\(\)/)                        // a new utterance cuts the Tutor turn in flight instead of waiting for it
-assert.match(hook, /speechMode\.oral = \{ lang/); assert.match(hook, /r\.current = null; speechMode\.oral = null/) // the call speaks the oral projection; hang-up restores the literal text
-assert.match(hook, /wakeLock/)                                                    // D-5
-assert.match(page, /opts\?\.signal\?\.aborted/)                                   // aborted turn returns silently, nothing spoken
-assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)              // D-1 for the legacy path
-assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)                 // the call's turns reach the same Tutor with voice facts
+assert.match(hook, /ctl\.abort\(\); c\.turn\?\.abort\(\); c\.pending = null/)                       // D-1/D-2: hang up aborts the turn and drops what was pending
+assert.match(hook, /c\.listener\.resume\(\)/)                                  // reconnect reopens recognition
+assert.match(hook, /c\.pending = u; c\.turn\?\.abort\(\)/)                      // a new utterance cuts the Tutor turn in flight instead of waiting for it
+assert.match(hook, /wakeLock/)
+assert.match(hook, /speaker\.oral = \{ lang/)   // the call's speaker owns the oral projection
+assert.match(page, /ownPlayerRef\.current\?\.hold\(true\)/); assert.match(page, /ownPlayerRef\.current\?\.hold\(false\)/) // the legacy player is silenced for the whole call and restored after
+assert.ok(!/\bspeechMode\b/.test(hook + page))
+assert.match(page, /opts\?\.signal\?\.aborted/)                                 // aborted turn returns silently, nothing spoken
+assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)            // D-1 for the legacy path
+assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)                                   // the call's turns reach the same Tutor with voice facts
 assert.match(view, /data-testid="call-start"/); assert.match(view, /<CallScreen/)
-assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                    // D-4: no hard-coded mentor name
+assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                  // D-4: no hard-coded mentor name
 console.log('call-mode-7-6: all assertions passed')
