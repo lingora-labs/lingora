@@ -112,7 +112,22 @@ try {
   await page.click('[data-testid="call-hangup"]'); await new Promise(r => setTimeout(r, 4000))
   const after = await page.evaluate(() => ({ src: window.__src.length, active: window.__responses.active }))
   assert.ok(chats.length <= nChats + 0 && after.src <= nSrc + 1, 'nothing new after hang-up'); step('Colgar: no se envía ni suena nada más')
+  // 4. R4-M: the call leaves its own measurement on screen. The software marks are checked against the delays this harness INJECTED
+  // (recognition answers 250 ms after the commit, the voice sends its first audio 120 ms after the text), so the instrument is calibrated against known values.
+  await page.waitForSelector('[data-testid="call-report-text"]', { timeout: 5000 })
+  const rep = await page.$eval('[data-testid="call-report-text"]', el => el.value)
+  const rows = JSON.parse(rep.split('\nJSON: ')[1])
+  assert.ok(rows.length >= 3, 'several answered turns are measured')
+  for (const t of rows) {
+    assert.ok(t.close >= 700 && t.close <= 830, 'the 700 ms of silence the turn waits for is visible: ' + t.close)
+    assert.ok(Math.abs(t.asr - 250) < 120, 'recognition marks match the injected 250 ms: ' + t.asr)
+    assert.ok(t.voice >= 100 && t.voice < 260, 'voice marks match the injected 120 ms: ' + t.voice)
+    assert.ok(Math.abs(t.close + t.asr + t.hold + t.tutorHeaders + t.firstSegment + t.voiceWait + t.voice + t.output - t.total) <= 6, 'the columns add up to TOTAL')
+    assert.ok(t.total > t.close + t.asr, 'TOTAL covers the whole timeline')
+  }
+  step('Informe R4-M al colgar', { turns: rows.length, medianTotalMs: rows.map(t => t.total).sort((a, b) => a - b)[rows.length >> 1], sample: rows[0] })
   await page.screenshot({ path: `${out}/call-390.png` })
+  await page.click('[data-testid="call-report-close"]'); assert.equal(await page.$('[data-testid="call-report"]'), null, 'the report closes')
 } finally {
   fs.writeFileSync(`${out}/call-e2e.json`, JSON.stringify({ log, chats }, null, 1)); await browser.close()
 }
