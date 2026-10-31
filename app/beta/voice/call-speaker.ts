@@ -7,9 +7,23 @@ import type { PlayerState } from './speech-player'
 export interface SocketLike { send(d: string): void; close(): void; onopen: ((e?: unknown) => void) | null; onmessage: ((e: { data: unknown }) => void) | null; onclose: ((e?: unknown) => void) | null; onerror: ((e?: unknown) => void) | null }
 export interface AudioLike {
   currentTime: number; destination: unknown; state?: string; resume?(): Promise<void>; close?(): Promise<void>
+  outputLatency?: number; baseLatency?: number
   createBuffer(ch: number, len: number, rate: number): { getChannelData(i: number): Float32Array; duration: number }
   createBufferSource(): { buffer: unknown; connect(d: unknown): void; start(t: number): void; stop(): void; onended: (() => void) | null }
 }
+/** R4-M: the marks of one spoken answer, in performance.now() ms. They only observe; nothing here changes what is spoken. */
+export interface SpeakMarks {
+  beginAt: number                 // the Tutor's stream opened (response headers)
+  firstSegmentAt: number | null   // the first sentence reached the speaker
+  firstSendAt: number | null      // its text was sent to the voice
+  firstAudioAt: number | null     // its first audio arrived
+  audibleAt: number | null        // estimated moment it is heard: scheduled start + the device's reported output latency
+  outputLatencyMs: number | null  // null when the browser does not report it
+  segments: number
+  gaps: number                    // audible silences: the timeline ran dry between chunks
+  gapMs: number
+}
+const newMarks = (beginAt: number): SpeakMarks => ({ beginAt, firstSegmentAt: null, firstSendAt: null, firstAudioAt: null, audibleAt: null, outputLatencyMs: null, segments: 0, gaps: 0, gapMs: 0 })
 interface Item { text: string; sent: boolean; startAt?: number; endAt?: number; samples: number }
 
 export class CallSpeaker {
@@ -31,8 +45,10 @@ export class CallSpeaker {
   /** The call's oral projection settings: owned by THIS speaker, so they live and die with the call. */
   oral: { lang: string } | null = null
   private rid: string | null = null   // id of the response whose audio may play now
+  /** Marks of the answer being spoken (R4-M instrumentation). */
+  marks: SpeakMarks = newMarks(0)
   private state: PlayerState = { messageId: null, status: 'idle', index: 0, total: 0, ended: true, rate: 1 }
-  constructor(private opts: { secret: () => string | null; onState: (s: PlayerState) => void; onLost?: () => void; createSocket?: (url: string, protocols: string[]) => SocketLike; createAudio?: () => AudioLike }) {}
+  constructor(private opts: { secret: () => string | null; onState: (s: PlayerState) => void; onLost?: () => void; onBegin?: (m: SpeakMarks) => void; createSocket?: (url: string, protocols: string[]) => SocketLike; createAudio?: () => AudioLike }) {}
 
   /** A user gesture creates the audio context once (autoplay policy, iOS). */
   unlock(): void {
@@ -65,11 +81,13 @@ export class CallSpeaker {
   begin(messageId: string, startedAt = performance.now()): void {
     this.stop(); this.unlock()
     this.msg = messageId; this.items = []; this.idx = 0; this.ended = false; this.startedAt = startedAt; this.cursor = 0
+    this.marks = newMarks(performance.now()); this.opts.onBegin?.(this.marks)
     this.set({ messageId, status: 'loading', index: 0, total: 0, ended: false, error: undefined, firstAudioMs: undefined })
   }
   enqueue(text: string): void {
     if (!this.msg || !text.trim()) return
-    this.items.push({ text, sent: false, samples: 0 }); this.set({ total: this.items.length }); this.pump()
+    if (this.marks.firstSegmentAt === null) this.marks.firstSegmentAt = performance.now()
+    this.items.push({ text, sent: false, samples: 0 }); this.marks.segments = this.items.length; this.set({ total: this.items.length }); this.pump()
   }
   end(): void { this.ended = true; this.set({ ended: true }); this.maybeFinish() }
   stop(): void {
@@ -102,6 +120,7 @@ export class CallSpeaker {
     if (!this.ready || !this.ws || this.inflight > 0 || this.active) return
     const it = this.items[this.idx]; if (!it || it.sent) return
     it.sent = true; this.active = it; this.inflight++; this.ignoring = false; this.rid = null
+    if (this.marks.firstSendAt === null) this.marks.firstSendAt = performance.now()
     try { this.ws.send(JSON.stringify(speakResponse(it.text))) } catch { this.inflight--; this.active = null; this.fail('no se pudo enviar el texto a la voz') }
   }
   private onEvent(raw: unknown): void {
@@ -129,7 +148,14 @@ export class CallSpeaker {
     const f = pcm16ToFloat(pcm), buf = this.ctx.createBuffer(1, f.length, CALL_SAMPLE_RATE)
     buf.getChannelData(0).set(f)
     const src = this.ctx.createBufferSource(); src.buffer = buf; src.connect(this.ctx.destination)
-    const t = Math.max(this.ctx.currentTime + 0.02, this.cursor)
+    const need = this.ctx.currentTime + 0.02
+    if (this.cursor > 0 && need > this.cursor + 0.005) { this.marks.gaps++; this.marks.gapMs += (need - this.cursor) * 1000 }   // the timeline ran dry: the student hears a silence
+    const t = Math.max(need, this.cursor)
+    if (this.marks.firstAudioAt === null) {
+      const out = this.ctx.outputLatency ?? this.ctx.baseLatency, now = performance.now()
+      this.marks.firstAudioAt = now; this.marks.outputLatencyMs = typeof out === 'number' ? Math.round(out * 1000) : null
+      this.marks.audibleAt = now + (t - this.ctx.currentTime) * 1000 + (typeof out === 'number' ? out * 1000 : 0)
+    }
     if (it.startAt === undefined) it.startAt = t
     src.start(t); this.cursor = t + buf.duration / this.rate; it.endAt = this.cursor; it.samples += f.length
     this.sources.push(src); src.onended = () => { this.sources = this.sources.filter(s => s !== src) }
