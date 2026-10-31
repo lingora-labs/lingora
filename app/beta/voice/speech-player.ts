@@ -19,6 +19,7 @@ export class SpeechPlayer {
   private url: string | null = null
   private msg: string | null = null
   private paused = false
+  private held = false
   private rate = 1
   private startedAt = 0
   private state: PlayerState = { messageId: null, status: 'idle', index: 0, total: 0, ended: true, rate: 1 }
@@ -26,6 +27,7 @@ export class SpeechPlayer {
 
   /** A user gesture must create the element once (autoplay policies, iOS). */
   unlock(): void {
+    if (this.held) return
     if (this.audio || (typeof window === 'undefined' && !this.opts.createAudio)) return
     this.audio = this.opts.createAudio ? this.opts.createAudio() : new Audio()
     this.audio.preload = 'auto'
@@ -36,12 +38,16 @@ export class SpeechPlayer {
   get current(): PlayerState { return this.state }
   get speaking(): boolean { return this.state.status === 'playing' || this.state.status === 'loading' }
 
+  /** While a call owns the audio, this player is silenced for good: it plays nothing, fetches nothing, whoever asks. */
+  hold(on: boolean): void { this.held = on; if (on) this.stop() }
   begin(messageId: string, startedAt = performance.now()): void {
+    if (this.held) return
     this.stop(); this.unlock()
     this.msg = messageId; this.items = []; this.idx = 0; this.ended = false; this.paused = false; this.startedAt = startedAt
     this.set({ messageId, status: 'loading', index: 0, total: 0, ended: false, error: undefined, firstAudioMs: undefined })
   }
   enqueue(text: string): void {
+    if (this.held) return
     if (!this.msg || !text.trim()) return
     this.items.push({ text })
     this.prefetch()
@@ -51,7 +57,7 @@ export class SpeechPlayer {
   end(): void { this.ended = true; this.set({ ended: true }); if (this.idx >= this.items.length && this.state.status !== 'playing') this.finish() }
 
   pause(): void { if (this.audio && this.state.status === 'playing') { this.audio.pause(); this.paused = true; this.set({ status: 'paused' }) } }
-  resume(): void { if (this.audio && this.state.status === 'paused') { this.paused = false; void this.audio.play(); this.set({ status: 'playing' }) } }
+  resume(): void { if (!this.held && this.audio && this.state.status === 'paused') { this.paused = false; void this.audio.play(); this.set({ status: 'playing' }) } }
   stop(): void {
     for (const it of this.items) it.ctrl?.abort()
     if (this.audio) { this.audio.pause(); this.audio.removeAttribute('src') }
@@ -62,6 +68,7 @@ export class SpeechPlayer {
   setRate(r: number): void { this.rate = r; if (this.audio) this.audio.playbackRate = r; this.set({ rate: r }) }
   /** Retry the segment that failed and continue; nothing already heard is repeated. */
   retry(): void {
+    if (this.held) return
     const it = this.items[this.idx]
     if (!it || this.state.status !== 'error') return
     it.blob = undefined; it.failed = false

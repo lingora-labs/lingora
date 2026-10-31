@@ -28,6 +28,9 @@ export class CallSpeaker {
   private sources: { stop(): void }[] = []
   private rate = 1
   private timer: ReturnType<typeof setInterval> | null = null
+  /** The call's oral projection settings: owned by THIS speaker, so they live and die with the call. */
+  oral: { lang: string } | null = null
+  private rid: string | null = null   // id of the response whose audio may play now
   private state: PlayerState = { messageId: null, status: 'idle', index: 0, total: 0, ended: true, rate: 1 }
   constructor(private opts: { secret: () => string | null; onState: (s: PlayerState) => void; onLost?: () => void; createSocket?: (url: string, protocols: string[]) => SocketLike; createAudio?: () => AudioLike }) {}
 
@@ -98,13 +101,19 @@ export class CallSpeaker {
   private pump(): void {
     if (!this.ready || !this.ws || this.inflight > 0 || this.active) return
     const it = this.items[this.idx]; if (!it || it.sent) return
-    it.sent = true; this.active = it; this.inflight++; this.ignoring = false
+    it.sent = true; this.active = it; this.inflight++; this.ignoring = false; this.rid = null
     try { this.ws.send(JSON.stringify(speakResponse(it.text))) } catch { this.inflight--; this.active = null; this.fail('no se pudo enviar el texto a la voz') }
   }
   private onEvent(raw: unknown): void {
-    let ev: { type?: string; delta?: string; error?: unknown }
+    let ev: { type?: string; delta?: string; error?: unknown; response_id?: string; response?: { id?: string } }
     try { ev = JSON.parse(String(raw)) } catch { return }
-    if (ev.type === 'response.output_audio.delta' && typeof ev.delta === 'string') { if (!this.ignoring && this.active) this.play(this.active, ev.delta); return }
+    if (ev.type === 'response.created') { if (!this.ignoring && this.active && this.rid === null && typeof ev.response?.id === 'string') this.rid = ev.response.id; return }
+    // Audio plays only for the response created for the CURRENT segment; anything else (a cancelled or stale response) is dropped.
+    if (ev.type === 'response.output_audio.delta' && typeof ev.delta === 'string') {
+      const mine = ev.response_id === undefined || this.rid === null || ev.response_id === this.rid
+      if (!this.ignoring && this.active && mine) this.play(this.active, ev.delta)
+      return
+    }
     if (ev.type === 'response.done') {
       this.inflight = Math.max(0, this.inflight - 1)
       if (this.inflight === 0) this.ignoring = false
@@ -115,6 +124,7 @@ export class CallSpeaker {
   }
   private play(it: Item, b64: string): void {
     if (!this.ctx) return
+    if (this.ctx.state && this.ctx.state !== 'running') void this.ctx.resume?.()   // a permission prompt or a call can leave the context suspended: never stay silent
     const pcm = base64ToPcm16(b64); if (!pcm.length) return
     const f = pcm16ToFloat(pcm), buf = this.ctx.createBuffer(1, f.length, CALL_SAMPLE_RATE)
     buf.getChannelData(0).set(f)

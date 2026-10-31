@@ -5,7 +5,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CallListener, type CallUtterance, type ListenStatus } from './call-listener'
 import { CallSpeaker } from './call-speaker'
-import { speechMode } from './speech-segmenter'
 import type { PlayerState } from './speech-player'
 
 export type CallPhase = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'error'
@@ -43,7 +42,7 @@ export function useCall(deps: CallDeps) {
 
   const hangUp = useCallback(() => {
     const c = r.current; if (!c) return
-    r.current = null; speechMode.oral = null
+    r.current = null
     c.ctl.abort(); c.turn?.abort(); c.pending = null
     c.listener.stop(); c.speaker.disconnect()
     void c.lock?.release().catch(() => {})
@@ -88,11 +87,12 @@ export function useCall(deps: CallDeps) {
     }
     secrets = await mint()
     if (!secrets) { setError('La llamada no está disponible ahora. Puedes seguir escribiendo.'); setPhase('error'); return }
-    speechMode.oral = { lang: (typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'es').slice(0, 2).toLowerCase() }
+    speaker.oral = { lang: d.current.language() ?? (typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'es').slice(0, 2).toLowerCase() }
     r.current = { speaker, listener, ctl, secrets, pending: null, turn: null, lock: null, retries: 0 }
     d.current.useSpeaker(speaker)
     speaker.connect()
     await listener.start()
+    speaker.unlock() // a permission prompt can suspend the audio: wake it once the user has already interacted
     if (listener.state === 'denied' || listener.state === 'unavailable') { hangUp(); setPhase('error'); return }
     try { const wl = (navigator as unknown as { wakeLock?: { request(t: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock; if (wl && r.current) r.current.lock = await wl.request('screen') } catch { /* optional */ }
     setPhase('live')

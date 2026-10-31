@@ -3,8 +3,9 @@
 // start on before the answer is finished. Each segment is spoken as its VISIBLE text (no Markdown syntax);
 // joined, the spoken segments are the visible text of the whole answer.
 // 7.6 R3: during a call the same segments are spoken in their ORAL projection (see oral.ts); the screen is unchanged.
+// The oral projection is passed in by the caller (the call's own speaker) — there is no shared state here.
 import { renderTutorMarkdown, visibleText } from '../../../lib/content/markdown'
-import { oralize, tableNotice } from './oral'
+import { oralize, tableNotice, textLang } from './oral'
 
 export const SEGMENT_MIN_CHARS = 24
 export const SEGMENT_MAX_CHARS = 420
@@ -16,9 +17,6 @@ export function spokenText(markdown: string): string {
   return visibleText(renderTutorMarkdown(markdown)).replace(/[*_`#>|]+/g, ' ').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim()
 }
 
-/** While a call lasts the whole page speaks the oral projection (set by the call, cleared on hang-up); otherwise the literal visible text. */
-export const speechMode: { oral: { lang: string } | null } = { oral: null }
-
 export class SpeechSegmenter {
   private buf = ''
   private inFence = false
@@ -27,9 +25,9 @@ export class SpeechSegmenter {
   private atLineStart = true
   private lineIsTable = false
   private inTable = false
+  private lastLang: string | null = null
   /** `oral`: speak the oral projection of the text (call mode) instead of the literal visible text. */
   constructor(private opts: { oral?: { lang: string } } = {}) {}
-  private get mode() { return this.opts.oral ?? speechMode.oral }
   /** Feed streamed text; returns the segments that became complete. */
   push(delta: string): string[] { this.buf += delta; return this.drain(false) }
   /** End of the answer: everything left is spoken. */
@@ -37,7 +35,7 @@ export class SpeechSegmenter {
 
   private drain(final: boolean): string[] {
     const out: string[] = []
-    const oral = this.mode
+    const oral = this.opts.oral
     const emit = (spoken: string) => {
       if (!spoken) return
       const s = this.carry ? `${this.carry}${oral && !/[.!?…:;,]$/.test(this.carry) ? '.' : ''} ${spoken}` : spoken
@@ -52,9 +50,10 @@ export class SpeechSegmenter {
       if (!oral) return emit(spokenText(raw))
       if (this.atLineStart) this.lineIsTable = /^\s*\|/.test(raw)
       this.atLineStart = raw.endsWith('\n')
-      if (this.lineIsTable) { if (!this.inTable) { this.inTable = true; emit(tableNotice(oral.lang)) }; return }
+      if (this.lineIsTable) { if (!this.inTable) { this.inTable = true; emit(tableNotice(this.lastLang ?? textLang(raw, oral.lang))) }; return }
       if (raw.trim()) this.inTable = false
-      emit(oralize(spokenText(raw), oral.lang))
+      const said = oralize(spokenText(raw), oral.lang); if (said) this.lastLang = textLang(said, oral.lang)
+      emit(said)
     }
     for (let cut = this.nextCut(); cut > 0; cut = this.nextCut()) {
       speak(this.buf.slice(0, cut))
