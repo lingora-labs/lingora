@@ -227,7 +227,7 @@ export default function BetaPageView() {
             <div ref={msgsEndRef} />
           </div>
           <div style={{ textAlign:'center', fontSize:11, color:'var(--dim)' }}>{copy.hint}</div>
-          <CallScreen phase={call.phase} listen={call.listen} partial={call.partial} level={call.level} muted={call.muted} loading={loading} state={playerState} mentorName={mm.name} error={call.error} onHangUp={call.hangUp} onMute={call.toggleMute} t={t} />
+          <CallScreen phase={call.phase} listen={call.listen} partial={call.partial} level={call.level} muted={call.muted} loading={loading} state={playerState} mentorName={mm.name} error={call.error} onHangUp={call.hangUp} onMute={call.toggleMute} report={call.report} onDismissReport={call.dismissReport} t={t} />
           <VoiceBar voiceMode={voiceMode} micStatus={voiceStatus} micError={voiceError} level={voiceLevel} loading={loading} player={player} state={playerState} mentorName={mm.name} />
           <div style={{ borderTop:'1px solid var(--border)', padding:'9px 12px 13px', display:'flex', alignItems:'flex-end', gap:8 }}>
             <button type="button" data-testid="call-start" disabled={call.active} aria-label={t('Llamar a ') + mm.name} title={t('Llamar: habla con naturalidad y puedes interrumpir')} onClick={() => { void call.start() }}
