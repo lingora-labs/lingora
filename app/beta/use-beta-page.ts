@@ -24,6 +24,9 @@ import { readLegacySession, clearLegacySession, spaceStore, strippedArtifact } f
 import { SpeechPlayer, type PlayerState } from './voice/speech-player'
 import { SpeechSegmenter, spokenText } from './voice/speech-segmenter'
 import { useVoiceConversation, pickRecorderMime, type Utterance } from './voice/use-voice'
+import { useCall } from './voice/use-call'
+import type { CallSpeaker } from './voice/call-speaker'
+import type { CallUtterance } from './voice/call-listener'
 
 const actionOf = (x: SuggestedAction): string => (x as unknown as { action?: string }).action ?? x.type ?? ''
 const LANGS: Lang[] = ['es','en','no','fr','de','it','pt','ar','ja','zh']
@@ -85,7 +88,9 @@ export function useBetaPage() {
   // 7.5 P1-A: one voice for the Tutor (the player), one microphone (hands-free conversation), one state.
   const voiceModeRef = useRef(false)
   const [voiceMode, setVoiceModeState] = useState(false)
-  const playerRef = useRef<SpeechPlayer | null>(null)
+  const playerRef = useRef<SpeechPlayer | CallSpeaker | null>(null)
+  const callActiveRef = useRef(false) // 7.6: while a call lasts, every answer is spoken by the call's speaker
+  const ownPlayerRef = useRef<SpeechPlayer | null>(null)
   const [player, setPlayer] = useState<SpeechPlayer | null>(null)
   const [playerState, setPlayerState] = useState<PlayerState | null>(null)
   const voiceTimingRef = useRef<Record<string, { firstTextMs: number | null; asrMs: number | null; asrModel: string | null; servedModel: string | null }>>({})
@@ -279,9 +284,9 @@ export function useBetaPage() {
     for (const s of [...seg.push(m.text), ...seg.flush()]) p.enqueue(s)
     p.end()
   }, [])
-  const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean; speak?: boolean; voiceStartedAt?: number; userMsgId?: string }) => {
+  const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean; speak?: boolean; voiceStartedAt?: number; userMsgId?: string; signal?: AbortSignal }) => {
     // 7.5 P1-A: a spoken answer starts with its first sentence, while the rest is still being written.
-    const speak = Boolean(opts?.speak || voiceModeRef.current) && !payload.uiAction
+    const speak = Boolean(opts?.speak || voiceModeRef.current || callActiveRef.current) && !payload.uiAction
     const segmenter = speak ? new SpeechSegmenter() : null
     const t0 = opts?.voiceStartedAt ?? performance.now()
     let firstDeltaMs: number | null = null
@@ -313,7 +318,7 @@ export function useBetaPage() {
       const conversationHistory = turn.conversationHistory
       const res = await fetch('/api/chat', {
         method: 'POST',
-        ...(pdfAbort ? { signal: pdfAbort.signal } : {}),
+        ...(pdfAbort ? { signal: pdfAbort.signal } : opts?.signal ? { signal: opts.signal } : {}),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
@@ -470,6 +475,11 @@ export function useBetaPage() {
         : ([{ type: 'export_chat_pdf', action: 'export_chat_pdf', label: 'Exportar PDF', tone: 'secondary' }]) })
       if (speak && text) speakMessage(msgsRef.current[msgsRef.current.length - 1])
     } catch (e) {
+      // 7.6 D-2: hanging up aborts the turn in flight. What was already written stays; nothing more is said or spoken.
+      if (opts?.signal?.aborted) {
+        msgsRef.current = msgsRef.current.map(m => m.complete === false ? { ...m, complete: true, interrupted: true } : m); setMsgs(msgsRef.current)
+        return
+      }
       lastCallFailedRef.current = true
       if (pdfRequest) { pdfFailure(explainPdfRequestFailure(e)); return }
       const m = e instanceof Error ? e.message : String(e)
@@ -695,8 +705,7 @@ export function useBetaPage() {
     return () => window.removeEventListener('lingora-quiz-continue', handler)
   }, [loading, callAPI, addMsg])
   // ── 7.5 P1-A: voice ─────────────────────────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const p = new SpeechPlayer({ mentor: () => mentorRef.current, onState: st => {
+  const handlePlayerState = useCallback((st: PlayerState) => {
       setPlayerState(st)
       // Latency evidence of a spoken answer: first text and first audio, measured from the end of speech.
       if (st.messageId && st.firstAudioMs !== undefined && voiceTimingRef.current[st.messageId] && !('firstAudioMs' in voiceTimingRef.current[st.messageId])) {
@@ -706,10 +715,12 @@ export function useBetaPage() {
         msgsRef.current = msgsRef.current.map(m => m.id === st.messageId ? { ...m, voiceTimings: t } : m)
         setMsgs(msgsRef.current)
       }
-    } })
+  }, [])
+  useEffect(() => {
+    const p = new SpeechPlayer({ mentor: () => mentorRef.current, onState: handlePlayerState })
     playerRef.current = p; setPlayer(p)
     return () => { p.stop(); playerRef.current = null }
-  }, [])
+  }, [handlePlayerState])
   useEffect(() => { loadingRef.current = loading }, [loading])
   const sendUtterance = useCallback(async (u: Utterance) => {
     const audioUrl = URL.createObjectURL(u.blob)
@@ -737,8 +748,32 @@ export function useBetaPage() {
   const setVoiceMode = useCallback(async (on: boolean) => {
     playerRef.current?.unlock()
     voiceModeRef.current = on; setVoiceModeState(on)
-    if (on) await voice.start(); else { voice.stop(); playerRef.current?.stop() }
+    if (on) await voice.start(); else { voice.stop(); pendingUtteranceRef.current = null; playerRef.current?.stop() }
   }, [voice])
+  // ── 7.6 R2: CALL MODE — the same chat, the same Tutor; only the way in and out is a live call ──────────────
+  const sendCallTurn = useCallback(async (u: CallUtterance, signal: AbortSignal) => {
+    const id = Date.now() + '-call-' + Math.random().toString(36).slice(2)
+    msgsRef.current = [...msgsRef.current, { id, sender: 'user', text: u.text, voice: { state: 'heard', uncertain: [], asrModel: 'live-transcribe', asrMs: u.asrMs } }]
+    setMsgs(msgsRef.current)
+    setSession(s => { const n = { ...s, samples: [...s.samples, u.text] }; sessionRef.current = n; return n })
+    await callAPI({ message: u.text, callTurn: true, asrMs: u.asrMs, ...(u.interruption ? { voiceInterruption: u.interruption } : {}) },
+      { speak: true, voiceStartedAt: u.endedAt - u.asrMs, signal })
+  }, [callAPI])
+  const call = useCall({
+    mentor: () => mentorRef.current, language: () => (BACKEND_LANG(langRef.current) === 'es' ? 'es' : undefined),
+    isLoading: () => loadingRef.current,
+    sendTurn: sendCallTurn,
+    useSpeaker: sp => {
+      if (sp) { ownPlayerRef.current = playerRef.current as SpeechPlayer | null; ownPlayerRef.current?.stop(); playerRef.current = sp; callActiveRef.current = true }
+      else { (playerRef.current as { disconnect?: () => void } | null)?.disconnect?.(); playerRef.current = ownPlayerRef.current; ownPlayerRef.current = null; callActiveRef.current = false }
+    },
+    onPlayerState: st => handlePlayerState(st),
+    onBargeIn: () => {
+      const id = playerRef.current?.current.messageId
+      if (id) { msgsRef.current = msgsRef.current.map(m => m.id === id ? { ...m, interrupted: true } : m); setMsgs(msgsRef.current) }
+    },
+  })
+  useEffect(() => { if (!loading) call.turnClosed() }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handler = (e: Event) => {
       const id = (e as CustomEvent).detail?.id as string | undefined
@@ -956,7 +991,7 @@ export function useBetaPage() {
     activeConversationId: conversationRef.current?.id ?? null,
     phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
-    voiceMode, setVoiceMode, voiceStatus: voice.status, voiceError: voice.error, voiceLevel: voice.level, player, playerState,
+    call, voiceMode, setVoiceMode, voiceStatus: voice.status, voiceError: voice.error, voiceLevel: voice.level, player, playerState,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   }
