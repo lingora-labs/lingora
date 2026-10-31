@@ -5,7 +5,9 @@ import { CALL_SAMPLE_RATE, REALTIME_URL, floatToPcm16, pcm16ToBase64, resampleLi
 import { Vad, frameDb, VAD_DEFAULTS, type VadOptions } from './vad'
 import type { SocketLike } from './call-speaker'
 
-export interface CallUtterance { text: string; voicedMs: number; durationMs: number; asrMs: number; endedAt: number; interruption: { heard: string } | null }
+// speechEndAt = end of the last frame with voice (the physical end of speech, within one 100 ms frame); commitAt = the VAD closed the
+// turn; transcriptAt = the final transcript arrived. All performance.now() values, used by the call report (R4-M).
+export interface CallUtterance { text: string; voicedMs: number; durationMs: number; asrMs: number; endedAt: number; interruption: { heard: string } | null; speechEndAt: number; commitAt: number; transcriptAt: number }
 export type ListenStatus = 'off' | 'requesting' | 'denied' | 'unavailable' | 'listening' | 'hearing' | 'transcribing'
 export const CALL_VAD: VadOptions = { ...VAD_DEFAULTS, endSilenceMs: 700 }
 const PREROLL_FRAMES = 6 // ~ the 400 ms before the VAD confirmed the onset
@@ -17,7 +19,7 @@ export class CallListener {
   private pre: Float32Array[] = []
   private streaming = false
   private partial = ''
-  private awaiting: { voicedMs: number; durationMs: number; commitAt: number; interruption: { heard: string } | null } | null = null
+  private awaiting: { voicedMs: number; durationMs: number; commitAt: number; speechEndAt: number; interruption: { heard: string } | null } | null = null
   private interruption: { heard: string } | null = null
   private stream: MediaStream | null = null
   private ctx: AudioContext | null = null
@@ -120,7 +122,7 @@ export class CallListener {
       this.streaming = false
       const interruption = this.interruption; this.interruption = null
       if (ev.voicedMs < 300) { this.send({ type: 'input_audio_buffer.clear' }); this.set('listening'); return }
-      this.awaiting = { voicedMs: ev.voicedMs, durationMs: ev.durationMs, commitAt: now, interruption }
+      this.awaiting = { voicedMs: ev.voicedMs, durationMs: ev.durationMs, commitAt: now, speechEndAt: ev.lastLoudAt, interruption }
       this.send({ type: 'input_audio_buffer.commit' }); this.set('transcribing')
     }
   }
@@ -136,7 +138,8 @@ export class CallListener {
       this.o.onPartial?.('')
       if (this.status === 'transcribing') this.set(this.streaming ? 'hearing' : 'listening')
       if (!a || !text) return
-      this.o.onUtterance({ text, voicedMs: a.voicedMs, durationMs: a.durationMs, asrMs: Math.max(0, Math.round(performance.now() - a.commitAt)), endedAt: performance.now(), interruption: a.interruption })
+      const at = performance.now()
+      this.o.onUtterance({ text, voicedMs: a.voicedMs, durationMs: a.durationMs, asrMs: Math.max(0, Math.round(at - a.commitAt)), endedAt: at, interruption: a.interruption, speechEndAt: a.speechEndAt, commitAt: a.commitAt, transcriptAt: at })
     }
   }
 }
