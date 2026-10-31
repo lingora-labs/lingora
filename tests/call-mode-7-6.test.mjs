@@ -152,12 +152,37 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   assert.equal(out.utt[0].text, 'Sigo aquí.')
 }
 
+// 4b. R3 oral projection: the screen keeps its table and symbols; the voice gets what a person would say.
+{
+  const { SpeechSegmenter } = load('app/beta/voice/speech-segmenter.ts'); const { oralize } = load('app/beta/voice/oral.ts')
+  const say = (md, chunk = 5, lang = 'es') => { const s = new SpeechSegmenter({ oral: { lang } }); const o = []; for (let i = 0; i < md.length; i += chunk) o.push(...s.push(md.slice(i, i + chunk))); return [...o, ...s.flush()] }
+  const md = '| Estructura | Uso |\n|---|---|\n| **ir a + lugar** | Indica el destino. |\n| **a + el = al** | Quiero **ir al museo**. |\n\n### Comparación clave\n\n- **Quiero ir a Barcelona.** → Barcelona es el destino.\n\n**Regla:** usamos **ir + a + lugar**. 😊\n'
+  const a = say(md), b = say(md, 1000)
+  assert.deepEqual(a, b) // the same speech however the text streams in
+  const spoken = a.join(' ')
+  assert.equal(a[0], 'Te dejo la tabla en la pantalla.') // announced once, never read cell by cell
+  assert.ok(!/Estructura|Indica el destino/.test(spoken))
+  assert.ok(!/[+=→|*#😊❌✅]/u.test(spoken)); assert.match(spoken, /ir más a más lugar/)
+  assert.equal(a.filter(x => x === 'Te dejo la tabla en la pantalla.').length, 1)
+  assert.equal(oralize('a + el = al', 'es'), 'a más el es al'); assert.equal(oralize('go + to', 'en'), 'go plus to')
+  assert.equal(oralize('❌ Puedo ir con tú. ✅ «¿Puedo ir contigo?» (o así)'), 'Puedo ir con tú. ¿Puedo ir contigo? o así')
+  assert.equal(say('Hola.', 5, 'en')[0], 'Hola.') // plain prose is untouched
+  // fewer seams: after the first segment, sentences are joined
+  const prose = 'Claro, vamos a practicar. Dime qué hiciste hoy en tu trabajo. Después hablamos de tus planes para el fin de semana. Y si quieres, también de viajes.\n'
+  assert.ok(say(prose, 7).length <= 3)
+  // outside a call the literal visible text is spoken; the mode is global to the call and cleared on hang-up
+  const { speechMode } = load('app/beta/voice/speech-segmenter.ts')
+  const lit = new SpeechSegmenter(); assert.ok(!/Te dejo/.test([...lit.push('| a | b |\n'), ...lit.flush()].join(' ')))
+  speechMode.oral = { lang: 'es' }; const inCall = new SpeechSegmenter(); assert.equal([...inCall.push('| a | b |\n'), ...inCall.flush()][0], 'Te dejo la tabla en la pantalla.'); speechMode.oral = null
+}
+
 // 5. Static contracts of the integration (hang-up rules, same chat, no second authoring path).
 const page = fs.readFileSync('app/beta/use-beta-page.ts', 'utf8'), hook = fs.readFileSync('app/beta/voice/use-call.ts', 'utf8')
 const chat = fs.readFileSync('server/api/chat-entry.ts', 'utf8'), view = fs.readFileSync('app/beta/beta-page-view.tsx', 'utf8')
 assert.match(hook, /ctl\.abort\(\); c\.turn\?\.abort\(\); c\.pending = null/)   // D-1/D-2: hang up aborts the turns and drops what was pending
 assert.match(hook, /c\.listener\.resume\(\)/)                                     // reconnect reopens recognition
 assert.match(hook, /c\.pending = u; c\.turn\?\.abort\(\)/)                        // a new utterance cuts the Tutor turn in flight instead of waiting for it
+assert.match(hook, /speechMode\.oral = \{ lang/); assert.match(hook, /r\.current = null; speechMode\.oral = null/) // the call speaks the oral projection; hang-up restores the literal text
 assert.match(hook, /wakeLock/)                                                    // D-5
 assert.match(page, /opts\?\.signal\?\.aborted/)                                   // aborted turn returns silently, nothing spoken
 assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)              // D-1 for the legacy path
