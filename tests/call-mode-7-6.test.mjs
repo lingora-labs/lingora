@@ -33,12 +33,14 @@ const { POST } = load('server/api/call-session-entry.ts')
 const realFetch = globalThis.fetch
 let minted = []
 globalThis.fetch = async (url, init) => { minted.push({ url: String(url), auth: init.headers.Authorization, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ value: 'ek_' + minted.length }), { status: 200 }) }
-const req = (body, headers = {}) => new NextRequest('http://localhost/api/call/session', { method: 'POST', headers: { host: 'localhost', ...headers }, body: JSON.stringify(body) })
+const req = (body, headers = {}) => new NextRequest('http://localhost/api/call/session', { method: 'POST', headers: { host: 'localhost', origin: 'http://localhost', ...headers }, body: JSON.stringify(body) })
 let res = await POST(req({ mentor: 'alex', language: 'es-ES' })); let j = await res.json()
 assert.equal(res.status, 200); assert.ok(j.stt && j.tts); assert.equal(j.voice, 'cedar'); assert.ok(!JSON.stringify(j).includes('sk-test'))
 assert.equal(minted.length, 2); assert.ok(minted.every(m => m.url.endsWith('/v1/realtime/client_secrets') && m.auth === 'Bearer sk-test-only-0000'))
-assert.equal(minted[0].body.expires_after.seconds, 300); assert.deepEqual(minted[0].body.session.audio.input.transcription.languages, ['es'])
+assert.equal(minted[0].body.expires_after.seconds, 60); assert.deepEqual(minted[0].body.session.audio.input.transcription.languages, ['es'])
 res = await POST(req({}, { origin: 'https://evil.example' })); assert.equal(res.status, 403)
+res = await POST(new NextRequest('http://localhost/api/call/session', { method: 'POST', headers: { host: 'localhost' }, body: '{}' })); assert.equal(res.status, 403) // no Origin: not the app
+res = await POST(req({}, { 'sec-fetch-site': 'cross-site' })); assert.equal(res.status, 403)
 globalThis.fetch = async () => new Response('{"error":{"message":"secret provider text"}}', { status: 500 })
 res = await POST(req({})); j = await res.json(); assert.equal(res.status, 502); assert.deepEqual(j, { error: 'call_unavailable' })
 const savedKey = process.env.OPENAI_API_KEY; delete process.env.OPENAI_API_KEY
@@ -138,15 +140,28 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   drive(l, [...Array(8).fill(quiet), ...Array(8).fill(loud), ...Array(9).fill(quiet)])
   assert.equal(sock.sent.length, 0); assert.equal(out.utt.length, 0)
 }
+{ // P0 reconnect: after the socket drops with the mic still open, resume() reopens recognition (start() would return early)
+  const socks = []; const out = { utt: [], lost: 0 }
+  const l = new CallListener({ secret: () => 'ek', speaking: () => false, heard: () => '', onStatus() {}, onBargeIn() {}, onUtterance: u => out.utt.push(u), onLost: () => out.lost++, createSocket: () => { const s = mkSocket(); socks.push(s); return s } })
+  l.stream = { getTracks: () => [] } // microphone already open
+  l.openSocket(); socks[0].onopen(); socks[0].onclose(); assert.equal(out.lost, 1)
+  l.resume(); assert.equal(socks.length, 2); socks[1].onopen()
+  drive(l, [...Array(8).fill(quiet), ...Array(8).fill(loud), ...Array(9).fill(quiet)])
+  assert.ok(socks[1].sent.some(m => m.type === 'input_audio_buffer.commit'))
+  socks[1].onmessage({ data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'Sigo aquí.' }) })
+  assert.equal(out.utt[0].text, 'Sigo aquí.')
+}
 
 // 5. Static contracts of the integration (hang-up rules, same chat, no second authoring path).
 const page = fs.readFileSync('app/beta/use-beta-page.ts', 'utf8'), hook = fs.readFileSync('app/beta/voice/use-call.ts', 'utf8')
 const chat = fs.readFileSync('server/api/chat-entry.ts', 'utf8'), view = fs.readFileSync('app/beta/beta-page-view.tsx', 'utf8')
-assert.match(hook, /ctl\.abort\(\); c\.pending = null/)                       // D-1/D-2: hang up aborts the turn and drops what was pending
-assert.match(hook, /wakeLock/)                                                  // D-5
-assert.match(page, /opts\?\.signal\?\.aborted/)                                 // aborted turn returns silently, nothing spoken
-assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)            // D-1 for the legacy path
-assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)               // the call's turns reach the same Tutor with voice facts
+assert.match(hook, /ctl\.abort\(\); c\.turn\?\.abort\(\); c\.pending = null/)   // D-1/D-2: hang up aborts the turns and drops what was pending
+assert.match(hook, /c\.listener\.resume\(\)/)                                     // reconnect reopens recognition
+assert.match(hook, /c\.pending = u; c\.turn\?\.abort\(\)/)                        // a new utterance cuts the Tutor turn in flight instead of waiting for it
+assert.match(hook, /wakeLock/)                                                    // D-5
+assert.match(page, /opts\?\.signal\?\.aborted/)                                   // aborted turn returns silently, nothing spoken
+assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)              // D-1 for the legacy path
+assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)                 // the call's turns reach the same Tutor with voice facts
 assert.match(view, /data-testid="call-start"/); assert.match(view, /<CallScreen/)
-assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                  // D-4: no hard-coded mentor name
+assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                    // D-4: no hard-coded mentor name
 console.log('call-mode-7-6: all assertions passed')
