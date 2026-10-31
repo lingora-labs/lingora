@@ -192,6 +192,40 @@ const drive = (l, seq, t0 = 1000) => { let t = t0; for (const fr of seq) { l.fra
   assert.equal(say('This is an explanation for you today.\n| a | b |\n', 5, 'en').at(-1), "I've put the table on your screen.")
 }
 
+// 4c. R4-M: the instrument. Marks are observational; the report decomposes the SAME timeline, from the last voiced frame to the first audible sound.
+{
+  const { l, sock, out } = mkListener()
+  drive(l, [...Array(8).fill(quiet), ...Array(8).fill(loud), ...Array(9).fill(quiet)]) // loud frames i=8..15 → t=1800..2500
+  sock.onmessage({ data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'Hola de nuevo.' }) })
+  const u = out.utt[0]
+  assert.equal(u.speechEndAt, 1000 + 15 * 100)                      // the last frame with voice, not "close minus a constant"
+  assert.equal(u.commitAt - u.speechEndAt, 700)                      // the 700 ms of silence the turn waits for are now visible
+  assert.equal(typeof u.transcriptAt, 'number') // (this test drives frames with a synthetic clock; the ordering transcriptAt >= commitAt is checked in the e2e on the real clock)
+  const { buildReport, turnTimes } = load('app/beta/voice/call-report.ts')
+  const { sp, sock: ts, audio } = mkSpeaker(); const marksSeen = []; sp.opts.onBegin = m => marksSeen.push(m)
+  let nowMs = 10000; const realNow = performance.now.bind(performance); performance.now = () => nowMs
+  try {
+    audio.outputLatency = 0.04
+    sp.begin('r1', 9000); assert.equal(marksSeen.length, 1)
+    nowMs = 10120; sp.enqueue('Primera frase.'); ts.onopen(); nowMs = 10130
+    nowMs = 10400; ts.onmessage({ data: JSON.stringify({ type: 'response.output_audio.delta', delta: chunk(100) }) })
+    const m = marksSeen[0]
+    assert.equal(m.firstSegmentAt, 10120); assert.equal(m.firstSendAt, 10120); assert.equal(m.firstAudioAt, 10400)
+    assert.equal(m.outputLatencyMs, 40); assert.ok(Math.abs(m.audibleAt - (10400 + 20 + 40)) < 1e-6) // scheduled 20 ms ahead + reported output latency
+    // a second chunk that arrives after the timeline ran dry is an audible silence and is counted
+    audio.currentTime = 5; nowMs = 11000; ts.onmessage({ data: JSON.stringify({ type: 'response.output_audio.delta', delta: chunk(100) }) })
+    assert.equal(m.gaps, 1); assert.ok(m.gapMs > 4000)
+    const trace = { n: 1, speechEndAt: 9000, commitAt: 9700, transcriptAt: 9950, sendAt: 9960, speak: { ...m, beginAt: 10050, gaps: 0, gapMs: 0 } }
+    const tt = turnTimes(trace)
+    assert.equal(tt.close, 700); assert.equal(tt.asr, 250); assert.equal(tt.hold, 10); assert.equal(tt.tutorHeaders, 90); assert.equal(tt.firstSegment, 70)
+    assert.equal(tt.close + tt.asr + tt.hold + tt.tutorHeaders + tt.firstSegment + tt.voiceWait + tt.voice + tt.output, tt.total) // the columns ARE the timeline
+    assert.equal(turnTimes({ ...trace, speak: null }), null) // a turn that never sounded is not measured as if it had
+    const rep = buildReport([trace, { ...trace, n: 2, speak: null }], new Date(0))
+    assert.match(rep, /2 turnos hablados, 1 con respuesta audible/); assert.match(rep, /TOTAL/); assert.match(rep, /JSON: \[/)
+    assert.match(buildReport([{ ...trace, speak: null }]), /Ningún turno llegó a sonar/)
+  } finally { performance.now = realNow; sp.disconnect() }
+}
+
 // 5. Static contracts of the integration (hang-up rules, same chat, no second authoring path).
 const page = fs.readFileSync('app/beta/use-beta-page.ts', 'utf8'), hook = fs.readFileSync('app/beta/voice/use-call.ts', 'utf8')
 const chat = fs.readFileSync('server/api/chat-entry.ts', 'utf8'), view = fs.readFileSync('app/beta/beta-page-view.tsx', 'utf8')
@@ -205,6 +239,7 @@ assert.ok(!/\bspeechMode\b/.test(hook + page))
 assert.match(page, /opts\?\.signal\?\.aborted/)                                 // aborted turn returns silently, nothing spoken
 assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)            // D-1 for the legacy path
 assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)                                   // the call's turns reach the same Tutor with voice facts
+assert.match(view, /report=\{call\.report\}/); assert.match(hook, /buildReport\(c\.turns\)/) // the call's numbers reach the screen
 assert.match(view, /data-testid="call-start"/); assert.match(view, /<CallScreen/)
 assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                  // D-4: no hard-coded mentor name
 console.log('call-mode-7-6: all assertions passed')
