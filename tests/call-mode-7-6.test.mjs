@@ -146,7 +146,7 @@ assert.match(hook, /ctl\.abort\(\); c\.pending = null/)                       //
 assert.match(hook, /wakeLock/)                                                  // D-5
 assert.match(page, /opts\?\.signal\?\.aborted/)                                 // aborted turn returns silently, nothing spoken
 assert.match(page, /pendingUtteranceRef\.current = null; playerRef/)            // D-1 for the legacy path
-assert.match(chat, /body\.callTurn === true/)                                   // the call's turns reach the same Tutor with voice facts
+assert.match(chat, /callTurn\?: boolean \}\)\.callTurn === true/)               // the call's turns reach the same Tutor with voice facts
 assert.match(view, /data-testid="call-start"/); assert.match(view, /<CallScreen/)
 assert.ok(!/mentorName=\{?'?Sarah/.test(view))                                  // D-4: no hard-coded mentor name
 console.log('call-mode-7-6: all assertions passed')
