@@ -1,3 +1,0 @@
-{
-  "buildCommand": "node scripts/diag-r2-protocol.mjs; npm run build"
-}
