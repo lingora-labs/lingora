@@ -1,5 +1,6 @@
 'use client'
 import { VoiceBar } from './voice/voice-bar'
+import { CallScreen } from './voice/call-screen'
 import React from 'react'
 import { SeedLocaleProvider, useSeedLocaleDictionary } from './seed-locale'
 import { chromeLessonLabel, chromeLevelLabel } from './chrome-gate'
@@ -17,7 +18,7 @@ export default function BetaPageView() {
     space, spaceNotice, spaceActions, newConversation, openConversation, deleteConversation, deleteSpace, activeConversationId,
     phase, setPhase, hydrated, persistWarning, resetChat, registerExport, splashMsg, splashRev, lang, setLang, pickLang, pickOther, otherLang, mentor, setMentor, topic, setTopic,
     msgs, input, setInput, loading, recording, showExport, setShowExport, activeMode, setActiveMode,
-    voiceMode, setVoiceMode, voiceStatus, voiceError, voiceLevel, player, playerState,
+    call, voiceMode, setVoiceMode, voiceStatus, voiceError, voiceLevel, player, playerState,
     pendingAudioBlob, pendingAudioUrl, pendingFiles, setPendingFiles, setPendingAudioUrl, setPendingAudioBlob,
     fileInputRef, session, msgsEndRef, taRef, mm, copy, sendComposer, startChat, selectMode, toggleRec, handleFile,
   } = useBetaPage()
@@ -226,10 +227,11 @@ export default function BetaPageView() {
             <div ref={msgsEndRef} />
           </div>
           <div style={{ textAlign:'center', fontSize:11, color:'var(--dim)' }}>{copy.hint}</div>
+          <CallScreen phase={call.phase} listen={call.listen} partial={call.partial} level={call.level} muted={call.muted} loading={loading} state={playerState} mentorName={mm.name} error={call.error} onHangUp={call.hangUp} onMute={call.toggleMute} t={t} />
           <VoiceBar voiceMode={voiceMode} micStatus={voiceStatus} micError={voiceError} level={voiceLevel} loading={loading} player={player} state={playerState} mentorName={mm.name} />
           <div style={{ borderTop:'1px solid var(--border)', padding:'9px 12px 13px', display:'flex', alignItems:'flex-end', gap:8 }}>
-            <button type="button" data-testid="voice-mode" aria-pressed={voiceMode} title={t("Conversación por voz: habla con naturalidad; puedes interrumpir")} onClick={() => { void setVoiceMode(!voiceMode) }}
-              style={{ height:44, padding:'0 12px', borderRadius:22, border:`1px solid ${voiceMode ? 'var(--teal)' : 'var(--border)'}`, background: voiceMode ? 'rgba(0,201,167,.12)' : 'transparent', color: voiceMode ? 'var(--teal)' : 'var(--muted)', cursor:'pointer', fontSize:12, fontWeight:700 }}>{voiceMode ? t('Voz ●') : t('Conversar')}</button>
+            <button type="button" data-testid="call-start" disabled={call.active} aria-label={t('Llamar a ') + mm.name} title={t('Llamar: habla con naturalidad y puedes interrumpir')} onClick={() => { void call.start() }}
+              style={{ height:44, padding:'0 14px', borderRadius:22, border:'1px solid var(--teal)', background:'rgba(0,201,167,.12)', color:'var(--teal)', cursor: call.active ? 'default' : 'pointer', opacity: call.active ? .5 : 1, fontSize:12, fontWeight:800 }}>{t('Llamar')}</button>
             <button onClick={toggleRec} style={{ width:44, height:44, borderRadius:'50%', border:`1px solid ${recording ? 'var(--coral)' : 'var(--border)'}`, background: recording ? 'rgba(255,107,107,.1)' : 'transparent', color: recording ? 'var(--coral)' : 'var(--muted)', cursor:'pointer' }}>{recording ? t('Stop') : t('Mic')}</button>
             <label style={{ width:44, height:44, borderRadius:'50%', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'var(--muted)' }}>
               +
