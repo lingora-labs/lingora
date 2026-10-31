@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CallListener, type CallUtterance, type ListenStatus } from './call-listener'
 import { CallSpeaker } from './call-speaker'
+import { buildReport, type CallTurnTrace } from './call-report'
 import type { PlayerState } from './speech-player'
 
 export type CallPhase = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'error'
@@ -29,7 +30,8 @@ export function useCall(deps: CallDeps) {
   const [error, setError] = useState<string | null>(null)
   const [muted, setMuted] = useState(false)
   const d = useRef(deps); d.current = deps
-  const r = useRef<{ speaker: CallSpeaker; listener: CallListener; ctl: AbortController; secrets: Secrets; pending: CallUtterance | null; turn: AbortController | null; lock: { release(): Promise<void> } | null; retries: number } | null>(null)
+  const r = useRef<{ speaker: CallSpeaker; listener: CallListener; ctl: AbortController; secrets: Secrets; pending: CallUtterance | null; turn: AbortController | null; lock: { release(): Promise<void> } | null; retries: number; turns: CallTurnTrace[]; traces: WeakMap<CallUtterance, CallTurnTrace> } | null>(null)
+  const [report, setReport] = useState<string | null>(null)
 
   const mint = useCallback(async (): Promise<Secrets | null> => {
     try {
@@ -43,6 +45,7 @@ export function useCall(deps: CallDeps) {
   const hangUp = useCallback(() => {
     const c = r.current; if (!c) return
     r.current = null
+    if (c.turns.length) setReport(buildReport(c.turns))   // R4-M: the numbers of this call stay on screen after hanging up
     c.ctl.abort(); c.turn?.abort(); c.pending = null
     c.listener.stop(); c.speaker.disconnect()
     void c.lock?.release().catch(() => {})
@@ -53,6 +56,7 @@ export function useCall(deps: CallDeps) {
   const send = useCallback((u: CallUtterance) => {
     const c = r.current; if (!c) return
     // One controller per turn, tied to the call's: hanging up aborts every turn; a new utterance aborts only the one in flight.
+    const tr = c.traces.get(u); if (tr) tr.sendAt = performance.now()
     const turn = new AbortController(); c.turn = turn
     const onCall = () => turn.abort(); c.ctl.signal.addEventListener('abort', onCall, { once: true })
     void d.current.sendTurn(u, turn.signal).finally(() => { c.ctl.signal.removeEventListener('abort', onCall); if (c.turn === turn) c.turn = null })
@@ -64,7 +68,9 @@ export function useCall(deps: CallDeps) {
     // Everything that needs a user gesture happens before the first await.
     let secrets: Secrets | null = null
     const ctl = new AbortController()
-    const speaker = new CallSpeaker({ secret: () => secrets?.tts ?? null, onState: s => d.current.onPlayerState(s), onLost: () => void reconnect() })
+    const speaker = new CallSpeaker({ secret: () => secrets?.tts ?? null, onState: s => d.current.onPlayerState(s), onLost: () => void reconnect(),
+      // R4-M: the answer that starts now belongs to the latest turn that left for the Tutor and has no answer yet.
+      onBegin: m => { const c = r.current; const t = c && [...c.turns].reverse().find(x => x.sendAt !== null && x.speak === null); if (t) t.speak = m } })
     speaker.unlock()
     const listener = new CallListener({
       secret: () => secrets?.stt ?? null,
@@ -73,7 +79,9 @@ export function useCall(deps: CallDeps) {
       onStatus: (s, e) => { setListen(s); if (e) setError(e) },
       onLevel: setLevel, onPartial: setPartial,
       onBargeIn: heard => { speaker.stop(); d.current.onBargeIn(heard) },
-      onUtterance: u => { const c = r.current; if (!c) return; if (d.current.isLoading()) { c.pending = u; c.turn?.abort() } else send(u) },
+      onUtterance: u => { const c = r.current; if (!c) return
+        const tr: CallTurnTrace = { n: c.turns.length + 1, speechEndAt: u.speechEndAt, commitAt: u.commitAt, transcriptAt: u.transcriptAt, sendAt: null, speak: null }; c.turns.push(tr); c.traces.set(u, tr)
+        if (d.current.isLoading()) { c.pending = u; c.turn?.abort() } else send(u) },
       onLost: () => void reconnect(),
     })
     const reconnect = async () => {
@@ -88,7 +96,8 @@ export function useCall(deps: CallDeps) {
     secrets = await mint()
     if (!secrets) { setError('La llamada no está disponible ahora. Puedes seguir escribiendo.'); setPhase('error'); return }
     speaker.oral = { lang: d.current.language() ?? (typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'es').slice(0, 2).toLowerCase() }
-    r.current = { speaker, listener, ctl, secrets, pending: null, turn: null, lock: null, retries: 0 }
+    setReport(null)
+    r.current = { speaker, listener, ctl, secrets, pending: null, turn: null, lock: null, retries: 0, turns: [], traces: new WeakMap() }
     d.current.useSpeaker(speaker)
     speaker.connect()
     await listener.start()
@@ -115,5 +124,6 @@ export function useCall(deps: CallDeps) {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
   useEffect(() => () => hangUp(), [hangUp])
-  return { phase, active: phase !== 'idle' && phase !== 'error', listen, partial, level, error, muted, start, hangUp, turnClosed, toggleMute }
+  const dismissReport = useCallback(() => setReport(null), [])
+  return { report, dismissReport, phase, active: phase !== 'idle' && phase !== 'error', listen, partial, level, error, muted, start, hangUp, turnClosed, toggleMute }
 }
