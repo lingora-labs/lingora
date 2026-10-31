@@ -275,19 +275,21 @@ export function useBetaPage() {
     return resetInProgressRef.current || sessionRef.current.sessionId !== expectedSessionId
       ? 'cancelled' : status
   }, [saveActive])
+  // The oral projection belongs to the call's own speaker: outside a call the voice reads the literal visible text.
+  const segmenterFor = () => { const o = (playerRef.current as { oral?: { lang: string } | null } | null)?.oral; return new SpeechSegmenter(o ? { oral: o } : {}) }
   // Speak a message the student already has on screen (no new Tutor turn): its visible text, in segments.
   const speakMessage = useCallback((m: Msg | undefined) => {
     const p = playerRef.current
     if (!p || !m || m.sender === 'user' || m.sender === 'ln' || !m.text?.trim()) return
     p.begin(m.id)
-    const seg = new SpeechSegmenter()
+    const seg = segmenterFor()
     for (const s of [...seg.push(m.text), ...seg.flush()]) p.enqueue(s)
     p.end()
   }, [])
   const callAPI = useCallback(async (payload: Record<string, unknown>, opts?: { retryTargetId?: string; rewindToLastUser?: boolean; speak?: boolean; voiceStartedAt?: number; userMsgId?: string; signal?: AbortSignal }) => {
     // 7.5 P1-A: a spoken answer starts with its first sentence, while the rest is still being written.
     const speak = Boolean(opts?.speak || voiceModeRef.current || callActiveRef.current) && !payload.uiAction
-    const segmenter = speak ? new SpeechSegmenter() : null
+    const segmenter = speak ? segmenterFor() : null
     const t0 = opts?.voiceStartedAt ?? performance.now()
     let firstDeltaMs: number | null = null
     const filterPdfActions = (items:SuggestedAction[]):SuggestedAction[] => items
@@ -764,8 +766,8 @@ export function useBetaPage() {
     isLoading: () => loadingRef.current,
     sendTurn: sendCallTurn,
     useSpeaker: sp => {
-      if (sp) { ownPlayerRef.current = playerRef.current as SpeechPlayer | null; ownPlayerRef.current?.stop(); playerRef.current = sp; callActiveRef.current = true }
-      else { (playerRef.current as { disconnect?: () => void } | null)?.disconnect?.(); playerRef.current = ownPlayerRef.current; ownPlayerRef.current = null; callActiveRef.current = false }
+      if (sp) { ownPlayerRef.current = playerRef.current as SpeechPlayer | null; ownPlayerRef.current?.hold(true); playerRef.current = sp; callActiveRef.current = true }
+      else { (playerRef.current as { disconnect?: () => void } | null)?.disconnect?.(); ownPlayerRef.current?.hold(false); playerRef.current = ownPlayerRef.current; ownPlayerRef.current = null; callActiveRef.current = false }
     },
     onPlayerState: st => handlePlayerState(st),
     onBargeIn: () => {
