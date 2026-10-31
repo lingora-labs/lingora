@@ -25,7 +25,9 @@ export async function GET() {
     },
     capabilityTruth: {
       persistentStorage: storageConfigured && awsConfigured,
-      tts: ttsEnabled,
+      // 7.6 D-3: the voice endpoints depend on the provider key, not on LINGORA_TTS_ENABLED (legacy flag, kept above).
+      tts: Boolean(process.env.OPENAI_API_KEY),
+      call: Boolean(process.env.OPENAI_API_KEY),
     },
   })
 }
