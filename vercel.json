@@ -1,0 +1,3 @@
+{
+  "buildCommand": "node scripts/diag-r1-speech.mjs; npm run build"
+}
