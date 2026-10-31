@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { callVoiceFor, sttSessionConfig, ttsSessionConfig } from '../../lib/voice/call/protocol'
 
 const SECRET_URL = 'https://api.openai.com/v1/realtime/client_secrets'
-const TTL_SECONDS = 300
+const TTL_SECONDS = 60 // the browser connects right after minting; a leaked secret is useless a minute later
 
 async function mint(session: unknown, key: string): Promise<string | null> {
   try {
@@ -18,7 +18,9 @@ async function mint(session: unknown, key: string): Promise<string | null> {
 }
 
 function sameOrigin(req: NextRequest): boolean {
-  const o = req.headers.get('origin'); if (!o) return true
+  // A browser always sends Origin on this POST; a missing one is a script, not the app.
+  const o = req.headers.get('origin'); if (!o) return false
+  const site = req.headers.get('sec-fetch-site'); if (site && site !== 'same-origin') return false
   try { return new URL(o).host === (req.headers.get('x-forwarded-host') || req.headers.get('host')) } catch { return false }
 }
 
