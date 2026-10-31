@@ -285,6 +285,15 @@ export async function POST(req: NextRequest): Promise<NextResponse | Response> {
       audioTranscript = rec.text;
     }
 
+    // 7.6 R2 — CALL MODE turns arrive already transcribed by the live listener: same Tutor, same facts as a spoken turn.
+    else if ((body as { callTurn?: boolean }).callTurn === true && typeof message === 'string' && message.trim()) {
+      const heard = body.voiceInterruption && typeof body.voiceInterruption === 'object' && typeof (body.voiceInterruption as { heard?: unknown }).heard === 'string'
+        ? String((body.voiceInterruption as { heard: string }).heard).slice(-600) : null;
+      const rawAsr = (body as { asrMs?: unknown }).asrMs;
+      const asrMs = typeof rawAsr === 'number' && Number.isFinite(rawAsr) ? Math.max(0, Math.round(rawAsr)) : 0;
+      voiceTurn = { transcript: message.trim(), uncertain: [], asrModel: 'live-transcribe', asrMs, interruptedTutor: heard ? { heard } : null, clientSpeech: true };
+    }
+
     const rawMessageForNormalization =
       hasAudio && (message ?? '').trim() !== '' && AUDIO_FILENAME_RE.test((message ?? '').trim())
         ? ''
