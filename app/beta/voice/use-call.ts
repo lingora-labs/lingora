@@ -29,7 +29,7 @@ export function useCall(deps: CallDeps) {
   const [error, setError] = useState<string | null>(null)
   const [muted, setMuted] = useState(false)
   const d = useRef(deps); d.current = deps
-  const r = useRef<{ speaker: CallSpeaker; listener: CallListener; ctl: AbortController; secrets: Secrets; pending: CallUtterance | null; lock: { release(): Promise<void> } | null; retries: number } | null>(null)
+  const r = useRef<{ speaker: CallSpeaker; listener: CallListener; ctl: AbortController; secrets: Secrets; pending: CallUtterance | null; turn: AbortController | null; lock: { release(): Promise<void> } | null; retries: number } | null>(null)
 
   const mint = useCallback(async (): Promise<Secrets | null> => {
     try {
@@ -43,7 +43,7 @@ export function useCall(deps: CallDeps) {
   const hangUp = useCallback(() => {
     const c = r.current; if (!c) return
     r.current = null
-    c.ctl.abort(); c.pending = null
+    c.ctl.abort(); c.turn?.abort(); c.pending = null
     c.listener.stop(); c.speaker.disconnect()
     void c.lock?.release().catch(() => {})
     d.current.useSpeaker(null)
@@ -52,7 +52,10 @@ export function useCall(deps: CallDeps) {
 
   const send = useCallback((u: CallUtterance) => {
     const c = r.current; if (!c) return
-    void d.current.sendTurn(u, c.ctl.signal)
+    // One controller per turn, tied to the call's: hanging up aborts every turn; a new utterance aborts only the one in flight.
+    const turn = new AbortController(); c.turn = turn
+    const onCall = () => turn.abort(); c.ctl.signal.addEventListener('abort', onCall, { once: true })
+    void d.current.sendTurn(u, turn.signal).finally(() => { c.ctl.signal.removeEventListener('abort', onCall); if (c.turn === turn) c.turn = null })
   }, [])
 
   const start = useCallback(async () => {
@@ -70,7 +73,7 @@ export function useCall(deps: CallDeps) {
       onStatus: (s, e) => { setListen(s); if (e) setError(e) },
       onLevel: setLevel, onPartial: setPartial,
       onBargeIn: heard => { speaker.stop(); d.current.onBargeIn(heard) },
-      onUtterance: u => { const c = r.current; if (!c) return; if (d.current.isLoading()) c.pending = u; else send(u) },
+      onUtterance: u => { const c = r.current; if (!c) return; if (d.current.isLoading()) { c.pending = u; c.turn?.abort() } else send(u) },
       onLost: () => void reconnect(),
     })
     const reconnect = async () => {
@@ -79,12 +82,12 @@ export function useCall(deps: CallDeps) {
       const s = await mint(); if (!r.current) return
       if (!s) { setError('Se perdió la conexión de voz. Vuelve a llamar.'); setPhase('error'); hangUp(); return }
       c.secrets = s; secrets = s
-      c.speaker.connect(); await c.listener.start().catch(() => {})
+      c.speaker.connect(); c.listener.resume()
       setPhase('live')
     }
     secrets = await mint()
     if (!secrets) { setError('La llamada no está disponible ahora. Puedes seguir escribiendo.'); setPhase('error'); return }
-    r.current = { speaker, listener, ctl, secrets, pending: null, lock: null, retries: 0 }
+    r.current = { speaker, listener, ctl, secrets, pending: null, turn: null, lock: null, retries: 0 }
     d.current.useSpeaker(speaker)
     speaker.connect()
     await listener.start()

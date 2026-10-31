@@ -51,6 +51,14 @@ export class CallListener {
     try { await this.openCapture() } catch { this.stop(); this.set('unavailable', 'No se pudo abrir el audio del micrófono.'); return }
     this.set('listening')
   }
+  /** Reopen only the recognition socket after it dropped, keeping the open microphone and capture. start() returns early when the mic is already open. */
+  resume(): void {
+    if (!this.stream) return
+    const w = this.ws; this.ws = null; this.ready = false; try { w?.close() } catch { /* closed */ }
+    this.streaming = false; this.awaiting = null; this.partial = ''
+    this.openSocket()
+    this.set('listening')
+  }
   stop(): void {
     this.node?.disconnect(); this.node = null
     this.stream?.getTracks().forEach(t => t.stop()); this.stream = null
