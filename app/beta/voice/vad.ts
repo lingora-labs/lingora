@@ -16,7 +16,7 @@ export type VadEvent =
   | { type: 'onset'; t: number }                         // start capturing (may still be discarded)
   | { type: 'speech'; t: number }                        // confirmed speech: a real turn (or an interruption)
   | { type: 'discard'; t: number }                       // the onset was noise
-  | { type: 'end'; t: number; voicedMs: number; durationMs: number; forced: boolean }
+  | { type: 'end'; t: number; voicedMs: number; durationMs: number; forced: boolean; lastLoudAt: number }  // lastLoudAt: time of the last frame with voice
 
 export class Vad {
   private floor = -60
@@ -57,7 +57,7 @@ export class Vad {
     return null
   }
   private finish(t: number, forced: boolean): VadEvent {
-    const ev: VadEvent = { type: 'end', t, voicedMs: Math.round(this.voiced), durationMs: Math.round(t - this.startedAt), forced }
+    const ev: VadEvent = { type: 'end', t, voicedMs: Math.round(this.voiced), durationMs: Math.round(t - this.startedAt), forced, lastLoudAt: this.lastLoud }
     this.reset()
     return ev
   }
