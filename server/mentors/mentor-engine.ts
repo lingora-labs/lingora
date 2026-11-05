@@ -92,6 +92,7 @@
 
 import OpenAI from 'openai'
 import { getMentorProfile } from './profiles'
+import { usesResponsesApi, createResponsesTutorStream, tutorEffort } from './responses-transport'
 import { getModeInstruction, TUTOR_PROHIBITIONS } from '@/lib/tutorProtocol'
 import { buildContextPack, formatContextPack, formatLanguageTurnNote, type ContextPack, type VoiceInputFacts } from '@/lib/context-pack'
 import { imageCapability } from '../tools/image-generator'
@@ -182,10 +183,20 @@ type NormalizedMentorCall = {
   spaceContext: SpaceContextPayload | null
 }
 
-export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number }
+export interface ProviderUsage { prompt: number; completion: number; cached: number; calls: number; reasoning?: number; effort?: string }
 export type MentorStream = AsyncGenerator<string> & { artifactSignals: ArtifactSignal[]; textDeliveries: TextDelivery[]; explanatoryLanguage?: string; explanatoryLanguageSource?: 'student_request' | 'student_turn' | 'tutor_detected'; languageRejection?: string; memoryOps?: TutorMemoryOp[]; learningFacts?: LearningFactDeclaration[]; deliveryFailure?: string; deliveryFailures?: string[]; rejectedSignals?: number; rejectedReasons?: string[]; usage?: ProviderUsage; servedModel?: string }
 
 export const PRODUCT_MODEL = 'gpt-5.6-sol'
+/** 7.7-SOL: the model under evaluation. It is served ONLY in an isolated Vercel preview of the evaluation branch
+ *  (VERCEL_ENV=preview and branch ae/7-7-sol-6-1-evaluation*); production and every other environment stay on PRODUCT_MODEL.
+ *  No environment variable can select it, so a shared variable can never move production. */
+export const EVAL_MODEL = 'gpt-6.1-sol'
+export function evaluationPreview(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.VERCEL_ENV === 'preview' && /^ae\/7-7-sol-6-1-evaluation/.test(env.VERCEL_GIT_COMMIT_REF ?? '')
+}
+export function expectedProductModel(env: NodeJS.ProcessEnv = process.env): string {
+  return evaluationPreview(env) ? EVAL_MODEL : PRODUCT_MODEL
+}
 
 /** 7.5 — the product model is a verified identity, not a decorative variable.
  *  Configuration: OPENAI_MAIN_MODEL must be exactly PRODUCT_MODEL, or the turn is refused before any provider call.
@@ -193,27 +204,29 @@ export const PRODUCT_MODEL = 'gpt-5.6-sol'
 export type ModelFailure = 'model_config_invalid' | 'model_mismatch' | 'model_unreported' | 'model_rejected'
 export const MODEL_FAILURES: ReadonlySet<string> = new Set<ModelFailure>(['model_config_invalid', 'model_mismatch', 'model_unreported', 'model_rejected'])
 
-export function modelConfigurationError(configured: string | undefined = process.env.OPENAI_MAIN_MODEL): string | null {
-  return configured === PRODUCT_MODEL ? null : (configured?.trim() ? configured : 'sin definir')
+export function modelConfigurationError(configured: string | undefined = process.env.OPENAI_MAIN_MODEL, expected: string = expectedProductModel()): string | null {
+  // In the evaluation preview the shared production pin (OPENAI_MAIN_MODEL=gpt-5.6-sol) is present and is overridden by code, on purpose.
+  if (configured === expected || (expected === EVAL_MODEL && configured === PRODUCT_MODEL)) return null
+  return configured?.trim() ? configured : 'sin definir'
 }
 
-export function modelFailureMessage(failure: ModelFailure, detail = ''): string {
-  if (failure === 'model_config_invalid') return `Error de configuración: OPENAI_MAIN_MODEL=${detail}; el producto es ${PRODUCT_MODEL}. El turno no se envió al proveedor.`
-  if (failure === 'model_mismatch') return `Modelo incorrecto: se sirvió ${detail}, el producto es ${PRODUCT_MODEL}.`
-  if (failure === 'model_unreported') return `El proveedor no informó el modelo servido; el producto es ${PRODUCT_MODEL}. El turno se rechaza.`
-  return `El proveedor rechazó el modelo ${PRODUCT_MODEL}; el turno no se ejecutó.`
+export function modelFailureMessage(failure: ModelFailure, detail = '', expected: string = expectedProductModel()): string {
+  if (failure === 'model_config_invalid') return `Error de configuración: OPENAI_MAIN_MODEL=${detail}; el producto es ${expected}. El turno no se envió al proveedor.`
+  if (failure === 'model_mismatch') return `Modelo incorrecto: se sirvió ${detail}, el producto es ${expected}.`
+  if (failure === 'model_unreported') return `El proveedor no informó el modelo servido; el producto es ${expected}. El turno se rechaza.`
+  return `El proveedor rechazó el modelo ${expected}; el turno no se ejecutó.`
 }
 
 /** Holds every provider chunk until the provider reports the served model, and releases them only when it is
  *  exactly PRODUCT_MODEL. A different or missing identity ends the stream with gate.failure set and nothing released. */
-export async function* gateByServedModel(src: AsyncIterable<any>, gate: { served: string; failure?: 'model_mismatch' | 'model_unreported' }): AsyncGenerator<any> {
+export async function* gateByServedModel(src: AsyncIterable<any>, gate: { served: string; failure?: 'model_mismatch' | 'model_unreported' }, expected: string = expectedProductModel()): AsyncGenerator<any> {
   const held: any[] = []
   let verified = false
   for await (const chunk of src) {
     const reported = typeof chunk?.model === 'string' && chunk.model ? chunk.model : ''
     if (reported) {
       gate.served = reported
-      if (reported !== PRODUCT_MODEL) { gate.failure = 'model_mismatch'; return }
+      if (reported !== expected) { gate.failure = 'model_mismatch'; return }
       if (!verified) { verified = true; for (const h of held) yield h; held.length = 0 }
     }
     if (verified) yield chunk
@@ -222,8 +235,8 @@ export async function* gateByServedModel(src: AsyncIterable<any>, gate: { served
   if (!verified) gate.failure = 'model_unreported'
 }
 
-function rejectedTurn(failure: ModelFailure, detail: string, served?: string): MentorStream {
-  const rejected = (async function* () { yield modelFailureMessage(failure, detail) })() as MentorStream
+function rejectedTurn(failure: ModelFailure, detail: string, served?: string, expected: string = expectedProductModel()): MentorStream {
+  const rejected = (async function* () { yield modelFailureMessage(failure, detail, expected) })() as MentorStream
   rejected.artifactSignals = []
   rejected.textDeliveries = []
   rejected.deliveryFailure = failure
@@ -445,6 +458,18 @@ export function buildModelParams(model: string, tokens: number, temperature?: nu
   return { model, max_tokens: tokens, ...(temperature !== undefined ? { temperature } : {}), ...(topP !== undefined ? { top_p: topP } : {}) }
 }
 
+/** One provider call of the Tutor. The transport differs by model (Responses API for gpt-6.x, Chat Completions otherwise);
+ *  what comes back is always the same chunk shape, so there is a single reading of the stream below. */
+function openTutorStream(a:{model:string;budget:number;messages:any[];tools:any[];tool_choice:'auto'|'none'}):Promise<AsyncIterable<any>>{
+  const{model,budget,messages,tools,tool_choice:toolChoice}=a
+  if(usesResponsesApi(model))return createResponsesTutorStream(openai,{model,maxOutputTokens:budget,messages,tools,toolChoice})
+  return openai.chat.completions.create({
+    ...buildModelParams(model,budget,0.7,0.88),
+    stream:true,stream_options:{include_usage:true},tools,tool_choice:toolChoice,
+    messages,
+  }) as unknown as Promise<AsyncIterable<any>>
+}
+
 /** 7.3: one Tutor, typed tools. A tool call by the Tutor is the authorization;
  *  the runtime only validates technically and never reads the student's words. */
 export async function getMentorResponseStream(params: MentorRuntimeParams): Promise<MentorStream> {
@@ -460,7 +485,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const wantsVisualReview = params.request.uiAction==='create_visual_review'
  const fallback=FALLBACKS[resolveInterfaceLanguage(n.state)]??FALLBACKS.en
  const configError=modelConfigurationError()
- const model=PRODUCT_MODEL
+ const model=expectedProductModel()
  const budget=resolveOutputBudget(n.plan,pack)
  // The opening greeting settles no language: that tool exists only once the student has written.
  const COMPLETE_TUTOR_TURN_TOOL=completeTutorTurnTool({image:imageCapability().available})
@@ -469,21 +494,17 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
  const baseMessages:any[]=[{role:'system',content:built.system+fit.note},...fit.history,{role:'user',content:user},{role:'system',content:languageNote}]
  let response:AsyncIterable<any>|undefined
  // Wrong or missing configuration: refused before the provider is called (nothing was served, so no servedModel).
- if(configError)return rejectedTurn('model_config_invalid',configError)
+ if(configError)return rejectedTurn('model_config_invalid',configError,undefined,model)
  let providerRejectedModel=false
  try{
-   response=await openai.chat.completions.create({
-     ...buildModelParams(model,budget,0.7,0.88),
-     stream:true,stream_options:{include_usage:true},tools,tool_choice:wantsVisualReview?'none':'auto',
-     messages:baseMessages,
-   })
+   response=await openTutorStream({model,budget,tools,tool_choice:wantsVisualReview?'none':'auto',messages:baseMessages})
  }catch(e){
    const p=e&&typeof e==='object'?e as {status?:number;name?:string;code?:string|null;type?:string|null}:{}
    // The provider refusing the product model is not "unavailable": the run stops, no fallback model is tried.
    providerRejectedModel=p.status===404||(typeof p.code==='string'&&/model/i.test(p.code))
    console.error('[tutor-provider]',JSON.stringify({reason:providerRejectedModel?'model_rejected':'provider_unavailable',status:p.status??null,code:p.code??null,type:p.type??null,class:p.name??'UnknownError'}))
  }
- if(!response&&providerRejectedModel)return rejectedTurn('model_rejected','')
+ if(!response&&providerRejectedModel)return rejectedTurn('model_rejected','',undefined,model)
  const box:{w?:MentorStream}={}
  const wrapped=(async function*(){
    const calls=new Map<number,{id:string;name:string;args:string}>()
@@ -491,7 +512,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    let served=''
    // 7.5: every failure is collected and shown to the student by the stream engine, not only logged.
    const fail=(reason:string)=>{const w=box.w!;w.deliveryFailure??=reason;(w.deliveryFailures??=[]).push(reason);console.warn('[tutor-delivery]',JSON.stringify({reason,hadText:Boolean(spoken.trim())}))}
-   const count=(u:any)=>{if(!u)return;const w=box.w!;const x=w.usage??={prompt:0,completion:0,cached:0,calls:0};x.prompt+=u.prompt_tokens??0;x.completion+=u.completion_tokens??0;x.cached+=u.prompt_tokens_details?.cached_tokens??0;x.calls+=1}
+   const count=(u:any)=>{if(!u)return;const w=box.w!;const x=w.usage??={prompt:0,completion:0,cached:0,calls:0};if(usesResponsesApi(model)){x.effort=tutorEffort();x.reasoning=(x.reasoning??0)+(u.completion_tokens_details?.reasoning_tokens??0)}x.prompt+=u.prompt_tokens??0;x.completion+=u.completion_tokens??0;x.cached+=u.prompt_tokens_details?.cached_tokens??0;x.calls+=1}
    const publishLanguage=(l:string,source:'student_request'|'student_turn'|'tutor_detected')=>{wrapped.explanatoryLanguage=l;wrapped.explanatoryLanguageSource=source}
    const publishRejected=(n:number)=>{wrapped.rejectedSignals=(wrapped.rejectedSignals??0)+n}
    const publishMemory=(o:TutorMemoryOp[])=>{wrapped.memoryOps=[...(wrapped.memoryOps??[]),...o]}
@@ -499,7 +520,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
    if(!response){fail('provider_unavailable');yield fallback;return}
    const gate:{served:string;failure?:'model_mismatch'|'model_unreported'}={served:''}
    try{
-     for await(const chunk of gateByServedModel(response,gate)){
+     for await(const chunk of gateByServedModel(response,gate,model)){
        served=gate.served;box.w!.servedModel=served
        if(chunk.usage)count(chunk.usage)
        const d=chunk.choices?.[0]?.delta
@@ -514,7 +535,7 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      }
    }catch{fail('provider_stream_interrupted');if(!spoken.trim())yield fallback;return}
    // Identity not proven: nothing the provider produced is published, no tool call is executed.
-   if(gate.failure){if(gate.served)box.w!.servedModel=gate.served;fail(gate.failure);yield modelFailureMessage(gate.failure,gate.served);return}
+   if(gate.failure){if(gate.served)box.w!.servedModel=gate.served;fail(gate.failure);yield modelFailureMessage(gate.failure,gate.served,model);return}
    if(!calls.size){console.info('[tutor-language]',JSON.stringify({declaredIn:n.state.explanatoryLanguage??null,opening:n.opening,tools:[],declaredOut:null,spokenChars:spoken.length,model,served}));if(!spoken.trim()){fail('empty_response');yield fallback}return}
    let closed:ReturnType<typeof parseClosedTutorTurn>=null
    let declared:string|undefined
@@ -577,22 +598,18 @@ export async function getMentorResponseStream(params: MentorRuntimeParams): Prom
      const asst:any={role:'assistant',content:spoken||null,tool_calls:[...calls.values()].filter(c=>c.id).map(c=>({id:c.id,type:'function',function:{name:c.name,arguments:c.args||'{}'}}))}
      const results=[...calls.values()].filter(c=>c.id).map(c=>({role:'tool',tool_call_id:c.id,content:deliveries.length?'Delivery registered. Now write the complete material as your reply text, starting with its title. The platform will render exactly your text.':`${declared?`Language recorded: ${declared}. `:''}${languageKept?`Language NOT changed: it stays ${languageKept}, because the student did not ask in their own words to change it. `:''}${memoryCalled?'Memory notes recorded. ':''}${factsCalled?'Facts received. ':''}Now write your reply to the student as normal text.${(declared??languageKept)?` Your explanations, corrections and the reasons for each correction are in ${declared??languageKept}, even if the student's message is Spanish practice; Spanish stays only for the examples and exercises you teach.`:''}`}))
      try{
-       const more:AsyncIterable<any>=await openai.chat.completions.create({
-         ...buildModelParams(model,budget,0.7,0.88),
-         stream:true,stream_options:{include_usage:true},tools,tool_choice:'none',
-         messages:[...baseMessages,asst,...results],
-       })
+       const more:AsyncIterable<any>=await openTutorStream({model,budget,tools,tool_choice:'none',messages:[...baseMessages,asst,...results]})
        const gate2:{served:string;failure?:'model_mismatch'|'model_unreported'}={served:''}
        // The material continues what the Tutor already said (if anything): one blank line between the two,
        // never inside the continuation itself, which arrives in many chunks.
        const separate=Boolean(spoken.trim())
        let separated=false
-       for await(const chunk of gateByServedModel(more,gate2)){
+       for await(const chunk of gateByServedModel(more,gate2,model)){
          if(chunk.usage)count(chunk.usage)
          const d=chunk.choices?.[0]?.delta
          if(typeof d?.content==='string'&&d.content){if(separate&&!separated){separated=true;yield '\n\n'}spoken+=d.content;yield d.content}
        }
-       if(gate2.failure){box.w!.servedModel=gate2.served||box.w!.servedModel;fail(gate2.failure);yield (spoken.trim()?'\n\n':'')+modelFailureMessage(gate2.failure,gate2.served);return}
+       if(gate2.failure){box.w!.servedModel=gate2.served||box.w!.servedModel;fail(gate2.failure);yield (spoken.trim()?'\n\n':'')+modelFailureMessage(gate2.failure,gate2.served,model);return}
      }catch{fail('continuation_interrupted')}
      if(!spoken.trim()){fail('empty_response');yield fallback}
      return
